@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">链记</string>
+    <string name="title_activity_main">链记</string>
+    <string name="package_name">xyz.xykong.linknote</string>
+    <string name="custom_url_scheme">xyz.xykong.linknote</string>
+</resources>

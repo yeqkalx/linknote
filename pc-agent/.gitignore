@@ -1,0 +1,9 @@
+# 虚拟环境 / 构建产物 / 测试缓存（运行时数据统一放在 ~/.linknote/，不在仓库里）
+.venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.pytest_cache/
+.coverage

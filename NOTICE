@@ -1,0 +1,30 @@
+LinkNote / 链记
+Copyright (c) 2026 LinkNote contributors
+
+This project is licensed under the MIT License (see LICENSE).
+
+Third-party notices
+-------------------
+
+BiliNote (https://github.com/JefferyHcool/BiliNote)
+  - License: MIT
+  - This project does NOT include or modify BiliNote source code. The PC Agent
+    invokes a locally installed BiliNote backend over HTTP. The prototype logic
+    under the user's `wecom_bot/` directory (also MIT) was used as reference.
+  - "BiliNote" is the upstream project's name/brand; LinkNote is an independent
+    project and is not affiliated with or endorsed by BiliNote.
+
+marked (https://github.com/markedjs/marked)
+  - License: MIT
+  - Vendored as app/www/vendor/marked.esm.js (copied from npm package).
+
+DOMPurify (https://github.com/cure53/DOMPurify)
+  - License: Apache-2.0 OR MPL-2.0
+  - Vendored as app/www/vendor/purify.es.mjs (copied from npm package).
+
+Capacitor (https://capacitorjs.com)
+  - License: MIT
+  - Used only for the optional Android wrapper.
+
+Cloudflare Workers / D1 / Wrangler
+  - Tooling; no source code included.

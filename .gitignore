@@ -1,0 +1,64 @@
+# Node
+node_modules/
+npm-debug.log*
+pnpm-debug.log*
+yarn-error.log*
+npm-install.log
+
+# Wrangler
+.wrangler/
+relay/public/
+relay/dist/
+.dev.vars
+
+# Python
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+*.egg-info/
+dist/
+build/
+
+# Agent runtime
+pc-agent/logs/
+pc-agent/state/
+pc-agent/config.local.json
+pc-agent/.e2e/
+
+# E2E artifacts that contain tokens/task ids
+assets/e2e/session.json
+assets/e2e/*.json
+release/*.apk
+
+# Android / Gradle
+tools/
+packaging/android-probe/
+app/android/.gradle/
+app/android/build/
+app/android/app/build/
+app/android/local.properties
+app/android/capacitor-cordova-android-plugins/
+app/android/app/src/main/assets/public/
+app/android/app/src/main/assets/capacitor.config.json
+app/ios/
+.gradle/
+
+# PWA
+app/dist/
+
+# Secrets / local
+*.local
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+.DS_Store
+Thumbs.db
+
+# OS / editor
+.vscode/
+.idea/
+*.swp

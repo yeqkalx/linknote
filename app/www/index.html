@@ -1,0 +1,70 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <title>链记 LinkNote</title>
+    <meta
+      name="description"
+      content="链记 LinkNote：把手机上的视频链接发到家里的电脑，用 BiliNote 生成 AI 笔记，再回到手机上阅读与导出 Markdown。视频、音频和模型 Key 都不离开电脑。"
+    />
+    <meta name="color-scheme" content="light dark" />
+    <meta name="theme-color" media="(prefers-color-scheme: light)" content="#f6efe4" />
+    <meta name="theme-color" media="(prefers-color-scheme: dark)" content="#16120f" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="default" />
+    <meta name="apple-mobile-web-app-title" content="链记" />
+    <meta name="format-detection" content="telephone=no" />
+
+    <link rel="manifest" href="./manifest.webmanifest" />
+    <link rel="icon" href="./icons/favicon.svg" type="image/svg+xml" />
+    <link rel="icon" href="./icons/favicon-32.png" type="image/png" sizes="32x32" />
+    <link rel="icon" href="./icons/favicon-16.png" type="image/png" sizes="16x16" />
+    <link rel="apple-touch-icon" href="./icons/apple-touch-icon.png" />
+    <link rel="stylesheet" href="./css/app.css" />
+  </head>
+  <body>
+    <div class="app" id="app">
+      <div class="boot" id="boot" role="status" aria-live="polite">
+        <span class="boot-mark" aria-hidden="true">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M10.6 13.4a3.6 3.6 0 0 0 5.1 0l2.4-2.4a3.6 3.6 0 0 0-5.1-5.1l-1.2 1.2" />
+            <path d="M13.4 10.6a3.6 3.6 0 0 0-5.1 0L5.9 13a3.6 3.6 0 0 0 5.1 5.1l1.2-1.2" />
+          </svg>
+        </span>
+        <p class="boot-title">链记</p>
+        <p class="boot-sub">正在准备…</p>
+      </div>
+
+      <div class="view" id="view" hidden></div>
+
+      <nav class="tabbar" id="tabbar" hidden aria-label="主导航">
+        <a class="tabbar-item" href="#/home" data-route="/home" aria-current="page">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M4 11.2 5.9 5.6A1.8 1.8 0 0 1 7.6 4.4h8.8a1.8 1.8 0 0 1 1.7 1.2l1.9 5.6" />
+            <path d="M4 11.2v6a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-6" />
+            <path d="M4 11.2h4.4l1.3 2.1h4.6l1.3-2.1H20" />
+          </svg>
+          <span>收件箱</span>
+        </a>
+        <a class="tabbar-item" href="#/settings" data-route="/settings">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <circle cx="12" cy="12" r="3.1" />
+            <path d="M19.4 14.5a1.6 1.6 0 0 0 .3 1.8l.1.1a1.9 1.9 0 1 1-2.7 2.7l-.1-.1a1.6 1.6 0 0 0-1.8-.3 1.6 1.6 0 0 0-1 1.5v.2a1.9 1.9 0 1 1-3.8 0v-.1a1.6 1.6 0 0 0-1-1.5 1.6 1.6 0 0 0-1.8.3l-.1.1a1.9 1.9 0 1 1-2.7-2.7l.1-.1a1.6 1.6 0 0 0 .3-1.8 1.6 1.6 0 0 0-1.5-1H3a1.9 1.9 0 1 1 0-3.8h.1a1.6 1.6 0 0 0 1.5-1 1.6 1.6 0 0 0-.3-1.8l-.1-.1a1.9 1.9 0 1 1 2.7-2.7l.1.1a1.6 1.6 0 0 0 1.8.3h.1a1.6 1.6 0 0 0 1-1.5V3a1.9 1.9 0 1 1 3.8 0v.1a1.6 1.6 0 0 0 1 1.5 1.6 1.6 0 0 0 1.8-.3l.1-.1a1.9 1.9 0 1 1 2.7 2.7l-.1.1a1.6 1.6 0 0 0-.3 1.8v.1a1.6 1.6 0 0 0 1.5 1h.2a1.9 1.9 0 1 1 0 3.8h-.1a1.6 1.6 0 0 0-1.5 1z" />
+          </svg>
+          <span>设置</span>
+        </a>
+      </nav>
+
+      <div class="toast-region" id="toast-region" aria-live="polite" aria-atomic="false"></div>
+      <div id="dialog-root"></div>
+    </div>
+
+    <noscript>
+      <div class="noscript">链记需要开启 JavaScript 才能运行。请在浏览器设置中允许 JavaScript 后刷新页面。</div>
+    </noscript>
+
+    <script type="module" src="./js/app.js"></script>
+  </body>
+</html>

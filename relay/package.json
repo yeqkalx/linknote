@@ -1,0 +1,22 @@
+{
+  "name": "linknote-relay",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "LinkNote relay: Cloudflare Worker + D1 + static PWA hosting",
+  "scripts": {
+    "dev": "wrangler dev --port 8787",
+    "dev:test": "wrangler dev --port 8799 --local",
+    "db:local": "wrangler d1 migrations apply linknote-db --local",
+    "db:remote": "wrangler d1 migrations apply linknote-db --remote",
+    "deploy": "wrangler deploy",
+    "typecheck": "tsc --noEmit",
+    "test": "node tests/contract.e2e.mjs",
+    "test:keep": "node tests/contract.e2e.mjs --keep"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "5.20261024.1",
+    "typescript": "5.9.3",
+    "wrangler": "4.152.0"
+  }
+}

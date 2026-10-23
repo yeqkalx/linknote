@@ -1,0 +1,96 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="robots" content="noindex, nofollow" />
+    <meta name="theme-color" content="#f6efe4" />
+    <title>链记 · 正在打开</title>
+    <style>
+      :root {
+        color-scheme: light dark;
+      }
+      html,
+      body {
+        height: 100%;
+        margin: 0;
+      }
+      body {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        background: #f6efe4;
+        color: #221d19;
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
+          "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+      }
+      main {
+        text-align: center;
+        padding: 24px;
+      }
+      .mark {
+        width: 48px;
+        height: 48px;
+        margin: 0 auto 12px;
+        color: #e1573a;
+      }
+      p {
+        margin: 6px 0;
+        font-size: 15px;
+        line-height: 1.6;
+      }
+      .sub {
+        color: #8a7c6f;
+        font-size: 13px;
+      }
+      a {
+        color: #b53f27;
+      }
+      @media (prefers-color-scheme: dark) {
+        body {
+          background: #16120f;
+          color: #f2e9de;
+        }
+        .sub {
+          color: #93857a;
+        }
+        a {
+          color: #ff9a7e;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <svg class="mark" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <path d="M10.6 13.4a3.6 3.6 0 0 0 5.1 0l2.4-2.4a3.6 3.6 0 0 0-5.1-5.1l-1.2 1.2" />
+        <path d="M13.4 10.6a3.6 3.6 0 0 0-5.1 0L5.9 13a3.6 3.6 0 0 0 5.1 5.1l1.2-1.2" />
+      </svg>
+      <p>正在打开链记…</p>
+      <p class="sub">如果没有自动跳转，请<a href="./index.html#/home">点此进入收件箱</a>。</p>
+    </main>
+    <script>
+      (function () {
+        try {
+          var params = new URLSearchParams(window.location.search || "");
+          var parts = [params.get("title"), params.get("text"), params.get("url")];
+          var text = parts
+            .filter(function (part) {
+              return part && String(part).trim();
+            })
+            .join("\n")
+            .trim();
+
+          var target = "./index.html#/home";
+          if (text) {
+            // 只允许通过 hash 传参，内容不会出现在服务端日志里。
+            target += "?draft=" + encodeURIComponent(text);
+          }
+          window.location.replace(target);
+        } catch (error) {
+          window.location.replace("./index.html#/home");
+        }
+      })();
+    </script>
+  </body>
+</html>

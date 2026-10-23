@@ -1,0 +1,27 @@
+name = "linknote-relay"
+main = "src/index.ts"
+compatibility_date = "2026-10-01"
+workers_dev = true
+
+# PWA 静态文件由 Worker 一起托管：一个域名、同源、免 CORS。
+# app/www 会由 `npm --prefix app run sync` 复制到 relay/public。
+[assets]
+directory = "./public"
+binding = "ASSETS"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "linknote-db"
+# 本地开发用占位 id 即可；`wrangler deploy` 前替换成真实 id（见 docs/deployment.md）
+database_id = "00000000-0000-0000-0000-000000000000"
+migrations_dir = "migrations"
+
+[vars]
+PUBLIC_BASE_URL = "http://127.0.0.1:8787"
+ALLOWED_ORIGINS = "http://localhost:5173,http://127.0.0.1:8787,http://localhost:8787,https://relay.xykong.xyz,capacitor://localhost,https://localhost"
+PAIRING_TTL_SECONDS = "600"
+TASK_LEASE_SECONDS = "1800"
+
+[observability]
+enabled = true
+head_sampling_rate = 1

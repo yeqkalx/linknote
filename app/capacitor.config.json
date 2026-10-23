@@ -1,0 +1,13 @@
+﻿{
+  "appId": "xyz.xykong.linknote",
+  "appName": "LinkNote",
+  "webDir": "www",
+  "server": {
+    "androidScheme": "https"
+  },
+  "android": {
+    "allowMixedContent": false,
+    "captureInput": true,
+    "webContentsDebuggingEnabled": true
+  }
+}

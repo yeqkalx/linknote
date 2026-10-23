@@ -1,0 +1,18 @@
+{
+  "name": "linknote",
+  "version": "0.1.0",
+  "private": true,
+  "description": "LinkNote / 链记 — 手机视频链接 → PC BiliNote → Markdown 回手机",
+  "scripts": {
+    "setup": "powershell -ExecutionPolicy Bypass -File scripts/setup.ps1",
+    "sync": "npm --prefix app run sync",
+    "dev": "powershell -ExecutionPolicy Bypass -File scripts/dev.ps1",
+    "db:local": "npm --prefix relay run db:local",
+    "test": "npm --prefix relay test",
+    "typecheck": "npm --prefix relay run typecheck",
+    "check": "powershell -ExecutionPolicy Bypass -File scripts/check.ps1"
+  },
+  "devDependencies": {
+    "playwright-core": "^1.64.1"
+  }
+}

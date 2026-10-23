@@ -1,0 +1,22 @@
+{
+  "name": "linknote-app",
+  "version": "0.1.0",
+  "private": true,
+  "description": "LinkNote mobile PWA (Capacitor-ready)",
+  "scripts": {
+    "vendor": "node ../scripts/vendor-app.mjs",
+    "sync": "node ../scripts/sync-app.mjs",
+    "cap:add:android": "cap add android",
+    "cap:sync": "cap sync android",
+    "cap:open": "cap open android"
+  },
+  "dependencies": {
+    "dompurify": "3.4.17",
+    "marked": "18.1.1"
+  },
+  "devDependencies": {
+    "@capacitor/android": "8.5.3",
+    "@capacitor/cli": "8.5.3",
+    "@capacitor/core": "8.5.3"
+  }
+}
