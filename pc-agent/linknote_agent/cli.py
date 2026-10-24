@@ -34,7 +34,9 @@ from .config import (
 from .logging_setup import setup_logging
 from .outbox import Outbox
 from .relay_client import RelayClient, RelayError
+from .relay_ws import build_ws_url
 from .runner import AgentRunner
+from .ws_runner import RealtimeAgentRunner
 
 PROG = "linknote_agent"
 PAIR_EXPIRED_EXIT = 3
@@ -94,9 +96,14 @@ def build_parser() -> argparse.ArgumentParser:
         "--poll-interval", type=float, default=None, help="轮询配对状态间隔秒数（默认 2）"
     )
 
-    run = sub.add_parser("run", help="常驻轮询 Relay 任务并生成笔记")
+    run = sub.add_parser("run", help="常驻运行 Agent（默认 WebSocket 推送；REST 兜底）")
     run.add_argument("--relay", default=None, help="临时覆盖 Relay 地址（不写入配置）")
-    run.add_argument("--once", action="store_true", help="只处理一轮（调试/端到端用）")
+    run.add_argument(
+        "--poll", action="store_true", help="强制使用旧 REST 轮询模式（排障/兼容用）"
+    )
+    run.add_argument(
+        "--once", action="store_true", help="只走一次 REST 领取并处理（调试；等同于旧行为）"
+    )
 
     status = sub.add_parser("status", help="查看配对、Relay、BiliNote 后端状态")
     status.add_argument("--json", action="store_true", help="以 JSON 输出（方便脚本解析）")
@@ -140,11 +147,12 @@ def main(
     transport: httpx.AsyncBaseTransport | None = None,
     bilinote_transport: httpx.AsyncBaseTransport | None = None,
     run_command: Callable[..., Any] | None = None,
+    ws_client: Any | None = None,
 ) -> int:
     """同步入口（console_scripts / ``python -m`` 都走这里）。
 
-    ``transport`` / ``bilinote_transport`` / ``run_command`` 仅供测试注入，
-    正常使用时不传。
+    ``transport`` / ``bilinote_transport`` / ``run_command`` / ``ws_client``
+    仅供测试注入，正常使用时不传。
     """
     _ensure_std_streams()
     parser = build_parser()
@@ -155,7 +163,12 @@ def main(
             return asyncio.run(cmd_pair(args, transport=transport))
         if args.command == "run":
             return asyncio.run(
-                cmd_run(args, relay_transport=transport, bilinote_transport=bilinote_transport)
+                cmd_run(
+                    args,
+                    relay_transport=transport,
+                    bilinote_transport=bilinote_transport,
+                    ws_client=ws_client,
+                )
             )
         if args.command == "status":
             return asyncio.run(
@@ -325,6 +338,7 @@ async def cmd_run(
     relay_transport: httpx.AsyncBaseTransport | None = None,
     bilinote_transport: httpx.AsyncBaseTransport | None = None,
     stop_event: asyncio.Event | None = None,
+    ws_client: Any | None = None,
 ) -> int:
     cfg_path = Path(args.config) if getattr(args, "config", None) else None
     cfg = AgentConfig.load(cfg_path)
@@ -335,13 +349,29 @@ async def cmd_run(
         cfg.require_paired()  # 抛 NotPairedError，由 main() 打印并返回 2
         return NEED_PAIR_EXIT
 
+    once = bool(getattr(args, "once", False))
+    force_poll = bool(getattr(args, "poll", False))
+    use_websocket = bool(cfg.use_websocket) and not once and not force_poll
+
     verbose = bool(getattr(args, "verbose", False) or cfg.verbose)
     log_path = setup_logging(verbose=verbose, log_dir=cfg.resolved_log_dir())
     print("LinkNote PC Agent 启动中…")
     print(f"  配置文件：{cfg_path or default_config_path()}")
     print(f"  Relay：{cfg.relay_base_url}")
+    try:
+        ws_url = build_ws_url(cfg.relay_base_url, ws_url=cfg.ws_url)
+    except Exception:  # noqa: BLE001 - 地址非法时退回 REST
+        ws_url = "（地址非法）"
+        use_websocket = False
+    mode = "WebSocket 推送" if use_websocket else ("REST 单次" if once else "REST 轮询")
+    print(f"  传输模式：{mode}" + (f"（{ws_url}）" if use_websocket else ""))
     print(f"  BiliNote 后端：{cfg.backend_base_url}（exe：{cfg.backend_exe}）")
     print(f"  模型：{cfg.provider_id} / {cfg.model_name}（quality={cfg.quality} style={cfg.style}）")
+    if use_websocket:
+        print(
+            f"  重连退避：{','.join(str(int(d)) for d in cfg.ws_reconnect_delays)} 秒 + "
+            f"{int(cfg.ws_jitter_ratio * 100)}% 抖动；心跳 {cfg.ws_ping_interval_seconds:.0f} 秒"
+        )
     if log_path:
         print(f"  日志：{log_path}")
     print("按 Ctrl+C 退出。")
@@ -350,9 +380,10 @@ async def cmd_run(
     bilinote = BiliNoteClient(cfg.backend_base_url, transport=bilinote_transport)
     backend = BackendSupervisor(cfg, bilinote=bilinote)
     outbox = Outbox(cfg.resolved_outbox_dir(), notes_dir=cfg.resolved_notes_dir())
-    runner = AgentRunner(cfg, relay, bilinote, backend=backend, outbox=outbox)
+    runner: Any = None
     try:
-        if getattr(args, "once", False):
+        if once:
+            runner = AgentRunner(cfg, relay, bilinote, backend=backend, outbox=outbox)
             try:
                 processed = await runner.poll_once()
             except RelayError as exc:
@@ -360,10 +391,24 @@ async def cmd_run(
                 return 1
             print("已处理一个任务。" if processed else "当前没有待处理任务。")
             return 0
+        if use_websocket:
+            runner = RealtimeAgentRunner(
+                cfg,
+                relay,
+                bilinote,
+                backend=backend,
+                outbox=outbox,
+                ws_client=ws_client,
+            )
+        else:
+            runner = AgentRunner(cfg, relay, bilinote, backend=backend, outbox=outbox)
         await runner.run_forever(stop_event)
         return 0
     finally:
-        await runner.close()
+        if runner is not None:
+            await runner.close()
+        else:
+            await backend.close()
         await relay.aclose()
         await bilinote.aclose()
 
@@ -412,7 +457,10 @@ async def cmd_status(
         "insert_video_links": cfg.insert_video_links,
         "log_dir": str(cfg.resolved_log_dir()),
         "outbox_dir": str(cfg.resolved_outbox_dir()),
-        "outbox_pending": len(Outbox(cfg.resolved_outbox_dir()).pending()),
+        "outbox_pending": len(_status_outbox(cfg).pending()),
+        "notes_pending_ack": len(_status_outbox(cfg).pending_notes()),
+        "transport_mode": "websocket" if cfg.use_websocket else "rest",
+        "ws_url": _safe_ws_url(cfg),
         "relay": None,
         "relay_error": "",
     }
@@ -446,11 +494,21 @@ async def cmd_status(
     backend_state = "运行中" if backend_alive else "未运行（run 时会尝试自动拉起）"
     print(f"  BiliNote 后端：{cfg.backend_base_url} — {backend_state}")
     print(f"    程序路径：{cfg.backend_exe}")
+    transport_label = (
+        "WebSocket 推送" if result["transport_mode"] == "websocket" else "REST 轮询"
+    )
+    print(
+        f"  传输模式：{transport_label}"
+        + (f"  {result['ws_url']}" if result["transport_mode"] == "websocket" else "")
+    )
     print(
         f"  生成参数：{cfg.provider_id} / {cfg.model_name}  quality={cfg.quality} "
         f"style={cfg.style} screenshot={cfg.screenshot} link={cfg.insert_video_links}"
     )
-    print(f"  本地数据：outbox {result['outbox_pending']} 条待补传；日志目录 {result['log_dir']}")
+    print(
+        f"  本地数据：outbox {result['outbox_pending']} 条；待手机 ack 笔记 "
+        f"{result['notes_pending_ack']} 条；日志目录 {result['log_dir']}"
+    )
 
     relay_info = result.get("relay")
     if result.get("relay_error"):
@@ -578,6 +636,17 @@ async def cmd_unpair(
 
 
 # ================================================================ 工具
+
+
+def _status_outbox(cfg: AgentConfig) -> Outbox:
+    return Outbox(cfg.resolved_outbox_dir(), notes_dir=cfg.resolved_notes_dir())
+
+
+def _safe_ws_url(cfg: AgentConfig) -> str:
+    try:
+        return build_ws_url(cfg.relay_base_url, ws_url=cfg.ws_url)
+    except Exception:  # noqa: BLE001 - status 输出不因地址非法而失败
+        return ""
 
 
 def _format_pair_code(code: str) -> str:

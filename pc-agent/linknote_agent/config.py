@@ -1,4 +1,4 @@
-﻿"""配置：``~/.linknote/agent.json`` 的读写。
+"""配置：``~/.linknote/agent.json`` 的读写。
 
 设计要点：
 - token 只存在本机；文件用原子写 + 尽量 0600 权限（Windows 上 chmod 支持有限，
@@ -95,15 +95,30 @@ class AgentConfig:
     screenshot: bool = False
     insert_video_links: bool = True
 
-    # ---- 运行时节奏 ----
+    # ---- 运行时节奏（REST 轮询 / 旧客户端兜底）----
     poll_interval_seconds: float = 4.0  # 空闲时拉取任务间隔（契约建议 3–5 秒）
+    fallback_poll_interval_seconds: float = 4.0  # WS 断开时 REST 兜底领取任务的间隔
     task_status_poll_interval_seconds: float = 3.0  # 轮询 BiliNote 任务状态间隔
     progress_min_interval_seconds: float = 8.0  # 同状态进度回传最小间隔（契约 ≤10 秒）
-    heartbeat_interval_seconds: float = 30.0  # Agent 心跳间隔（契约 30 秒）
+    heartbeat_interval_seconds: float = 30.0  # REST Agent 心跳间隔（契约 30 秒）
     lease_heartbeat_interval_seconds: float = 300.0  # 长任务租约续期间隔（契约 5 分钟）
     task_timeout_seconds: float = 3600.0  # 单任务最长等待，超时判定失败
     pair_poll_interval_seconds: float = 2.0  # pair 命令轮询配对状态间隔
     max_status_errors: int = 20  # 连续查询 BiliNote 状态失败多少次判定后端失联
+
+    # ---- WebSocket 实时推送（docs/realtime-protocol.md v1）----
+    use_websocket: bool = True  # run 默认走 WS 推送；false 或 CLI --poll 时退回 REST 轮询
+    ws_url: str = ""  # 留空由 relay_base_url 推导；本地联调可显式 ws://127.0.0.1:8798/api/v1/agent/ws
+    ws_ping_interval_seconds: float = 25.0  # 应用层 ping 间隔（协议 25s）
+    ws_dead_timeout_seconds: float = 60.0  # 多久没有收到任何消息/心跳判定断线（30–60s）
+    ws_hello_timeout_seconds: float = 10.0  # 连接后等待 hello 的超时
+    ws_reconnect_delays: list[float] = field(
+        default_factory=lambda: [1.0, 2.0, 4.0, 8.0, 15.0, 30.0]
+    )  # 断线重连退避基数；可配置 "1,2,4,8,15,30"
+    ws_jitter_ratio: float = 0.2  # 每次退避附加 0–20% 抖动
+    rest_fallback: bool = True  # WS 断开期间用 REST /agent/tasks/next 兜底
+    rest_heartbeat_enabled: bool = True  # WS 模式是否同时发 REST 心跳（兼容旧 REST 在线状态）
+    note_retention_days: float = 7.0  # 已生成笔记在 outbox 的保留天数（未 ack 也不无限涨）
 
     # ---- 目录（留空 = ~/.linknote/ 下的默认子目录）----
     outbox_dir: str = ""
@@ -259,6 +274,19 @@ def _coerce(current: Any, raw: Any) -> Any:
         return int(raw)
     if isinstance(current, float):
         return float(raw)
+    if isinstance(current, list) and not isinstance(current, str):
+        # 例：ws_reconnect_delays 支持 ["1","2"] 或 "1,2,4,8,15,30"
+        if isinstance(raw, str):
+            items: list[Any] = [part.strip() for part in raw.split(",") if part.strip()]
+        elif isinstance(raw, (list, tuple)):
+            items = list(raw)
+        else:
+            raise TypeError(f"应为列表或逗号分隔字符串，实际 {raw!r}")
+        template = current[0] if current else 0.0
+        try:
+            return [type(template)(item) for item in items]
+        except (TypeError, ValueError):
+            return items
     if isinstance(current, str):
         return "" if raw is None else str(raw)
     return raw

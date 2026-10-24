@@ -1,11 +1,14 @@
 ﻿<?xml version="1.0" encoding="utf-8"?>
+<?ifndef ProductVersion ?>
+<?define ProductVersion = "0.2.1" ?>
+<?endif?>
 <Wix xmlns="http://schemas.microsoft.com/wix/2006/wi">
   <Product
       Id="*"
       Name="LinkNote"
       Language="1033"
       Codepage="1252"
-      Version="0.2.0"
+      Version="$(var.ProductVersion)"
       Manufacturer="LinkNote"
       UpgradeCode="{9B6F2D7E-3B0A-4E2C-9F2A-6C6D5E1F8A31}">
 
@@ -16,6 +19,15 @@
         InstallPrivileges="limited"
         Platform="x64" />
 
+    <!-- WiX 3.14 does NOT emit ALLUSERS/MSIINSTALLPERUSER for InstallScope="perUser"
+         (verified on this toolchain): the package then installs per-machine through
+         the msiexec service, so HKCU writes (autostart Run value) land in the wrong
+         user context and are invisible to the actual user. These two properties
+         force a true per-user, non-elevated install: no UAC, HKCU entries written
+         in the user's own context, ARP entries under HKCU. -->
+    <Property Id="ALLUSERS" Value="2" />
+    <Property Id="MSIINSTALLPERUSER" Value="1" />
+
     <MajorUpgrade DowngradeErrorMessage="A newer version of LinkNote is already installed. Please uninstall it first." />
     <MediaTemplate EmbedCab="yes" CompressionLevel="high" />
 
@@ -23,6 +35,37 @@
     <Property Id="ARPHELPLINK" Value="https://relay.xykong.xyz" />
     <Property Id="ARPNOREPAIR" Value="1" />
     <Icon Id="LinkNoteIcon" SourceFile="$(var.IconPath)" />
+
+    <!-- ===== Finish dialog: "Launch LinkNote" checkbox =====
+         WixUI_Minimal's ExitDialog already contains an OptionalCheckBox control bound
+         to WIXUI_EXITDIALOGOPTIONALCHECKBOX; it is shown when
+         WIXUI_EXITDIALOGOPTIONALCHECKBOXTEXT is set. The Finish button then fires the
+         LaunchLinkNote custom action (below) via the Publish element in <UI>. -->
+    <Property Id="WIXUI_EXITDIALOGOPTIONALCHECKBOXTEXT" Value="Launch LinkNote" />
+    <Property Id="WIXUI_EXITDIALOGOPTIONALCHECKBOX" Value="1" />
+
+    <!-- Test/automation hook: `msiexec /i LinkNote-Setup.msi /qn LAUNCHLINKNOTE=1`
+         runs the exact same launch action in the execute sequence, so the launch path
+         can be verified without clicking through the UI. Never set by default. -->
+    <Property Id="LAUNCHLINKNOTE" Value="0" />
+
+    <!-- Type 34 (Directory + ExeCommand) launches the installed exe. asyncNoWait so a
+         launch failure can never fail or block the installation. -->
+    <CustomAction
+        Id="LaunchLinkNote"
+        Directory="INSTALLDIR"
+        ExeCommand="&quot;[INSTALLDIR]LinkNote.exe&quot;"
+        Execute="immediate"
+        Impersonate="yes"
+        Return="asyncNoWait" />
+
+    <!-- Automated test hook (never set by the wizard): running
+         `msiexec /i LinkNote-Setup-msi /qb LAUNCHLINKNOTE=1` executes the same
+         LaunchLinkNote action from the *UI* sequence, i.e. in the user's own
+         context (the normal Finish/DoAction path). -->
+    <InstallUISequence>
+      <Custom Action="LaunchLinkNote" After="ExecuteAction">LAUNCHLINKNOTE = 1</Custom>
+    </InstallUISequence>
 
     <Directory Id="TARGETDIR" Name="SourceDir">
       <Directory Id="LocalAppDataFolder">
@@ -66,6 +109,10 @@
         <RegistryValue Root="HKCU" Key="Software\LinkNote" Name="Shortcuts" Type="integer" Value="1" KeyPath="yes" />
       </Component>
 
+      <!-- Autostart: same HKCU Run value name/command as the in-app toggle
+           (linknote_desktop/services/autostart.py), so the two stay idempotent.
+           Requires the per-user install context set above; otherwise the write
+           happens in the msiexec service user's hive. -->
       <Component Id="Autostart" Guid="{C2D3E4F5-1A2B-4C3D-9E4F-5A6B7C8D9E0F}">
         <RegistryValue Root="HKCU"
                        Key="Software\Microsoft\Windows\CurrentVersion\Run"
@@ -83,10 +130,17 @@
       <ComponentRef Id="Autostart" />
     </Feature>
 
-    <UIRef Id="WixUI_Minimal" />
+    <UI>
+      <UIRef Id="WixUI_Minimal" />
+      <!-- Finish -> launch the app when the optional checkbox is checked.
+           NOT Installed => only on first install, not on repair/uninstall.
+           WiX 3 Publish takes its condition as element text (not an attribute). -->
+      <Publish Dialog="ExitDialog"
+               Control="Finish"
+               Event="DoAction"
+               Value="LaunchLinkNote">WIXUI_EXITDIALOGOPTIONALCHECKBOX = 1 and NOT Installed</Publish>
+    </UI>
     <WixVariable Id="WixUILicenseRtf" Value="$(var.LicenseRtf)" />
   </Product>
 </Wix>
-
-
 

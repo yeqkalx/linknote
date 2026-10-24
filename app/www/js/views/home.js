@@ -1,10 +1,13 @@
 /**
  * 链记 LinkNote — 收件箱
- * 提交链接（断网入本地队列）、最近任务列表、电脑在线状态、分享内容预填。
+ *
+ * 实时架构（docs/realtime-protocol.md）：
+ * - 任务状态/电脑在线状态由 WebSocket 推送，页面不再 3s/15s 轮询。
+ * - 首次进入 / 重连成功后只做一次 REST 快照兜底，避免白屏。
+ * - 提交任务仍走 REST（POST /tasks），之后等待 WS 的 task_updated。
  */
 import { api, isNetworkError } from '../api.js';
 import {
-  INBOX_REFRESH_MS,
   LIST_LIMIT,
   MAX_SHARE_TEXT,
   PLATFORM_META,
@@ -12,6 +15,14 @@ import {
   STATUS_META,
   SUPPORTED_PLATFORMS_TEXT,
 } from '../config.js';
+import {
+  describeRealtime,
+  getRealtimeSnapshot,
+  isLegacyMode,
+  onRealtime,
+  probeRealtime,
+  startRealtime,
+} from '../realtime.js';
 import { navigate } from '../router.js';
 import {
   auth,
@@ -48,8 +59,6 @@ import {
   retryQueued,
 } from '../queue.js';
 
-const TERMINAL = new Set(['succeeded', 'failed']);
-
 function taskItemHtml(task) {
   const statusMeta = STATUS_META[task.status] || STATUS_META.queued;
   const platform = PLATFORM_META[task.platform];
@@ -82,6 +91,19 @@ function taskItemHtml(task) {
       ${progressHtml}
       ${task.error_message ? `<p class="task-error">${escapeHtml(truncate(task.error_message, 140))}</p>` : ''}
     </a>`;
+}
+
+/** 顶部胶囊：实时在线状态（连接中/重连中/在线/离线） */
+function pillInfo(state) {
+  const rt = getRealtimeSnapshot();
+  if (rt.mode === 'legacy') {
+    // 旧 Relay 无实时连接：退回 REST 快照里的 agent.online。
+    const online = state.agent && typeof state.agent.online === 'boolean' ? state.agent.online : null;
+    if (online === true) return { label: '电脑在线', tone: 'online', detail: '兼容模式：按需刷新电脑状态' };
+    if (online === false) return { label: '电脑离线', tone: 'offline', detail: '兼容模式：按需刷新电脑状态' };
+    return { label: '兼容模式', tone: 'legacy', detail: '当前 Relay 不支持实时推送' };
+  }
+  return describeRealtime(rt);
 }
 
 export async function homeView(container, ctx) {
@@ -122,7 +144,7 @@ export async function homeView(container, ctx) {
           </span>
         </div>
         <div class="appbar-actions">
-          <span id="agent-pill" class="status-pill" data-state="unknown">
+          <span id="agent-pill" class="status-pill" data-state="unknown" aria-live="polite">
             <span class="status-dot" aria-hidden="true"></span>连接中
           </span>
           <button type="button" class="icon-btn" id="open-settings" aria-label="打开设置">
@@ -187,7 +209,7 @@ export async function homeView(container, ctx) {
           <button type="button" class="btn btn-ghost btn-block" id="load-more" hidden>加载更多</button>
         </section>
 
-        <p class="home-footnote">笔记生成在你自己电脑上的 BiliNote 完成，云端只中转链接、状态和 Markdown。</p>
+        <p class="home-footnote">笔记生成在你自己电脑上的 BiliNote 完成；状态与笔记正文通过加密连接实时推送到这台手机。</p>
       </main>
     </section>`;
 
@@ -217,17 +239,38 @@ export async function homeView(container, ctx) {
   /* ------------------------------------------------------------------ */
 
   function renderPill() {
-    const online = Boolean(state.agent && state.agent.online);
-    elements.agentPill.setAttribute('data-state', online ? 'online' : 'offline');
-    elements.agentPill.innerHTML = `<span class="status-dot" aria-hidden="true"></span>${online ? '电脑在线' : '电脑离线'}`;
-    elements.agentPill.title = state.agent && state.agent.name ? state.agent.name : '我的电脑';
+    const info = pillInfo(state);
+    const tone = info.tone === 'legacy' ? 'offline' : info.tone;
+    elements.agentPill.setAttribute('data-state', tone);
+    elements.agentPill.innerHTML = `<span class="status-dot" aria-hidden="true"></span>${escapeHtml(info.label)}`;
+    elements.agentPill.title = info.detail ? `${info.label} · ${info.detail}` : info.label;
+  }
+
+  function currentPresenceOnline() {
+    const rt = getRealtimeSnapshot();
+    if (typeof rt.presence.online === 'boolean') return rt.presence.online;
+    return state.agent ? state.agent.online === true : null;
   }
 
   function renderAgentCard() {
     const agent = state.agent;
-    const online = Boolean(agent && agent.online);
+    const rt = getRealtimeSnapshot();
+    const rtDown = rt.mode !== 'legacy' && (rt.state === 'connecting' || rt.state === 'reconnecting');
+    const online = currentPresenceOnline();
     const name = (agent && agent.name) || '我的电脑';
-    const lastSeen = agent && agent.last_seen_at ? formatRelativeTime(agent.last_seen_at) : '';
+    const lastSeenValue =
+      rt.presence.lastSeen || (agent && agent.last_seen_at ? agent.last_seen_at : null);
+    const lastSeen = lastSeenValue ? formatRelativeTime(lastSeenValue) : '';
+
+    let subText;
+    if (rtDown) subText = rt.state === 'connecting' ? '正在连接电脑…' : '实时连接中断，正在自动重连…';
+    else if (online === true) subText = '在线，随时可以接收任务';
+    else if (lastSeen) subText = `最近在线：${lastSeen}`;
+    else subText = '还没有连接过';
+
+    const pillHtml = rtDown
+      ? `<span class="status-pill" data-state="${rt.state}"><span class="status-dot" aria-hidden="true"></span>${rt.state === 'connecting' ? '连接中' : '重连中'}</span>`
+      : agentPill({ online: online === true });
 
     if (state.meError && !agent) {
       elements.agentCard.innerHTML = `
@@ -242,17 +285,19 @@ export async function homeView(container, ctx) {
     } else {
       elements.agentCard.innerHTML = `
         <div class="agent-row">
-          <span class="agent-icon ${online ? 'is-online' : ''}" aria-hidden="true">${icon(online ? 'cloud' : 'cloud-off', { size: 20 })}</span>
+          <span class="agent-icon ${online && !rtDown ? 'is-online' : ''}" aria-hidden="true">${icon(online && !rtDown ? 'cloud' : 'cloud-off', { size: 20 })}</span>
           <div class="agent-info">
             <p class="agent-name">${escapeHtml(name)}</p>
-            <p class="agent-sub">${online ? '在线，随时可以接收任务' : lastSeen ? `最近在线：${escapeHtml(lastSeen)}` : '还没有连接过'}</p>
+            <p class="agent-sub">${escapeHtml(subText)}</p>
           </div>
-          ${agentPill({ online })}
+          ${pillHtml}
         </div>
         ${
-          online
+          online && !rtDown
             ? ''
-            : '<p class="agent-hint">电脑离线时任务会留在队列里，Agent 上线后自动开始生成。你可以在设置里查看配对状态。</p>'
+            : rtDown
+              ? '<p class="agent-hint">实时连接中断，正在自动重连；任务会继续在电脑上处理，状态恢复后自动同步。</p>'
+              : '<p class="agent-hint">电脑离线时任务会留在队列里，Agent 上线后自动开始生成。你可以在设置里查看配对状态。</p>'
         }`;
     }
     renderPill();
@@ -261,18 +306,22 @@ export async function homeView(container, ctx) {
   }
 
   function renderOffline() {
-    const offline = state.offline && typeof navigator !== 'undefined' && navigator.onLine !== false;
     const noNetwork = typeof navigator !== 'undefined' && navigator.onLine === false;
-    if (!noNetwork && !offline) {
+    const rt = getRealtimeSnapshot();
+    const reconnecting =
+      rt.mode !== 'legacy' && (rt.state === 'connecting' || rt.state === 'reconnecting');
+    const restDown = state.offline;
+    if (!noNetwork && !reconnecting && !restDown) {
       elements.offlineBanner.hidden = true;
       return;
     }
     elements.offlineBanner.hidden = false;
-    elements.offlineBanner.innerHTML = `${icon('wifi-off', { size: 16 })}<span>${
-      noNetwork
-        ? '当前没有网络，显示的是本地缓存；新任务会先存到本地，联网后自动发送。'
-        : '连不上 Relay，显示的是本地缓存；新任务会先存到本地，恢复连接后自动发送。'
-    }</span>`;
+    const text = noNetwork
+      ? '当前没有网络，显示的是本地缓存；新任务会先存到本地，联网后自动发送。'
+      : reconnecting
+        ? '实时连接中断，正在自动重连；显示的是本地缓存，恢复后自动同步。'
+        : '连不上 Relay，显示的是本地缓存；新任务会先存到本地，恢复连接后自动发送。';
+    elements.offlineBanner.innerHTML = `${icon('wifi-off', { size: 16 })}<span>${text}</span>`;
   }
 
   function renderPending() {
@@ -358,13 +407,16 @@ export async function homeView(container, ctx) {
   }
 
   function renderCacheNote() {
-    if (state.offline && state.fetchedAt) {
-      elements.cacheNote.textContent = `离线缓存 · ${formatRelativeTime(new Date(state.fetchedAt).toISOString())}`;
+    const rt = getRealtimeSnapshot();
+    const staled =
+      state.offline ||
+      (typeof navigator !== 'undefined' && navigator.onLine === false) ||
+      (rt.mode !== 'legacy' && (rt.state === 'connecting' || rt.state === 'reconnecting'));
+    if (staled && state.fetchedAt) {
+      elements.cacheNote.textContent = `缓存 · ${formatRelativeTime(new Date(state.fetchedAt).toISOString())}`;
       elements.cacheNote.hidden = false;
-    } else if (!state.offline && state.fetchedAt) {
-      elements.cacheNote.textContent = '';
-      elements.cacheNote.hidden = true;
     } else {
+      elements.cacheNote.textContent = '';
       elements.cacheNote.hidden = true;
     }
   }
@@ -500,9 +552,9 @@ export async function homeView(container, ctx) {
         }
         elements.urlInput.value = '';
         updateUrlPreview();
-        toast('已发送，等待电脑领取任务');
+        // 不轮询：创建响应先展示 queued，后续进度由 WS task_updated 推送。
+        toast('已发送，等待电脑处理');
         if (task) highlightTask(task.id);
-        void loadTasks({ silent: true });
       } catch (error) {
         if (error && error.code === 'aborted') return;
         if (error && error.code === 'unauthorized') return;
@@ -529,7 +581,7 @@ export async function homeView(container, ctx) {
   );
 
   /* ------------------------------------------------------------------ */
-  /* 数据加载                                                            */
+  /* REST 快照（首屏 / 重连后 / 手动刷新；不是轮询）                      */
   /* ------------------------------------------------------------------ */
 
   async function loadMe() {
@@ -601,6 +653,73 @@ export async function homeView(container, ctx) {
   }
 
   /* ------------------------------------------------------------------ */
+  /* WebSocket 实时更新                                                  */
+  /* ------------------------------------------------------------------ */
+
+  async function applyRealtimeTask(update) {
+    if (!update || typeof update.id !== 'string' || !update.id) return;
+    const known = state.tasks.some((item) => item.id === update.id) || taskCache.find(state.base, update.id);
+    taskCache.upsert(state.base, update);
+    if (!known) {
+      // 未知任务：用一次 REST 详情补全 url/platform/created_at（不是轮询）。
+      try {
+        const data = await api.getTask(update.id, { base: state.base, signal, timeout: 10000 });
+        if (data && data.task) taskCache.upsert(state.base, data.task);
+      } catch (error) {
+        // 快照失败就先用 WS 给的字段展示
+      }
+    }
+    state.tasks = taskCache.read(state.base).items;
+    renderTasks();
+    if (update.status === 'succeeded') {
+      toast('笔记已生成，点开任务查看', { type: 'success' });
+    } else if (update.status === 'failed') {
+      toast(`任务失败：${update.error_message || '打开任务查看原因'}`, { type: 'error' });
+    }
+  }
+
+  async function snapshotAfterReconnect() {
+    // 重连成功 / 首次 hello 后做一次 REST 快照兜底，然后继续走 WS。
+    await Promise.allSettled([loadMe(), loadTasks({ silent: true })]);
+  }
+
+  const unsubRealtimeEvents = [
+    onRealtime('state', () => {
+      renderPill();
+      renderAgentCard();
+      renderOffline();
+      renderCacheNote();
+    }),
+    onRealtime('presence', ({ online, lastSeen }) => {
+      const knownAgent = state.agent || { name: '我的电脑' };
+      state.agent = {
+        ...knownAgent,
+        online: Boolean(online),
+        last_seen_at: lastSeen || knownAgent.last_seen_at || null,
+      };
+      renderPill();
+      renderAgentCard();
+    }),
+    onRealtime('hello', () => {
+      void snapshotAfterReconnect();
+    }),
+    onRealtime('legacy', () => {
+      renderPill();
+      renderAgentCard();
+      renderOffline();
+      renderCacheNote();
+      // 旧 Relay：只用一次 REST 快照，不轮询。
+      void Promise.allSettled([loadMe(), loadTasks({ silent: true })]);
+    }),
+    onRealtime('task_updated', ({ task }) => {
+      void applyRealtimeTask(task);
+    }),
+    onRealtime('ticket-rejected', () => {
+      toast('实时连接暂时不可用，正在自动重试', { type: 'error' });
+    }),
+  ];
+
+  /* ------------------------------------------------------------------ */
   /* 事件绑定                                                            */
   /* ------------------------------------------------------------------ */
 
@@ -609,8 +728,8 @@ export async function homeView(container, ctx) {
   elements.refreshButton.addEventListener(
     'click',
     () => {
-      void loadMe();
-      void loadTasks();
+      probeRealtime();
+      void Promise.allSettled([loadMe(), loadTasks()]);
     },
     { signal },
   );
@@ -650,8 +769,8 @@ export async function homeView(container, ctx) {
     state.offline = false;
     renderOffline();
     renderPending();
-    void loadMe();
-    void loadTasks({ silent: true });
+    // WS 会自动重连并在 hello 后做快照；旧 Relay 兼容模式下补一次快照。
+    if (isLegacyMode()) void loadTasks({ silent: true });
   };
   const onOffline = () => {
     state.offline = true;
@@ -660,20 +779,6 @@ export async function homeView(container, ctx) {
   };
   window.addEventListener('online', onOnline, { signal });
   window.addEventListener('offline', onOffline, { signal });
-
-  const onVisibility = () => {
-    if (document.visibilityState === 'visible') {
-      void loadMe();
-      void loadTasks({ silent: true });
-    }
-  };
-  document.addEventListener('visibilitychange', onVisibility, { signal });
-
-  const refreshTimer = setInterval(() => {
-    if (document.visibilityState !== 'visible') return;
-    void loadMe();
-    void loadTasks({ silent: true });
-  }, INBOX_REFRESH_MS);
 
   const unsubscribers = [
     onQueueEvent('change', () => {
@@ -687,20 +792,18 @@ export async function homeView(container, ctx) {
         highlightTask(task.id);
       }
       toast('本地队列里的任务已发出', { type: 'success' });
-      void loadTasks({ silent: true });
     }),
     onQueueEvent('failed', ({ error, permanent }) => {
       if (permanent) toast(`发送失败：${error && error.message ? error.message : '请检查链接'}`, { type: 'error' });
       renderPending();
     }),
     onQueueEvent('auth-error', () => {
-      // 全局 401 处理器会负责跳转，这里只需刷新队列展示。
       renderPending();
     }),
   ];
 
   /* ------------------------------------------------------------------ */
-  /* 首次渲染与初始加载                                                   */
+  /* 首次渲染与初始快照                                                   */
   /* ------------------------------------------------------------------ */
 
   renderAll();
@@ -708,11 +811,21 @@ export async function homeView(container, ctx) {
   updateUrlPreview();
   if (!state.tasks.length) renderTasks();
 
+  // 确保实时连接已建立（app.js 启动时可能早于配对完成）。
+  startRealtime();
+
+  // 首屏只做一次 REST 快照；此后由 WS 推送更新。
   void Promise.allSettled([loadMe(), loadTasks()]);
 
   return () => {
-    clearInterval(refreshTimer);
     unsubscribers.forEach((unsub) => {
+      try {
+        unsub();
+      } catch (error) {
+        // 忽略
+      }
+    });
+    unsubRealtimeEvents.forEach((unsub) => {
       try {
         unsub();
       } catch (error) {

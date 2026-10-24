@@ -166,3 +166,39 @@ def test_file_is_utf8_without_bom(isolated_home):
     assert "中文名字" in raw.decode("utf-8")
     if os.name != "nt":  # POSIX 上应该收紧到 0600
         assert (os.stat(path).st_mode & 0o777) == 0o600
+
+# ================================================================ WebSocket 配置（task-8）
+
+
+def test_ws_defaults(isolated_home):
+    cfg = AgentConfig.load()
+    assert cfg.use_websocket is True
+    assert cfg.ws_url == ""
+    assert cfg.ws_ping_interval_seconds == 25.0
+    assert cfg.ws_dead_timeout_seconds == 60.0
+    assert cfg.ws_reconnect_delays == [1.0, 2.0, 4.0, 8.0, 15.0, 30.0]
+    assert cfg.ws_jitter_ratio == 0.2
+    assert cfg.rest_fallback is True
+    assert cfg.note_retention_days == 7.0
+
+
+def test_ws_reconnect_delays_coercion(isolated_home):
+    path = default_config_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({"ws_reconnect_delays": "1,2,4,8"}), encoding="utf-8")
+    cfg = AgentConfig.load()
+    assert cfg.ws_reconnect_delays == [1.0, 2.0, 4.0, 8.0]
+
+    path.write_text(json.dumps({"ws_reconnect_delays": [2, 4, 8]}), encoding="utf-8")
+    cfg = AgentConfig.load()
+    assert cfg.ws_reconnect_delays == [2.0, 4.0, 8.0]
+
+
+def test_ws_env_overrides(isolated_home, monkeypatch):
+    monkeypatch.setenv("LINKNOTE_WS_RECONNECT_DELAYS", "3,6")
+    monkeypatch.setenv("LINKNOTE_USE_WEBSOCKET", "0")
+    monkeypatch.setenv("LINKNOTE_WS_PING_INTERVAL_SECONDS", "15")
+    cfg = AgentConfig.load()
+    assert cfg.ws_reconnect_delays == [3.0, 6.0]
+    assert cfg.use_websocket is False
+    assert cfg.ws_ping_interval_seconds == 15.0

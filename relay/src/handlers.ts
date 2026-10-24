@@ -23,18 +23,22 @@ import {
   randomToken,
 } from './lib/crypto';
 import { requireAgent, requireDevice } from './lib/auth';
+import { getAgentPresence, notifyAgentRoom } from './lib/realtime';
 import { TASK_SUMMARY_COLUMNS, toAgentPublic, toDevicePublic, toTaskSummary } from './lib/rows';
+import { issueTicket, ticketTtlMs } from './lib/ticket';
 import { normalizeVideoUrl } from './lib/url';
 import type {
+  AgentPresence,
+  AgentPublic,
   AgentRow,
-  DeviceRow,
+  AgentPushTask,
   DevicePublic,
   Env,
   PairingRow,
   TaskSummary,
 } from './types';
 
-export const RELAY_VERSION = '0.1.0';
+export const RELAY_VERSION = '0.2.0';
 
 const AGENT_PLATFORMS = ['windows', 'macos', 'linux'] as const;
 const DEVICE_PLATFORMS = ['android', 'ios', 'web'] as const;
@@ -130,11 +134,74 @@ function taskNotFound(): never {
   throw new ApiError(404, 'task_not_found', '任务不存在');
 }
 
+/** Agent 在线状态以 DO 实时 socket 为准；DO 不可用/从未用过实时通道时退回 D1 last_seen。 */
+async function presenceOf(env: Env, agent: AgentRow): Promise<AgentPresence> {
+  return getAgentPresence(env, agent.id, agent.last_seen_at);
+}
+
+async function agentPublicWithPresence(env: Env, agent: AgentRow): Promise<AgentPublic> {
+  const presence = await presenceOf(env, agent);
+  return {
+    ...toAgentPublic(agent),
+    online: presence.online,
+    last_seen_at: presence.last_seen_at,
+  };
+}
+
+function toAgentPushTask(task: TaskSummary): AgentPushTask {
+  return {
+    id: task.id,
+    url: task.url,
+    platform: task.platform,
+    status: task.status,
+    stage: task.stage,
+    progress: task.progress,
+    title: task.title,
+    created_at: task.created_at,
+  };
+}
+
+async function taskSummaryById(env: Env, agentId: string, taskId: string): Promise<TaskSummary | null> {
+  const row = await env.DB.prepare(
+    `SELECT ${TASK_SUMMARY_COLUMNS} FROM tasks WHERE id = ? AND agent_id = ? LIMIT 1`,
+  )
+    .bind(taskId, agentId)
+    .first<Record<string, unknown>>();
+  return row ? toTaskSummary(row) : null;
+}
+
+/** 新建任务后推给 Agent（WS 在线才会收到；离线时 D1 queued 会在重连 hello 后补发）。 */
+async function notifyTaskCreated(env: Env, agentId: string, task: TaskSummary): Promise<void> {
+  await notifyAgentRoom(env, agentId, { type: 'task_created', task: toAgentPushTask(task) });
+}
+
+/** REST 改任务元数据后把最新快照推给手机（老 REST 轮询 Agent 也能让新 PWA 实时看到进度）。 */
+async function notifyTaskSnapshot(env: Env, agentId: string, taskId: string): Promise<void> {
+  const snapshot = await taskSummaryById(env, agentId, taskId);
+  if (!snapshot) return;
+  await notifyAgentRoom(env, agentId, { type: 'task_snapshot', task: snapshot });
+}
+
+export async function createRealtimeTicket(req: Request, env: Env): Promise<Response> {
+  const { device, agent } = await requireDevice(req, env);
+  if (!env.TICKET_SECRET) throw new ApiError(500, 'internal', '实时通道未配置，请联系管理员');
+  const ttl = ticketTtlMs(env);
+  const { ticket, expiresAt } = await issueTicket(env.TICKET_SECRET, agent.id, device.id, ttl);
+  const presence = await presenceOf(env, agent);
+  return ok({
+    ticket,
+    expires_at: new Date(expiresAt).toISOString(),
+    agent_id: agent.id,
+    agent_online: presence.online,
+    server_time: isoNow(),
+  });
+}
+
 // ---------------------------------------------------------------- health
 
 export async function health(env: Env): Promise<Response> {
   await env.DB.prepare('SELECT 1').first();
-  return ok({ status: 'ok', version: RELAY_VERSION, time: isoNow() });
+  return ok({ status: 'ok', version: RELAY_VERSION, realtime: true, time: isoNow() });
 }
 
 // ---------------------------------------------------------------- pairing
@@ -291,7 +358,7 @@ export async function agentMe(req: Request, env: Env): Promise<Response> {
   }
 
   return ok({
-    agent: toAgentPublic(agent),
+    agent: await agentPublicWithPresence(env, agent),
     devices: (devices.results || []).map((d) =>
       toDevicePublic({
         id: d.id as string,
@@ -343,6 +410,7 @@ export async function deleteAgentDevice(req: Request, env: Env, deviceId: string
     .bind(isoNow(), deviceId, agent.id)
     .run();
   await failTasksForDevice(env, deviceId);
+  await notifyAgentRoom(env, agent.id, { type: 'device_revoked', device_id: deviceId });
   return ok({});
 }
 
@@ -350,6 +418,7 @@ export async function deleteAgentDevice(req: Request, env: Env, deviceId: string
 
 export async function me(req: Request, env: Env): Promise<Response> {
   const { device, agent } = await requireDevice(req, env);
+  const presence = await presenceOf(env, agent);
   return ok({
     device: {
       id: device.id,
@@ -361,8 +430,8 @@ export async function me(req: Request, env: Env): Promise<Response> {
     agent: {
       id: agent.id,
       name: agent.name,
-      online: toAgentPublic(agent).online,
-      last_seen_at: agent.last_seen_at,
+      online: presence.online,
+      last_seen_at: presence.last_seen_at,
     },
     server_time: isoNow(),
   });
@@ -390,6 +459,7 @@ export async function deleteMe(req: Request, env: Env): Promise<Response> {
     .bind(isoNow(), device.id)
     .run();
   await failTasksForDevice(env, device.id);
+  await notifyAgentRoom(env, device.agent_id, { type: 'device_revoked', device_id: device.id });
   return ok({});
 }
 
@@ -444,7 +514,9 @@ export async function createTask(req: Request, env: Env): Promise<Response> {
   const row = await env.DB.prepare(`SELECT ${TASK_SUMMARY_COLUMNS} FROM tasks WHERE id = ?`)
     .bind(id)
     .first<Record<string, unknown>>();
-  return ok({ task: toTaskSummary(row || {}) }, 201);
+  const summary = toTaskSummary(row || {});
+  await notifyTaskCreated(env, device.agent_id, summary);
+  return ok({ task: summary }, 201);
 }
 
 export async function listTasks(req: Request, env: Env): Promise<Response> {
@@ -487,31 +559,24 @@ export async function getTask(req: Request, env: Env, taskId: string): Promise<R
   const { device, agent } = await requireDevice(req, env);
   const row = await getOwnedTask(env, device.id, taskId);
   if (!row) return taskNotFound();
+  const presence = await presenceOf(env, agent);
   return ok({
     task: toTaskSummary(row),
-    agent: { id: agent.id, name: agent.name, online: toAgentPublic(agent).online },
+    agent: { id: agent.id, name: agent.name, online: presence.online },
   });
 }
 
 export async function getNote(req: Request, env: Env, taskId: string): Promise<Response> {
   const { device } = await requireDevice(req, env);
-  const row = await env.DB.prepare(
-    `SELECT id, status, title, markdown, completed_at FROM tasks
-      WHERE id = ? AND device_id = ? LIMIT 1`,
-  )
+  const row = await env.DB.prepare('SELECT id FROM tasks WHERE id = ? AND device_id = ? LIMIT 1')
     .bind(taskId, device.id)
-    .first<{ id: string; status: string; title: string | null; markdown: string | null; completed_at: string | null }>();
-
+    .first<{ id: string }>();
   if (!row) return taskNotFound();
-  if (row.status !== 'succeeded' || !row.markdown) {
-    throw new ApiError(409, 'invalid_state', '笔记还没生成完成');
-  }
-  return ok({
-    task_id: row.id,
-    title: row.title || '未命名笔记',
-    markdown: row.markdown,
-    completed_at: row.completed_at,
-  });
+  throw new ApiError(
+    410,
+    'note_not_stored',
+    '笔记正文不再保存在服务器，请通过实时通道获取（手机端会把笔记缓存在本地）',
+  );
 }
 
 export async function retryTask(req: Request, env: Env, taskId: string): Promise<Response> {
@@ -538,7 +603,9 @@ export async function retryTask(req: Request, env: Env, taskId: string): Promise
   const created = await env.DB.prepare(`SELECT ${TASK_SUMMARY_COLUMNS} FROM tasks WHERE id = ?`)
     .bind(newId)
     .first<Record<string, unknown>>();
-  return ok({ task: toTaskSummary(created || {}) }, 201);
+  const summary = toTaskSummary(created || {});
+  await notifyTaskCreated(env, device.agent_id, summary);
+  return ok({ task: summary }, 201);
 }
 
 export async function archiveTask(req: Request, env: Env, taskId: string): Promise<Response> {
@@ -611,6 +678,7 @@ export async function nextTask(req: Request, env: Env): Promise<Response> {
   )
     .bind(candidate.id)
     .first();
+  await notifyTaskSnapshot(env, agent.id, candidate.id);
   return ok({ task });
 }
 
@@ -660,17 +728,22 @@ export async function progressTask(req: Request, env: Env, taskId: string): Prom
       .bind(stage, progress, message, now, isoAfter(leaseSeconds(env)), taskId, agent.id)
       .run();
   }
+  await notifyTaskSnapshot(env, agent.id, taskId);
   return ok({ task_id: taskId, updated_at: now });
 }
 
 export async function completeTask(req: Request, env: Env, taskId: string): Promise<Response> {
   const agent = await requireAgent(req, env);
   const body = await readJson(req);
-  const markdown = typeof body.markdown === 'string' ? body.markdown : '';
-  if (!markdown.trim()) throw new ApiError(400, 'bad_request', 'markdown 不能为空');
-  // 1.5 MiB；与 PC Agent 的本地预校验保持一致。D1 单行上限 2MB，仍有余量。
-  if (bytesOf(markdown) > 1_572_864) {
-    throw new ApiError(413, 'markdown_too_large', '笔记超过 1.5 MiB，无法保存');
+  const rawMarkdown = typeof body.markdown === 'string' ? body.markdown : '';
+  // 实时架构：正文不写 D1；REST 的 markdown 只做「在线手机 best-effort 转发」兼容，
+  // 正式链路是 Agent 通过 WS task_note（本地 outbox 支持 note_request 补发）。
+  let markdown: string | null = null;
+  if (rawMarkdown.trim()) {
+    if (bytesOf(rawMarkdown) > 1_572_864) {
+      throw new ApiError(413, 'markdown_too_large', '笔记超过 1.5 MiB，无法转发');
+    }
+    markdown = rawMarkdown;
   }
 
   const rawTitle = optString(body.title, 200) || '';
@@ -691,7 +764,7 @@ export async function completeTask(req: Request, env: Env, taskId: string): Prom
   }
 
   const task = await requireAgentTask(env, agent.id, taskId);
-  if (task.status === 'succeeded') return ok({ task_id: taskId });
+  if (task.status === 'succeeded') return ok({ task_id: taskId, note_forwarded: false });
   if (task.status === 'failed') throw new ApiError(409, 'invalid_state', '任务已经失败');
   if (task.status !== 'running') throw new ApiError(409, 'invalid_state', '任务还没有被领取');
 
@@ -699,14 +772,25 @@ export async function completeTask(req: Request, env: Env, taskId: string): Prom
   await env.DB.prepare(
     `UPDATE tasks
         SET status = 'succeeded', stage = 'done', progress = 100, message = '已完成',
-            title = ?, markdown = ?, duration_seconds = ?, meta = ?,
+            title = ?, duration_seconds = ?, meta = ?,
             error_code = NULL, error_message = NULL,
             lease_expires_at = NULL, completed_at = ?, updated_at = ?
       WHERE id = ? AND agent_id = ? AND status = 'running'`,
   )
-    .bind(title, markdown, duration, meta, now, now, taskId, agent.id)
+    .bind(title, duration, meta, now, now, taskId, agent.id)
     .run();
-  return ok({ task_id: taskId, completed_at: now });
+
+  await notifyTaskSnapshot(env, agent.id, taskId);
+  let noteForwarded = false;
+  if (markdown) {
+    noteForwarded = await notifyAgentRoom(env, agent.id, {
+      type: 'note_forward',
+      task_id: taskId,
+      markdown,
+      title,
+    });
+  }
+  return ok({ task_id: taskId, completed_at: now, note_forwarded: noteForwarded });
 }
 
 export async function failTask(req: Request, env: Env, taskId: string): Promise<Response> {
@@ -728,6 +812,7 @@ export async function failTask(req: Request, env: Env, taskId: string): Promise<
   )
     .bind(code, message, now, now, taskId, agent.id)
     .run();
+  await notifyTaskSnapshot(env, agent.id, taskId);
   return ok({ task_id: taskId, completed_at: now });
 }
 

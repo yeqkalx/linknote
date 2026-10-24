@@ -21,11 +21,30 @@ database_name = "linknote-db"
 database_id = "e1ec0b6c-acd7-4248-9cd5-d9e18e5f9ba8"
 migrations_dir = "migrations"
 
+# 实时通道：每个 agent 一个 Durable Object（SQLite 后端 + WebSocket Hibernation）。
+# 空闲连接不计时长，alarm 只在有 socket 时每 30s 唤醒一次。
+[durable_objects]
+bindings = [{ name = "AGENT_ROOM", class_name = "AgentRoom" }]
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["AgentRoom"]
+
 [vars]
 PUBLIC_BASE_URL = "https://relay.xykong.xyz"
-ALLOWED_ORIGINS = "http://localhost:5173,http://127.0.0.1:8787,http://localhost:8787,https://relay.xykong.xyz,capacitor://localhost,https://localhost"
+ALLOWED_ORIGINS = "http://localhost:5173,http://127.0.0.1:8787,http://127.0.0.1:8798,http://localhost:8798,http://localhost:8787,https://relay.xykong.xyz,capacitor://localhost,https://localhost"
 PAIRING_TTL_SECONDS = "600"
 TASK_LEASE_SECONDS = "1800"
+TICKET_TTL_SECONDS = "60"
+
+# 以下值为测试/本地联调用的可选覆盖；默认值已满足 docs/realtime-protocol.md：
+# WS_ALARM_SECONDS = "30"
+# WS_AGENT_STALE_SECONDS = "60"
+# WS_PHONE_STALE_SECONDS = "90"
+#
+# INTERNAL_SECRET / TICKET_SECRET 是机密，不写进本文件：
+# - 本地：`npm run dev`（脚本里带 dev 值）或 relay/.dev.vars
+# - 生产：`npx wrangler secret put INTERNAL_SECRET` / `npx wrangler secret put TICKET_SECRET`
 
 [observability]
 enabled = true

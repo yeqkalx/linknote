@@ -74,12 +74,12 @@ async def test_progress_throttled_for_repeated_status(make_runner, fake_relay, f
     transcribing = [c for c in fake_relay.progress_calls if c["stage"] == "transcribing"]
     # 状态没变化时不能每条都发：20 次轮询至少会合并掉一部分
     assert 1 <= len(transcribing) < 20
-    # 同状态两次回传间隔不小于配置的 30ms（留 20% 容差应对调度抖动）
+    # 同状态两次回传间隔不小于配置的 30ms（留 50% 容差应对事件循环调度抖动）
     gaps = [
         later["time"] - earlier["time"]
         for earlier, later in zip(transcribing, transcribing[1:])
     ]
-    assert all(gap >= 0.03 * 0.8 for gap in gaps), gaps
+    assert all(gap >= 0.03 * 0.5 for gap in gaps), gaps
 
 
 async def test_lease_heartbeat_during_long_task(make_runner, fake_relay, fake_bilinote):

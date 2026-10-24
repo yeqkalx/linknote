@@ -25,6 +25,7 @@ Notes
   The launcher imports ``linknote_desktop.__main__`` as a package module instead.
 """
 
+import os
 import sys
 from pathlib import Path
 
@@ -36,6 +37,12 @@ AGENT_SRC = ROOT_DIR / "pc-agent"                      # linknote_agent package 
 RESOURCES = DESKTOP_DIR / "linknote_desktop" / "resources"
 ENTRY = DESKTOP_DIR / "packaging" / "linknote_launcher.py"
 APP_MAIN = DESKTOP_DIR / "linknote_desktop" / "__main__.py"
+# build-desktop.ps1 generates a Windows version resource for the current $Version
+# (read from desktop\pyproject.toml) and passes it via LINKNOTE_VERSION_FILE.
+VERSION_FILE = Path(
+    os.environ.get("LINKNOTE_VERSION_FILE")
+    or (DESKTOP_DIR / "packaging" / "version_info.txt")
+)
 
 for extra_path in (str(DESKTOP_DIR), str(AGENT_SRC)):
     if extra_path not in sys.path:
@@ -50,6 +57,8 @@ if not RESOURCES.is_dir():
 
 hiddenimports = []
 hiddenimports += collect_submodules("linknote_agent")
+# linknote_agent lazily imports websockets in its WS client; make sure it is frozen.
+hiddenimports += collect_submodules("websockets")
 # qrcode imports its image backends lazily; the UI draws pairing QR codes.
 hiddenimports += [
     "qrcode",
@@ -96,7 +105,7 @@ exe = EXE(
     codesign_identity=None,
     entitlements_file=None,
     icon=str(RESOURCES / "icon.ico"),
-    version=str(DESKTOP_DIR / "packaging" / "version_info.txt"),
+    version=str(VERSION_FILE),
 )
 
 coll = COLLECT(
@@ -108,3 +117,4 @@ coll = COLLECT(
     upx_exclude=[],
     name="LinkNote",
 )
+

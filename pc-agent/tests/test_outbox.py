@@ -131,3 +131,85 @@ async def test_save_note_locally(tmp_path):
     path = box.save_note_locally("task-x", "# 内容")
     assert path is not None
     assert path.read_text(encoding="utf-8") == "# 内容"
+
+# ================================================================ WS 笔记（task-8）
+
+async def test_add_note_saves_outbox_and_notes_file(tmp_path):
+    box = _outbox(tmp_path)
+    entry = box.add_note("task-note-1", "标题", "# 正文", duration_seconds=12)
+    assert entry.kind == "note"
+    assert entry.payload["markdown"] == "# 正文"
+    assert entry.payload["title"] == "标题"
+    assert entry.payload["duration_seconds"] == 12
+    assert (tmp_path / "notes" / "task-note-1.md").read_text(encoding="utf-8") == "# 正文"
+
+    reopened = _outbox(tmp_path)
+    notes = reopened.pending_notes()
+    assert len(notes) == 1
+    assert notes[0].task_id == "task-note-1"
+    assert reopened.has_note("task-note-1") is True
+
+
+async def test_ack_note_removes_outbox_entry_keeps_notes_file(tmp_path):
+    box = _outbox(tmp_path)
+    box.add_note("task-note-1", "标题", "# 正文")
+    assert box.ack_note("task-note-1") is True
+    assert box.pending_notes() == []
+    assert (tmp_path / "notes" / "task-note-1.md").exists()
+    # 重复 ack 幂等
+    assert box.ack_note("task-note-1") is False
+
+
+async def test_note_for_falls_back_to_notes_file_after_ack(tmp_path):
+    box = _outbox(tmp_path)
+    box.add_note("task-note-1", "标题", "# 正文")
+    box.ack_note("task-note-1")
+    found = box.note_for("task-note-1")
+    assert found is not None
+    assert found[1] == "# 正文"
+    assert box.note_for("missing-task") is None
+
+
+async def test_prune_notes_removes_expired_entry_keeps_file(tmp_path):
+    from datetime import datetime, timedelta, timezone
+
+    from linknote_agent._jsonio import atomic_write_json
+
+    box = _outbox(tmp_path)
+    box.add_note("task-old", "旧", "# 旧笔记")
+    box.add_note("task-new", "新", "# 新笔记")
+    entry = [e for e in box.pending_notes() if e.task_id == "task-old"][0]
+    entry.created_at = (
+        datetime.now(timezone.utc) - timedelta(days=10)
+    ).isoformat(timespec="seconds").replace("+00:00", "Z")
+    atomic_write_json(entry.path, entry.to_json())
+
+    removed = box.prune_notes(7 * 86400)
+    assert removed == 1
+    remaining = {e.task_id for e in box.pending_notes()}
+    assert remaining == {"task-new"}
+    assert (tmp_path / "notes" / "task-old.md").exists()
+
+
+async def test_flush_ignores_note_entries(relay_client, fake_relay, tmp_path):
+    task = fake_relay.add_task()
+    box = _outbox(tmp_path)
+    box.add_note(task["id"], "标题", "# 正文")
+    stats = await box.flush(relay_client)
+    assert stats.total == 0
+    assert fake_relay.complete_calls == []
+    assert len(box.pending_notes()) == 1
+
+
+async def test_migrate_legacy_complete_entries(tmp_path):
+    box = _outbox(tmp_path)
+    box.add_complete("legacy-1", "旧标题", "# 旧正文", duration_seconds=9)
+    assert [e.kind for e in box.entries()] == ["complete"]
+
+    migrated = box.migrate_legacy_complete_entries()
+    assert migrated == 1
+    assert [e.kind for e in box.entries()] == ["note"]
+    note = box.pending_notes()[0]
+    assert note.task_id == "legacy-1"
+    assert note.payload["markdown"] == "# 旧正文"
+    assert (tmp_path / "notes" / "legacy-1.md").exists()

@@ -6,7 +6,7 @@
 export const APP_NAME = '链记';
 export const APP_NAME_EN = 'LinkNote';
 export const APP_TAGLINE = '手机发链接，电脑做笔记';
-export const APP_VERSION = '0.2.0';
+export const APP_VERSION = '0.3.0';
 
 /** 接口前缀（docs/api-contract.md 约定：所有路径以 /api/v1 开头） */
 export const API_PREFIX = '/api/v1';
@@ -17,11 +17,17 @@ export const NATIVE_DEFAULT_RELAY = 'https://relay.xykong.xyz';
 /** localStorage 命名空间 */
 export const STORAGE_PREFIX = 'linknote.';
 
-/** 时长/轮询参数 */
-export const POLL_INTERVAL_MS = 3000;
-export const INBOX_REFRESH_MS = 15000;
+/** 离线队列 / 列表分页 */
 export const QUEUE_RETRY_MS = 15000;
 export const LIST_LIMIT = 20;
+
+/** 实时连接参数（docs/realtime-protocol.md §3 / §5） */
+export const REALTIME_HEARTBEAT_MS = 25000;
+export const REALTIME_SILENCE_MS = 70000;
+export const REALTIME_BACKOFF_MS = [1000, 2000, 4000, 8000, 15000];
+export const REALTIME_TICKET_TIMEOUT_MS = 12000;
+export const REALTIME_NOTE_TIMEOUT_MS = 12000;
+export const REALTIME_LEGACY_PROBE_MS = 60000;
 
 /** 契约限制 */
 export const MAX_URL_LENGTH = 2048;

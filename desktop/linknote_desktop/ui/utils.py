@@ -355,3 +355,31 @@ def open_path(path: Any) -> bool:
         return bool(QDesktopServices.openUrl(QUrl.fromLocalFile(str(target))))
     except (OSError, ValueError):
         return False
+
+
+def open_file(path: Any) -> bool:
+    """用系统默认程序打开一个文件（笔记 Markdown 等）。"""
+    if not path:
+        return False
+    try:
+        target = Path(str(path))
+        if not target.is_file():
+            return False
+        return bool(QDesktopServices.openUrl(QUrl.fromLocalFile(str(target))))
+    except (OSError, ValueError):
+        return False
+
+
+def format_duration(seconds: Any) -> str:
+    """秒 → 「1 分 20 秒」式中文耗时。"""
+    try:
+        total = int(max(0.0, float(seconds)))
+    except (TypeError, ValueError):
+        return "—"
+    if total < 60:
+        return f"{total} 秒"
+    minutes, sec = divmod(total, 60)
+    if minutes < 60:
+        return f"{minutes} 分 {sec} 秒"
+    hours, minutes = divmod(minutes, 60)
+    return f"{hours} 小时 {minutes} 分"

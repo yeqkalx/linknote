@@ -13,7 +13,7 @@
 | PWA 离线壳 + SW | ✅ | 断网重载仍显示配对页 |
 | 真实 YouTube 任务 | ✅ | 19 秒视频 12 秒生成，`Me at the zoo`，403 字 |
 | 真实 B 站任务 | ✅ | 3:32 视频约 57 秒生成，`【官方 MV】Never Gonna Give You Up - Rick Astley`，779 字 |
-| Android debug APK | ✅ 构建 / ⚠️ 未真机 | 4,701,573 字节，包名、label、SEND intent-filter、allowBackup=false、品牌图标已校验 |
+| Android debug APK | ✅ 构建 / ⚠️ 未真机 | 4,687,552 字节，包名、label、SEND intent-filter、allowBackup=false、品牌图标已校验 |
 
 ## 2. 真实链路细节
 
@@ -65,11 +65,11 @@
 
 ## 3.2 Android APK
 
-最终 APK 构建于 2026-10-24 15:07:42：
+最终 APK 构建于 2026-10-24 16:32:04：
 
 - 路径：`release/LinkNote-debug.apk`
-- 大小：4,701,573 字节（4.34 MiB）
-- SHA256：`2FFAC8785F5DE5D28E5E3DB284347F710C97AE5393EC86FF90B2221B599FE012`
+- 大小：4,687,552 字节（4.47 MiB）
+- SHA256：`C3C3229DDC46CA18BADC86AA1F15AB960A38BFC4F344222AA85619E7CF6F2D06`
 - launcher / adaptive 图标已替换为 LinkNote 品牌图标（15 个 PNG 与 `assets/android-icons` 逐字节一致；adaptive background `#1C1A18`）
 - `app/www` 30 个文件与 APK `assets/public` 逐字节一致；另有 Capacitor 生成的 0 字节 `cordova.js/cordova_plugins.js`
 - aapt2：`xyz.xykong.linknote`、versionCode 1、minSdk 24、targetSdk 36、label 链记、launchable MainActivity、INTERNET
@@ -82,7 +82,7 @@
 - **Android APK 未真机验证**：本机没有 adb 设备/模拟器；已静态校验 package/label/intent-filter/assets、apksigner 签名。最终 APK 在 `release/LinkNote-debug.apk`。
 - **无推送**：App 不在前台时不会收到完成通知；回到前台自动刷新。
 - **限流**：配对创建/领取尚未做 IP 限流；公网开放前应补（见 `docs/security.md`）。
-- **笔记明文**：Relay 能看到 Markdown；E2E 加密为后续项。
+- **笔记明文**：Relay 在转发瞬间能看到 Markdown，但正文不落 D1/DO；E2E 加密为后续项。
 - **B 站网络**：见 §2.3。
 - **真机分享**：Android ACTION_SEND 代码与契约已对齐，但没有设备可验证实际分享面板行为。
 
@@ -110,3 +110,11 @@ node scripts\ui-smoke.mjs
 ```
 
 
+
+## 6. Realtime（Durable Objects + WebSocket Hibernation，2026-10-24）
+
+- Relay：`npm --prefix relay test` → 46/46 PASS（REST + agent/phone WS、ticket、presence、task_updated、task_note、ack_note、note_request、多租户隔离、正文不落 D1/DO 的文件 marker 扫描）。
+- PC Agent：`pytest` → 206 passed（旧 161 + 新增 WS/重连/outbox/ack 45）；生产 relay 实测 Agent WS 101 + hello、手机建任务 1.3s 收到 note、ack 清 outbox、`/note` 410、手机离线重发、close 4001。
+- PWA：生产域 `https://relay.xykong.xyz` 真实链路 16/16 PASS（ticket→WS、presence、task_updated、note 本地缓存、ack、无轮询、断线重连）；mock WS 33/33 + 兜底 9/9 + 官方 UI smoke 10/10。
+- Relay 生产版本：`b37623dd-7284-4c12-8757-6ce61a4bbc14`；remote D1 migration 0002 已 apply；`tasks.markdown` 非空计数 0；E2E 测试 agent 已清理，保留真实 `我的电脑`。
+- 桌面端：0.2.2 MSI 安装版真实启动 → Agent WS hello + 持续 ping/pong；57 项 UI smoke / 8 项 pytest。

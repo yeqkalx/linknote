@@ -333,8 +333,147 @@ export const taskCache = {
 };
 
 /* ------------------------------------------------------------------ */
-/* 笔记缓存（离线阅读）                                                */
+/* 笔记缓存（IndexedDB 优先，localStorage 兜底）                        */
+/*                                                                    */
+/* 实时架构下 Markdown 不再写 Relay/D1：手机收到 WS note 后只存本地，   */
+/* 阅读器永远读本地缓存。IndexedDB 负责 1.5MB 级正文；不可用时退回      */
+/* localStorage，保证旧环境/隐私模式也能离线阅读。                      */
 /* ------------------------------------------------------------------ */
+
+const NOTE_DB_NAME = 'linknote-notes';
+const NOTE_DB_VERSION = 1;
+const NOTE_STORE = 'notes';
+let noteDbPromise = null;
+
+function noteDbKey(base, taskId) {
+  return `${base}::${taskId}`;
+}
+
+function openNoteDb() {
+  if (noteDbPromise) return noteDbPromise;
+  noteDbPromise = new Promise((resolve) => {
+    try {
+      if (typeof window === 'undefined' || !window.indexedDB) {
+        resolve(null);
+        return;
+      }
+      const request = window.indexedDB.open(NOTE_DB_NAME, NOTE_DB_VERSION);
+      request.onupgradeneeded = () => {
+        const db = request.result;
+        if (!db.objectStoreNames.contains(NOTE_STORE)) {
+          const store = db.createObjectStore(NOTE_STORE, { keyPath: 'key' });
+          store.createIndex('base', 'base', { unique: false });
+          store.createIndex('cachedAt', 'cachedAt', { unique: false });
+        }
+      };
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => resolve(null);
+      request.onblocked = () => resolve(null);
+    } catch (error) {
+      resolve(null);
+    }
+  });
+  return noteDbPromise;
+}
+
+function idbResult(request) {
+  return new Promise((resolve, reject) => {
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => reject(request.error);
+  });
+}
+
+async function idbGetNote(base, taskId) {
+  const db = await openNoteDb();
+  if (!db) return null;
+  try {
+    const tx = db.transaction(NOTE_STORE, 'readonly');
+    return (await idbResult(tx.objectStore(NOTE_STORE).get(noteDbKey(base, taskId)))) || null;
+  } catch (error) {
+    return null;
+  }
+}
+
+async function idbPutNote(entry) {
+  const db = await openNoteDb();
+  if (!db) return false;
+  try {
+    const tx = db.transaction(NOTE_STORE, 'readwrite');
+    tx.objectStore(NOTE_STORE).put(entry);
+    await new Promise((resolve, reject) => {
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error);
+      tx.onabort = () => reject(tx.error);
+    });
+    return true;
+  } catch (error) {
+    return false;
+  }
+}
+
+async function idbDeleteKeys(keys) {
+  if (!keys.length) return;
+  const db = await openNoteDb();
+  if (!db) return;
+  try {
+    const tx = db.transaction(NOTE_STORE, 'readwrite');
+    const store = tx.objectStore(NOTE_STORE);
+    keys.forEach((key) => store.delete(key));
+    await new Promise((resolve, reject) => {
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error);
+    });
+  } catch (error) {
+    // 忽略
+  }
+}
+
+async function idbDeleteNote(base, taskId) {
+  await idbDeleteKeys([noteDbKey(base, taskId)]);
+}
+
+async function idbListNotes(base) {
+  const db = await openNoteDb();
+  if (!db) return [];
+  try {
+    const tx = db.transaction(NOTE_STORE, 'readonly');
+    return (await idbResult(tx.objectStore(NOTE_STORE).index('base').getAll(base))) || [];
+  } catch (error) {
+    return [];
+  }
+}
+
+async function idbClearBaseNotes(base) {
+  const db = await openNoteDb();
+  if (!db) return;
+  try {
+    const tx = db.transaction(NOTE_STORE, 'readonly');
+    const keys = await idbResult(tx.objectStore(NOTE_STORE).index('base').getAllKeys(base));
+    await idbDeleteKeys(keys || []);
+  } catch (error) {
+    // 忽略
+  }
+}
+
+/** 按数量与字符预算淘汰最旧的笔记（IndexedDB 侧） */
+async function pruneNoteDb(base) {
+  const entries = (await idbListNotes(base)).sort(
+    (a, b) => (Number(b && b.cachedAt) || 0) - (Number(a && a.cachedAt) || 0),
+  );
+  let total = 0;
+  const drop = [];
+  entries.forEach((entry, index) => {
+    const length = entry && typeof entry.markdown === 'string' ? entry.markdown.length : 0;
+    if (index >= MAX_CACHED_NOTES || total + length > NOTE_CACHE_BUDGET) {
+      if (entry && entry.key) drop.push(entry.key);
+      return;
+    }
+    total += length;
+  });
+  await idbDeleteKeys(drop);
+}
+
+/* ---- localStorage 兜底（旧版本缓存也在这里，读取时会迁移） ---- */
 
 function readNoteMap(base) {
   if (!base) return {};
@@ -342,16 +481,15 @@ function readNoteMap(base) {
   return value && typeof value === 'object' && !Array.isArray(value) ? value : {};
 }
 
-export function readNoteCache(base, taskId) {
+function readLegacyNote(base, taskId) {
   if (!base || !taskId) return null;
   const entry = readNoteMap(base)[taskId];
   if (!entry || typeof entry.markdown !== 'string') return null;
   return entry;
 }
 
-export function writeNoteCache(base, taskId, note) {
+function writeLegacyNote(base, taskId, note) {
   if (!base || !taskId || !note || typeof note.markdown !== 'string') return false;
-  // 单篇超过总预算就不缓存；仍然可以正常在线阅读。
   if (note.markdown.length > NOTE_CACHE_BUDGET) return false;
 
   const map = readNoteMap(base);
@@ -378,33 +516,96 @@ export function writeNoteCache(base, taskId, note) {
   return writeJson(bucketKeys.notes(base), kept);
 }
 
-export function removeNoteCache(base, taskId) {
-  if (!base || !taskId) return;
+function removeLegacyNote(base, taskId) {
   const map = readNoteMap(base);
   if (!(taskId in map)) return;
   delete map[taskId];
   writeJson(bucketKeys.notes(base), map);
 }
 
-export function noteCacheStats(base) {
-  const map = readNoteMap(base);
-  const ids = Object.keys(map);
-  let chars = 0;
-  for (const id of ids) {
-    const markdown = map[id] && map[id].markdown;
-    chars += typeof markdown === 'string' ? markdown.length : 0;
-  }
-  return { count: ids.length, chars };
-}
-
-export function clearNoteCache(base) {
-  if (!base) return;
+function clearLegacyNotes(base) {
   removeRaw(bucketKeys.notes(base));
 }
 
+/** 读取本地笔记（IndexedDB → 迁移 localStorage 旧缓存） */
+export async function getNoteCache(base, taskId) {
+  if (!base || !taskId) return null;
+  const entry = await idbGetNote(base, taskId);
+  if (entry && typeof entry.markdown === 'string') return entry;
+
+  const legacy = readLegacyNote(base, taskId);
+  if (!legacy) return null;
+  const migrated = await idbPutNote({
+    key: noteDbKey(base, taskId),
+    base,
+    taskId,
+    title: legacy.title || '',
+    markdown: legacy.markdown,
+    completed_at: legacy.completed_at || null,
+    cachedAt: Number(legacy.cachedAt) || Date.now(),
+  });
+  if (migrated) removeLegacyNote(base, taskId);
+  return legacy;
+}
+
+/** 写入本地笔记（IndexedDB 优先，失败退回 localStorage） */
+export async function putNoteCache(base, taskId, note) {
+  if (!base || !taskId || !note || typeof note.markdown !== 'string') return false;
+  if (note.markdown.length > NOTE_CACHE_BUDGET) return false;
+
+  const entry = {
+    key: noteDbKey(base, taskId),
+    base,
+    taskId,
+    title: typeof note.title === 'string' ? note.title : '',
+    markdown: note.markdown,
+    completed_at: note.completed_at || null,
+    cachedAt: Date.now(),
+  };
+  if (await idbPutNote(entry)) {
+    await pruneNoteDb(base);
+    return true;
+  }
+  return writeLegacyNote(base, taskId, note);
+}
+
+export async function removeNoteCache(base, taskId) {
+  if (!base || !taskId) return;
+  await idbDeleteNote(base, taskId);
+  removeLegacyNote(base, taskId);
+}
+
+export async function noteCacheStats(base) {
+  if (!base) return { count: 0, chars: 0 };
+  const lengths = new Map();
+  const entries = await idbListNotes(base);
+  entries.forEach((entry) => {
+    if (entry && typeof entry.taskId === 'string' && typeof entry.markdown === 'string') {
+      lengths.set(entry.taskId, entry.markdown.length);
+    }
+  });
+  const legacy = readNoteMap(base);
+  Object.entries(legacy).forEach(([taskId, entry]) => {
+    if (!lengths.has(taskId) && entry && typeof entry.markdown === 'string') {
+      lengths.set(taskId, entry.markdown.length);
+    }
+  });
+  let chars = 0;
+  lengths.forEach((length) => {
+    chars += length;
+  });
+  return { count: lengths.size, chars };
+}
+
+export async function clearNoteCache(base) {
+  if (!base) return;
+  await idbClearBaseNotes(base);
+  clearLegacyNotes(base);
+}
+
 export const noteCache = {
-  read: readNoteCache,
-  write: writeNoteCache,
+  get: getNoteCache,
+  put: putNoteCache,
   remove: removeNoteCache,
   stats: noteCacheStats,
   clear: clearNoteCache,
@@ -557,9 +758,9 @@ export const uiPrefs = { get: readUiPrefs, update: updateUiPrefs };
 /* 缓存概览 / 清理                                                     */
 /* ------------------------------------------------------------------ */
 
-export function cacheSummary(base) {
+export async function cacheSummary(base) {
   const tasks = readTaskCache(base);
-  const notes = noteCacheStats(base);
+  const notes = await noteCacheStats(base);
   return {
     taskCount: tasks.items.length,
     noteCount: notes.count,
@@ -569,7 +770,7 @@ export function cacheSummary(base) {
 }
 
 /** 只清任务与笔记缓存；配对信息、设置、待发送队列不受影响。 */
-export function clearCaches(base) {
+export async function clearCaches(base) {
   clearTaskCache(base);
-  clearNoteCache(base);
+  await clearNoteCache(base);
 }

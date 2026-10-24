@@ -1,8 +1,12 @@
-/** LinkNote Relay Worker 入口：CORS + /api/v1 路由 + PWA 静态文件回退。 */
+/** LinkNote Relay Worker 入口：CORS + /api/v1 路由 + WebSocket 鉴权转发 + PWA 静态文件回退。 */
 
 import { ApiError, fail } from './lib/http';
+import { requireAgent } from './lib/auth';
+import { verifyTicket } from './lib/ticket';
 import * as h from './handlers';
-import type { Env } from './types';
+import type { AgentRow, Env } from './types';
+
+export { AgentRoom } from './room';
 
 const API = '/api/v1';
 
@@ -20,7 +24,7 @@ function resolveCors(request: Request, env: Env): CorsInfo {
   const wildcard = entries.includes('*');
   const base: Record<string, string> = {
     'access-control-allow-methods': 'GET, POST, PATCH, DELETE, OPTIONS',
-    'access-control-allow-headers': 'Authorization, Content-Type',
+    'access-control-allow-headers': 'Authorization, Content-Type, Upgrade, Sec-WebSocket-Protocol',
     'access-control-max-age': '86400',
   };
 
@@ -52,6 +56,10 @@ function decodePart(part: string): string {
   }
 }
 
+function isWebSocketUpgrade(request: Request): boolean {
+  return (request.headers.get('upgrade') || '').toLowerCase() === 'websocket';
+}
+
 async function routeApi(request: Request, env: Env): Promise<Response> {
   const url = new URL(request.url);
   const path = url.pathname;
@@ -68,6 +76,15 @@ async function routeApi(request: Request, env: Env): Promise<Response> {
   const raw = path.slice(API.length + 1);
   const seg = raw.split('/').filter(Boolean).map(decodePart);
   const method = request.method;
+
+  // /realtime/ticket：手机用 device token 换短时 WS ticket
+  if (seg[0] === 'realtime') {
+    if (seg.length === 2 && seg[1] === 'ticket') {
+      if (method === 'POST') return h.createRealtimeTicket(request, env);
+      return fail('method_not_allowed', '请求方法不支持', 405);
+    }
+    throw new ApiError(404, 'not_found', '接口不存在');
+  }
 
   // /pairings...
   if (seg[0] === 'pairings') {
@@ -156,6 +173,80 @@ async function routeApi(request: Request, env: Env): Promise<Response> {
   throw new ApiError(404, 'not_found', '接口不存在');
 }
 
+// ---------------------------------------------------------------- websocket
+
+const ROOM_ROLES = { agent: 'agent', phone: 'phone' } as const;
+
+/** 鉴权通过后把 WS 升级请求转发到该 agent 的 Durable Object；roles/agent_id 只由凭证推导。 */
+async function forwardToRoom(
+  request: Request,
+  env: Env,
+  agentId: string,
+  role: (typeof ROOM_ROLES)[keyof typeof ROOM_ROLES],
+  deviceId: string | null,
+): Promise<Response> {
+  const stub = env.AGENT_ROOM.get(env.AGENT_ROOM.idFromName(agentId));
+  const headers = new Headers(request.headers);
+  headers.set('x-internal-secret', env.INTERNAL_SECRET || '');
+  headers.set('x-agent-id', agentId);
+  headers.set('x-role', role);
+  if (deviceId) headers.set('x-device-id', deviceId);
+  else headers.delete('x-device-id');
+  return stub.fetch(new Request(request.url, { method: request.method, headers }));
+}
+
+async function handleAgentWebSocket(request: Request, env: Env): Promise<Response> {
+  if (!env.INTERNAL_SECRET) {
+    return fail('internal', '实时通道未配置，请联系管理员', 500);
+  }
+  let agent: AgentRow;
+  try {
+    agent = await requireAgent(request, env);
+  } catch (error) {
+    if (error instanceof ApiError) return fail(error.code, error.message, error.status);
+    throw error;
+  }
+  return forwardToRoom(request, env, agent.id, ROOM_ROLES.agent, null);
+}
+
+async function handlePhoneWebSocket(request: Request, env: Env, url: URL): Promise<Response> {
+  if (!env.TICKET_SECRET || !env.INTERNAL_SECRET) {
+    return fail('internal', '实时通道未配置，请联系管理员', 500);
+  }
+  const ticket = (url.searchParams.get('ticket') || '').trim();
+  const verified = await verifyTicket(env.TICKET_SECRET, ticket);
+  if (!verified) {
+    // 浏览器 WebSocket 拿不到握手状态码（onclose=1006），客户端应重新取 ticket 再试。
+    return fail('ticket_invalid', '连接凭证无效或已过期，请重新获取', 401);
+  }
+  return forwardToRoom(request, env, verified.agentId, ROOM_ROLES.phone, verified.deviceId);
+}
+
+function isWebSocketPath(pathname: string): boolean {
+  return pathname === `${API}/agent/ws` || pathname === `${API}/ws`;
+}
+
+function websocketErrorResponse(error: unknown): Response {
+  if (error instanceof ApiError) return fail(error.code, error.message, error.status);
+  console.error('relay websocket error', error);
+  return fail('internal', '服务器开小差了，请稍后再试', 500);
+}
+
+async function routeWebSocket(request: Request, env: Env, url: URL): Promise<Response> {
+  const cors = resolveCors(request, env);
+  if (!cors.allowed) return fail('origin_not_allowed', '不允许的请求来源', 403);
+  if (request.method !== 'GET') return fail('method_not_allowed', '请求方法不支持', 405);
+  if (!isWebSocketUpgrade(request)) {
+    return fail('upgrade_required', '需要 WebSocket 升级请求', 426);
+  }
+  try {
+    if (url.pathname === `${API}/agent/ws`) return await handleAgentWebSocket(request, env);
+    return await handlePhoneWebSocket(request, env, url);
+  } catch (error) {
+    return websocketErrorResponse(error);
+  }
+}
+
 async function serveStatic(request: Request, url: URL, env: Env): Promise<Response> {
   if (request.method !== 'GET' && request.method !== 'HEAD') {
     return fail('not_found', '接口不存在', 404);
@@ -176,6 +267,10 @@ export default {
 
     if (!url.pathname.startsWith('/api/')) {
       return serveStatic(request, url, env);
+    }
+
+    if (isWebSocketPath(url.pathname)) {
+      return routeWebSocket(request, env, url);
     }
 
     const cors = resolveCors(request, env);

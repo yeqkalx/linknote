@@ -10,29 +10,38 @@
     53118 B  assets/native-bridge.js
         0 B  assets/public/cordova.js
         0 B  assets/public/cordova_plugins.js
-      853 B  assets/public/icons/apple-touch-icon.png
-      206 B  assets/public/icons/favicon-16.png
-      292 B  assets/public/icons/favicon-32.png
-      463 B  assets/public/icons/favicon.svg
-     1234 B  assets/public/icons/icon-192.png
-     3590 B  assets/public/icons/icon-512.png
-      922 B  assets/public/icons/icon-maskable-192.png
-     2773 B  assets/public/icons/icon-maskable-512.png
-     9331 B  assets/public/js/api.js
-     7212 B  assets/public/js/app.js
+    43952 B  assets/public/css/app.css
+    28216 B  assets/public/icons/apple-touch-icon.png
+      545 B  assets/public/icons/favicon-16.png
+     1468 B  assets/public/icons/favicon-32.png
+     6858 B  assets/public/icons/favicon.svg
+    32006 B  assets/public/icons/icon-192.png
+    91047 B  assets/public/icons/icon-512.png
+    22015 B  assets/public/icons/icon-maskable-192.png
+    80506 B  assets/public/icons/icon-maskable-512.png
+     3769 B  assets/public/index.html
+     9719 B  assets/public/js/api.js
+     7406 B  assets/public/js/app.js
      3938 B  assets/public/js/bridge.js
-     3431 B  assets/public/js/config.js
+     3728 B  assets/public/js/config.js
      2319 B  assets/public/js/markdown.js
      3434 B  assets/public/js/pwa.js
      6455 B  assets/public/js/queue.js
+    16597 B  assets/public/js/realtime.js
      6902 B  assets/public/js/router.js
-    17303 B  assets/public/js/store.js
+    23439 B  assets/public/js/store.js
     11516 B  assets/public/js/ui.js
-     1327 B  assets/public/manifest.webmanifest
-     2737 B  assets/public/share.html
-     5674 B  assets/public/sw.js
+    15861 B  assets/public/js/util.js
+    31163 B  assets/public/js/views/home.js
+    15625 B  assets/public/js/views/pair.js
+    22921 B  assets/public/js/views/settings.js
+    31032 B  assets/public/js/views/task.js
+     1329 B  assets/public/manifest.webmanifest
+     2445 B  assets/public/share.html
+     5696 B  assets/public/sw.js
     47076 B  assets/public/vendor/marked.esm.js
     85820 B  assets/public/vendor/purify.es.mjs
+     6540 B  AndroidManifest.xml
       364 B  res/anim-v21/fragment_fast_out_extra_slow_in.xml
       388 B  res/anim/abc_fade_in.xml
       388 B  res/anim/abc_fade_out.xml
@@ -395,8 +404,24 @@
       464 B  res/layout/support_simple_spinner_dropdown_item.xml
       448 B  res/mipmap-anydpi-v26/ic_launcher.xml
       448 B  res/mipmap-anydpi-v26/ic_launcher_round.xml
+     6095 B  res/mipmap-hdpi-v4/ic_launcher.png
+    11570 B  res/mipmap-hdpi-v4/ic_launcher_foreground.png
+     6095 B  res/mipmap-hdpi-v4/ic_launcher_round.png
+     2969 B  res/mipmap-mdpi-v4/ic_launcher.png
+     6067 B  res/mipmap-mdpi-v4/ic_launcher_foreground.png
+     2969 B  res/mipmap-mdpi-v4/ic_launcher_round.png
+     9795 B  res/mipmap-xhdpi-v4/ic_launcher.png
+    19014 B  res/mipmap-xhdpi-v4/ic_launcher_foreground.png
+     9795 B  res/mipmap-xhdpi-v4/ic_launcher_round.png
+    19924 B  res/mipmap-xxhdpi-v4/ic_launcher.png
+    35995 B  res/mipmap-xxhdpi-v4/ic_launcher_foreground.png
+    19924 B  res/mipmap-xxhdpi-v4/ic_launcher_round.png
+    32006 B  res/mipmap-xxxhdpi-v4/ic_launcher.png
+    53826 B  res/mipmap-xxxhdpi-v4/ic_launcher_foreground.png
+    32006 B  res/mipmap-xxxhdpi-v4/ic_launcher_round.png
       464 B  res/xml/config.xml
       532 B  res/xml/file_paths.xml
+   290328 B  resources.arsc
      1738 B  DebugProbesKt.bin
         7 B  META-INF/androidx.activity_activity.version
         6 B  META-INF/androidx.annotation_annotation-experimental.version
@@ -444,27 +469,3 @@
      2426 B  kotlin/reflect/reflect.kotlin_builtins
      2109 B  org/apache/cordova/allowlist/index.html
      1683 B  org/apache/cordova/allowlist/index2.html
-    40126 B  assets/public/css/app.css
-     4054 B  assets/public/index.html
-    15861 B  assets/public/js/util.js
-    26161 B  assets/public/js/views/home.js
-    15028 B  assets/public/js/views/pair.js
-    20554 B  assets/public/js/views/settings.js
-    22091 B  assets/public/js/views/task.js
-     6540 B  AndroidManifest.xml
-      578 B  res/mipmap-hdpi-v4/ic_launcher.png
-      729 B  res/mipmap-hdpi-v4/ic_launcher_foreground.png
-      578 B  res/mipmap-hdpi-v4/ic_launcher_round.png
-      446 B  res/mipmap-mdpi-v4/ic_launcher.png
-      547 B  res/mipmap-mdpi-v4/ic_launcher_foreground.png
-      446 B  res/mipmap-mdpi-v4/ic_launcher_round.png
-      709 B  res/mipmap-xhdpi-v4/ic_launcher.png
-      902 B  res/mipmap-xhdpi-v4/ic_launcher_foreground.png
-      709 B  res/mipmap-xhdpi-v4/ic_launcher_round.png
-      970 B  res/mipmap-xxhdpi-v4/ic_launcher.png
-     1395 B  res/mipmap-xxhdpi-v4/ic_launcher_foreground.png
-      970 B  res/mipmap-xxhdpi-v4/ic_launcher_round.png
-     1246 B  res/mipmap-xxxhdpi-v4/ic_launcher.png
-     1977 B  res/mipmap-xxxhdpi-v4/ic_launcher_foreground.png
-     1246 B  res/mipmap-xxxhdpi-v4/ic_launcher_round.png
-   290328 B  resources.arsc

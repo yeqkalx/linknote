@@ -12,6 +12,15 @@ import {
   isNativeApp,
   promptInstall,
 } from '../pwa.js';
+import {
+  describeRealtime,
+  getRealtimeSnapshot,
+  onRealtime,
+  probeRealtime,
+  restartRealtime,
+  startRealtime,
+  stopRealtime,
+} from '../realtime.js';
 import { navigate } from '../router.js';
 import {
   auth,
@@ -111,6 +120,7 @@ export async function settingsView(container, ctx) {
           <div class="kv"><span class="kv-key">版本</span><span class="kv-value">${escapeHtml(APP_VERSION)}</span></div>
           <div class="kv"><span class="kv-key">当前服务器</span><span class="kv-value mono" id="effective-base">${escapeHtml(base)}</span></div>
           <div class="kv"><span class="kv-key">离线访问</span><span class="kv-value" id="sw-state">检查中…</span></div>
+          <div class="kv"><span class="kv-key">实时连接</span><span class="kv-value" id="rt-state">检查中…</span></div>
           <div class="kv"><span class="kv-key">网络</span><span class="kv-value" id="network-state">${navigator.onLine ? '在线' : '离线'}</span></div>
           <div class="install-area" id="install-area"></div>
           <div class="settings-divider"></div>
@@ -143,6 +153,7 @@ export async function settingsView(container, ctx) {
   const relayStatus = container.querySelector('#relay-status');
   const effectiveBase = container.querySelector('#effective-base');
   const swState = container.querySelector('#sw-state');
+  const rtState = container.querySelector('#rt-state');
   const networkState = container.querySelector('#network-state');
   const installArea = container.querySelector('#install-area');
   const cacheSummaryEl = container.querySelector('#cache-summary');
@@ -154,7 +165,8 @@ export async function settingsView(container, ctx) {
   /* ------------------------------------------------------------------ */
 
   function renderPairing() {
-    const online = Boolean(agent && agent.online);
+    const presence = getRealtimeSnapshot().presence.online;
+    const online = typeof presence === 'boolean' ? presence : Boolean(agent && agent.online);
     const deviceName = (device && device.name) || settings.getDeviceName();
     const platform = (device && device.platform) || devicePlatform();
     const pairedAt = device && device.paired_at ? formatDateTime(device.paired_at) : '';
@@ -195,6 +207,13 @@ export async function settingsView(container, ctx) {
       <div class="kv"><span class="kv-key">设备系统</span><span class="kv-value">${escapeHtml(platformLabel(platform))}</span></div>
       ${pairedAt ? `<div class="kv"><span class="kv-key">配对时间</span><span class="kv-value">${escapeHtml(pairedAt)}</span></div>` : ''}
       <div class="kv"><span class="kv-key">设备 ID</span><span class="kv-value mono">${escapeHtml(deviceId)}</span></div>`;
+  }
+
+  /** 实时事件到来时，避免打断用户正在编辑的设备名 */
+  function refreshPairingLive() {
+    const active = document.activeElement;
+    if (active && pairingBody.contains(active)) return;
+    renderPairing();
   }
 
   async function loadMe() {
@@ -268,7 +287,14 @@ export async function settingsView(container, ctx) {
     { signal },
   );
 
-  refreshMeButton.addEventListener('click', () => void loadMe(), { signal });
+  refreshMeButton.addEventListener(
+    'click',
+    () => {
+      probeRealtime();
+      void loadMe();
+    },
+    { signal },
+  );
 
   /* ------------------------------------------------------------------ */
   /* 解除配对                                                            */
@@ -298,6 +324,7 @@ export async function settingsView(container, ctx) {
         }
       }
       auth.clear(base);
+      stopRealtime();
       toast('已解除配对');
       navigate('/pair', { replace: true });
     },
@@ -377,9 +404,11 @@ export async function settingsView(container, ctx) {
       }
       if (nextBase && auth.has(nextBase)) {
         toast('已切换服务器', { type: 'success' });
+        restartRealtime();
         navigate('/home', { replace: true });
         return;
       }
+      stopRealtime();
       toast('地址已保存，请重新配对', { type: 'success' });
       navigate('/pair', { replace: true });
     },
@@ -389,11 +418,24 @@ export async function settingsView(container, ctx) {
   relayResetButton.addEventListener(
     'click',
     () => {
-      settings.resetApiBase();
+      const previousBase = settings.getApiBase();
+      const nextBase = settings.resetApiBase();
       relayInput.value = '';
       refreshBaseDisplay();
       relayStatus.hidden = true;
-      toast('已恢复默认地址');
+      if (nextBase === previousBase) {
+        toast('已恢复默认地址');
+        return;
+      }
+      if (nextBase && auth.has(nextBase)) {
+        toast('已恢复默认地址', { type: 'success' });
+        restartRealtime();
+        navigate('/home', { replace: true });
+        return;
+      }
+      stopRealtime();
+      toast('已恢复默认地址，请重新配对');
+      navigate('/pair', { replace: true });
     },
     { signal },
   );
@@ -443,8 +485,24 @@ export async function settingsView(container, ctx) {
     else swState.textContent = '不可用（需要 HTTPS 或 localhost）';
   }
 
-  function renderCacheSummary() {
-    const summary = cacheSummary(base) || { taskCount: 0, noteCount: 0, noteChars: 0 };
+  /** 实时连接状态：已连接 / 重连中 / 兼容模式 / 未连接 */
+  function renderRealtimeInfo() {
+    const snapshot = getRealtimeSnapshot();
+    const info = describeRealtime(snapshot);
+    let label = info.label;
+    if (snapshot.mode !== 'legacy' && snapshot.state === 'open') {
+      label = snapshot.presence.online === false ? '已连接 · 电脑离线' : '已连接 · 电脑在线';
+    } else if (snapshot.mode === 'legacy') {
+      label = '兼容模式（按需刷新）';
+    }
+    rtState.textContent = label;
+    rtState.classList.toggle('ok-text', snapshot.mode !== 'legacy' && snapshot.state === 'open');
+    rtState.title = info.detail || '';
+  }
+
+  async function renderCacheSummary() {
+    const summary = (await cacheSummary(base)) || { taskCount: 0, noteCount: 0, noteChars: 0 };
+    if (signal.aborted) return;
     const size = summary.noteChars ? `，约 ${formatBytes(summary.noteChars * 2)}` : '';
     cacheSummaryEl.textContent = `${summary.taskCount} 个任务 / ${summary.noteCount} 篇笔记${size}`;
   }
@@ -459,8 +517,8 @@ export async function settingsView(container, ctx) {
         danger: true,
       });
       if (!confirmed) return;
-      clearCaches(base);
-      renderCacheSummary();
+      await clearCaches(base);
+      await renderCacheSummary();
       toast('已清除离线缓存', { type: 'success' });
     },
     { signal },
@@ -476,10 +534,20 @@ export async function settingsView(container, ctx) {
   window.addEventListener('online', onNetworkChange, { signal });
   window.addEventListener('offline', onNetworkChange, { signal });
 
-  const onVisibility = () => {
-    if (document.visibilityState === 'visible') void loadMe();
-  };
-  document.addEventListener('visibilitychange', onVisibility, { signal });
+  const unsubRealtimeEvents = [
+    onRealtime('state', () => {
+      renderRealtimeInfo();
+      refreshPairingLive();
+    }),
+    onRealtime('presence', () => {
+      renderRealtimeInfo();
+      refreshPairingLive();
+    }),
+    onRealtime('hello', () => {
+      // 重连后补一次一次性快照（不是轮询）
+      void loadMe();
+    }),
+  ];
 
   /* ------------------------------------------------------------------ */
   /* 启动                                                                */
@@ -487,12 +555,22 @@ export async function settingsView(container, ctx) {
 
   container.querySelector('#back-btn').addEventListener('click', () => navigate('/home'), { signal });
 
+  startRealtime();
   renderPairing();
   refreshBaseDisplay();
   renderInstall();
   renderSwState();
-  renderCacheSummary();
+  renderRealtimeInfo();
+  void renderCacheSummary();
   void loadMe();
 
-  return () => {};
+  return () => {
+    unsubRealtimeEvents.forEach((unsub) => {
+      try {
+        unsub();
+      } catch (error) {
+        // 忽略
+      }
+    });
+  };
 }

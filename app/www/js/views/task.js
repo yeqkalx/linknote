@@ -1,17 +1,29 @@
 /**
  * 链记 LinkNote — 任务详情 / 阅读器
- * - 前台每 3 秒轮询 GET /tasks/{id}（页面隐藏时暂停）
- * - 成功后 GET /note，用 marked + DOMPurify 渲染
- * - 操作：复制全文、下载 .md、系统分享、重试、移除、返回
+ *
+ * 实时架构（docs/realtime-protocol.md）：
+ * - 任务状态由 WS `task_updated` 推送，不再 3s 轮询。
+ * - 笔记正文只从 WS `note` 收：先写手机本地缓存（IndexedDB 优先），阅读器只读本地缓存。
+ * - 缓存缺失时向 Relay 发 `note_request`；`note_unavailable` 时提示「电脑离线，稍后重试」。
+ * - 收到正文后由 realtime 模块统一回 `ack_note`（Agent 才会清理本地正文）。
  */
 import { api, isNetworkError } from '../api.js';
 import {
-  POLL_INTERVAL_MS,
+  REALTIME_NOTE_TIMEOUT_MS,
   STAGES,
   STAGE_LABELS,
   TERMINAL_STATUSES,
 } from '../config.js';
 import { renderMarkdown } from '../markdown.js';
+import {
+  getRealtimeSnapshot,
+  isLegacyMode,
+  isRealtimeOpen,
+  onRealtime,
+  probeRealtime,
+  requestNote,
+  startRealtime,
+} from '../realtime.js';
 import { navigate } from '../router.js';
 import { auth, noteCache, settings, taskCache } from '../store.js';
 import {
@@ -29,7 +41,6 @@ import {
   formatDateTime,
   formatElapsed,
   formatRelativeTime,
-  hostOf,
   safeFilename,
   truncate,
 } from '../util.js';
@@ -83,12 +94,20 @@ function timelineHtml(task) {
 function agentStatusHtml(agent) {
   if (!agent) return '';
   const online = agent.online === true;
+  const reconnecting = agent.reconnecting === true;
+  const subText = reconnecting
+    ? '实时连接中断，正在重连…'
+    : online
+      ? '电脑在线'
+      : agent.last_seen_at
+        ? `最近在线：${escapeHtml(formatRelativeTime(agent.last_seen_at))}`
+        : '电脑当前离线';
   return `
-    <div class="task-agent ${online ? '' : 'is-offline'}">
-      <span class="agent-icon ${online ? 'is-online' : ''}" aria-hidden="true">${icon(online ? 'cloud' : 'cloud-off', { size: 18 })}</span>
+    <div class="task-agent ${online && !reconnecting ? '' : 'is-offline'}">
+      <span class="agent-icon ${online && !reconnecting ? 'is-online' : ''}" aria-hidden="true">${icon(online && !reconnecting ? 'cloud' : 'cloud-off', { size: 18 })}</span>
       <div class="agent-info">
         <p class="agent-name">${escapeHtml(agent.name || '我的电脑')}</p>
-        <p class="agent-sub">${online ? '电脑在线' : agent.last_seen_at ? `最近在线：${escapeHtml(formatRelativeTime(agent.last_seen_at))}` : '电脑当前离线'}</p>
+        <p class="agent-sub">${subText}</p>
       </div>
     </div>`;
 }
@@ -110,14 +129,15 @@ export async function taskView(container, ctx) {
 
   let task = taskCache.find(base, taskId);
   let agent = authEntry.agent || null;
-  let note = noteCache.read(base, taskId);
+  let note = null;
+  // idle | loading | waiting-connection | unavailable | timeout | ready
+  let noteState = 'idle';
   let noteError = '';
   let stateError = '';
   let removed = false;
-  let noteLoading = false;
-  let refreshing = false;
   let disposed = false;
-  let pollTimer = null;
+  let snapshotRefreshing = false;
+  let noteRequestTimer = null;
   let actionBusy = false;
 
   container.innerHTML = `
@@ -125,6 +145,9 @@ export async function taskView(container, ctx) {
       <header class="appbar">
         <button type="button" class="icon-btn" id="back-btn" aria-label="返回收件箱">${icon('back', { size: 20 })}</button>
         <div class="appbar-title">任务详情</div>
+        <span id="task-presence" class="status-pill status-pill-sm" data-state="unknown">
+          <span class="status-dot" aria-hidden="true"></span>连接中
+        </span>
         <button type="button" class="icon-btn" id="manual-refresh" aria-label="刷新任务状态">${icon('refresh', { size: 20 })}</button>
       </header>
       <main class="task-main" id="task-main"></main>
@@ -134,6 +157,67 @@ export async function taskView(container, ctx) {
   const main = container.querySelector('#task-main');
   const actionBar = container.querySelector('#action-bar');
   const refreshButton = container.querySelector('#manual-refresh');
+  const presencePill = container.querySelector('#task-presence');
+
+  /* ------------------------------------------------------------------ */
+  /* 在线状态 / 连接状态                                                 */
+  /* ------------------------------------------------------------------ */
+
+  function presenceOnline() {
+    const rt = getRealtimeSnapshot();
+    if (typeof rt.presence.online === 'boolean') return rt.presence.online;
+    if (agent && typeof agent.online === 'boolean') return agent.online;
+    return null;
+  }
+
+  function agentUi() {
+    const rt = getRealtimeSnapshot();
+    const online = presenceOnline();
+    const rtDown = rt.mode !== 'legacy' && (rt.state === 'connecting' || rt.state === 'reconnecting');
+    const baseAgent = agent || { name: '我的电脑' };
+    return {
+      ...baseAgent,
+      online: online === true && !rtDown,
+      reconnecting: rtDown,
+      last_seen_at: rt.presence.lastSeen || baseAgent.last_seen_at || null,
+    };
+  }
+
+  function connectionBanner() {
+    const rt = getRealtimeSnapshot();
+    if (rt.mode === 'legacy') return '';
+    if (rt.state === 'connecting') {
+      return `<div class="banner banner-warn" role="status">${icon('refresh', { size: 16 })}<span>正在连接电脑…</span></div>`;
+    }
+    if (rt.state === 'reconnecting') {
+      return `<div class="banner banner-warn" role="status">${icon('wifi-off', { size: 16 })}<span>实时连接中断，正在自动重连；状态与笔记会在恢复后自动同步。</span></div>`;
+    }
+    return '';
+  }
+
+  /** 顶栏实时 presence（在线/离线/连接中/重连中），明显但不抢眼 */
+  function renderPresencePill() {
+    if (!presencePill) return;
+    const rt = getRealtimeSnapshot();
+    const rtDown = rt.mode !== 'legacy' && (rt.state === 'connecting' || rt.state === 'reconnecting');
+    let label = '连接中';
+    let tone = 'connecting';
+    if (rtDown) {
+      label = rt.state === 'connecting' ? '连接中' : '重连中';
+      tone = rt.state === 'connecting' ? 'connecting' : 'reconnecting';
+    } else if (rt.mode === 'legacy') {
+      const online = presenceOnline();
+      label = online === true ? '在线' : online === false ? '离线' : '兼容';
+      tone = online === true ? 'online' : 'offline';
+    } else {
+      const online = presenceOnline();
+      label = online === true ? '在线' : online === false ? '离线' : '在线?';
+      tone = online === true ? 'online' : 'offline';
+    }
+    presencePill.setAttribute('data-state', tone);
+    presencePill.innerHTML = `<span class="status-dot" aria-hidden="true"></span>${escapeHtml(label)}`;
+    presencePill.title = `电脑${label}`;
+  }
 
   /* ------------------------------------------------------------------ */
   /* 渲染                                                                */
@@ -183,7 +267,8 @@ export async function taskView(container, ctx) {
     const completedAt = (note && note.completed_at) || task.completed_at || null;
     const markdown = note ? note.markdown : '';
     const sizeText = markdown ? `约 ${markdown.length} 字` : '';
-    const cachedText = stateError ? ' · 离线缓存' : '';
+    const cacheText =
+      !isRealtimeOpen() && note ? ' · 本地缓存' : isLegacyMode() ? ' · 兼容模式' : '';
     return `
       <article class="note-card card">
         <header class="note-head">
@@ -192,27 +277,47 @@ export async function taskView(container, ctx) {
             <span>${escapeHtml(formatDateTime(completedAt) || '已完成')}</span>
           </div>
           <h1 class="note-title">${escapeHtml(title)}</h1>
-          ${sizeText || cachedText ? `<p class="note-sub">${sizeText}${cachedText}</p>` : ''}
+          ${sizeText || cacheText ? `<p class="note-sub">${sizeText}${cacheText}</p>` : ''}
         </header>
         <div class="reader" id="reader">${renderMarkdown(markdown)}</div>
       </article>`;
   }
 
-  function succeededHtml() {
-    if (note) {
-      return `${stateErrorBanner()}${noteReaderHtml()}`;
-    }
-    if (noteError) {
-      return `${stateErrorBanner()}<div class="card error-card">
-        <h2 class="error-title">还没读到笔记</h2>
-        <p class="error-text">${escapeHtml(noteError)}</p>
-        <button type="button" class="btn btn-primary btn-block" data-action="reload-note">重新获取笔记</button>
+  function notePendingHtml() {
+    if (noteState === 'loading') {
+      return `<div class="card note-loading" role="status">
+        <span class="spinner" aria-hidden="true"></span>
+        <span>正在从电脑获取笔记…</span>
       </div>`;
     }
-    return `${stateErrorBanner()}<div class="card note-loading" role="status">
-      <span class="spinner" aria-hidden="true"></span>
-      <span>正在获取笔记…</span>
+    if (noteState === 'waiting-connection') {
+      return `<div class="card note-state" role="status">
+        ${icon('cloud-off', { size: 22 })}
+        <p class="note-state-title">正在连接电脑</p>
+        <p class="note-state-text">实时连接建立后会自动向电脑请求这篇笔记，不需要停留在当前页面。</p>
+        <button type="button" class="btn btn-ghost btn-sm" data-action="reload-note">立即重试</button>
+      </div>`;
+    }
+    if (noteState === 'unavailable') {
+      return `<div class="card note-state" role="status">
+        ${icon('cloud-off', { size: 22 })}
+        <p class="note-state-title">电脑离线，稍后重试</p>
+        <p class="note-state-text">${escapeHtml(noteError || '笔记正文只保存在你的电脑和手机上，电脑上线后可以重新获取。')}</p>
+        <button type="button" class="btn btn-primary btn-sm" data-action="reload-note">重试获取</button>
+      </div>`;
+    }
+    // timeout / idle
+    return `<div class="card note-state" role="status">
+      ${icon('file', { size: 22 })}
+      <p class="note-state-title">还没有收到笔记</p>
+      <p class="note-state-text">${escapeHtml(noteError || '正文可能还在从电脑发送中，可以再请求一次。')}</p>
+      <button type="button" class="btn btn-primary btn-sm" data-action="reload-note">重新获取</button>
     </div>`;
+  }
+
+  function succeededHtml() {
+    const body = note ? noteReaderHtml() : notePendingHtml();
+    return `${connectionBanner()}${stateErrorBanner()}${body}`;
   }
 
   function stateErrorBanner() {
@@ -225,7 +330,10 @@ export async function taskView(container, ctx) {
     const message = task.message || STAGE_LABELS[task.stage] || '处理中';
     const elapsed = elapsedBetween(task.created_at);
     const source = sourceUrlOf(task);
+    const uiAgent = agentUi();
+    const presence = presenceOnline();
     return `
+      ${connectionBanner()}
       ${stateErrorBanner()}
       <section class="card status-card">
         <div class="status-head">
@@ -247,9 +355,9 @@ export async function taskView(container, ctx) {
             : ''
         }
       </section>
-      ${agentStatusHtml(agent)}
+      ${agentStatusHtml(uiAgent)}
       ${
-        agent && agent.online === false
+        presence === false
           ? `<div class="banner banner-warn">${icon('cloud-off', { size: 16 })}<span>电脑当前离线，任务会在 Agent 上线后继续，不需要一直开着这个页面。</span></div>`
           : ''
       }
@@ -259,6 +367,7 @@ export async function taskView(container, ctx) {
   function failedHtml() {
     const source = sourceUrlOf(task);
     return `
+      ${connectionBanner()}
       ${stateErrorBanner()}
       <section class="card fail-card">
         <div class="fail-head">
@@ -277,7 +386,7 @@ export async function taskView(container, ctx) {
         }
         <p class="fail-hint">可以点下面的「重试」重新生成；如果一直失败，请检查电脑上的 BiliNote 与 Agent 是否正常。</p>
       </section>
-      ${agentStatusHtml(agent)}`;
+      ${agentStatusHtml(agentUi())}`;
   }
 
   function missingHtml() {
@@ -297,7 +406,8 @@ export async function taskView(container, ctx) {
 
   function render() {
     if (disposed) return;
-    refreshButton.classList.toggle('is-spinning', refreshing);
+    refreshButton.classList.toggle('is-spinning', snapshotRefreshing);
+    renderPresencePill();
     if (!task) {
       main.innerHTML = removed ? missingHtml() : skeletonHtml();
       renderActionBar();
@@ -323,41 +433,102 @@ export async function taskView(container, ctx) {
   }
 
   /* ------------------------------------------------------------------ */
-  /* 数据加载                                                            */
+  /* 笔记：只读本地缓存；缺失时发 note_request（兼容模式走 REST 兜底）     */
   /* ------------------------------------------------------------------ */
 
-  function schedulePoll(delay = POLL_INTERVAL_MS) {
-    clearTimeout(pollTimer);
-    if (disposed || isTerminal(task)) return;
-    pollTimer = setTimeout(() => {
-      if (document.visibilityState === 'visible') void refreshTask();
-      else schedulePoll();
-    }, delay);
+  function clearNoteRequestTimer() {
+    if (noteRequestTimer) {
+      clearTimeout(noteRequestTimer);
+      noteRequestTimer = null;
+    }
   }
 
-  async function refreshTask({ manual = false } = {}) {
-    if (disposed || refreshing) return;
-    refreshing = true;
+  async function loadLegacyNote() {
+    if (disposed || noteState === 'loading') return;
+    noteState = 'loading';
+    noteError = '';
+    render();
+    try {
+      const data = await api.getNote(taskId, { base, signal, timeout: 30000 });
+      if (!data || typeof data.markdown !== 'string') throw new Error('笔记内容为空');
+      note = {
+        title: data.title || (task && task.title) || '',
+        markdown: data.markdown,
+        completed_at: data.completed_at || (task && task.completed_at) || null,
+      };
+      await noteCache.put(base, taskId, note);
+      noteState = 'ready';
+      noteError = '';
+    } catch (error) {
+      if (error && (error.code === 'aborted' || error.code === 'unauthorized')) return;
+      if (error && error.status === 409) noteError = '笔记还在准备中，请稍后重试';
+      else if (error && error.status === 410) noteError = '当前 Relay 不再保存笔记正文，需要电脑重新发送';
+      else if (isNetworkError(error)) noteError = '连不上 Relay，稍后重试';
+      else noteError = error.message || '获取笔记失败';
+      noteState = 'unavailable';
+    } finally {
+      if (!disposed) render();
+    }
+  }
+
+  async function ensureNote() {
+    if (disposed || !task || task.status !== 'succeeded' || note) return;
+    if (noteState === 'loading') return;
+
+    if (isLegacyMode()) {
+      void loadLegacyNote();
+      return;
+    }
+
+    if (!isRealtimeOpen()) {
+      noteState = 'waiting-connection';
+      noteError = '';
+      render();
+      // 连接建立后 hello 事件会再次调用 ensureNote。
+      startRealtime();
+      return;
+    }
+
+    noteState = 'loading';
+    noteError = '';
+    render();
+    const sent = requestNote(taskId);
+    if (!sent) {
+      noteState = 'waiting-connection';
+      render();
+      return;
+    }
+    clearNoteRequestTimer();
+    noteRequestTimer = setTimeout(() => {
+      if (disposed || note || noteState !== 'loading') return;
+      noteState = 'timeout';
+      noteError = '还没有收到笔记，可能是电脑还在发送。';
+      render();
+    }, REALTIME_NOTE_TIMEOUT_MS);
+  }
+
+  /* ------------------------------------------------------------------ */
+  /* 任务元数据：首屏 / 重连后 / 手动刷新各一次 REST 快照（不轮询）        */
+  /* ------------------------------------------------------------------ */
+
+  async function loadTaskSnapshot() {
+    if (disposed || snapshotRefreshing) return;
+    snapshotRefreshing = true;
     refreshButton.classList.add('is-spinning');
     try {
       const data = await api.getTask(taskId, { base, signal, timeout: 12000 });
       if (data && data.task) {
-        task = data.task;
+        task = { ...(task || {}), ...data.task };
         taskCache.upsert(base, task);
+        stateError = '';
       }
       if (data && data.agent) {
-        agent = data.agent;
-        auth.update(base, { agent });
+        agent = { ...(agent || {}), ...data.agent };
       }
-      stateError = '';
       render();
-      if (task && task.status === 'succeeded' && !note && !noteLoading) {
-        void loadNote();
-      }
-      schedulePoll();
+      if (task && task.status === 'succeeded' && !note) void ensureNote();
     } catch (error) {
-      if (error && error.code === 'aborted') return;
-      if (error && error.code === 'unauthorized') return;
+      if (error && (error.code === 'aborted' || error.code === 'unauthorized')) return;
       if (error && error.status === 404) {
         removed = true;
         task = null;
@@ -365,44 +536,75 @@ export async function taskView(container, ctx) {
         renderActionBar();
         return;
       }
-      stateError = `${error.message || '刷新失败'}，显示的是上次状态`;
-      if (isNetworkError(error)) stateError = '连不上 Relay，显示的是上次状态';
+      stateError = isNetworkError(error)
+        ? '连不上 Relay，显示的是上次状态'
+        : `${error.message || '刷新失败'}，显示的是上次状态`;
       render();
-      schedulePoll(POLL_INTERVAL_MS * 2);
     } finally {
-      refreshing = false;
+      snapshotRefreshing = false;
       if (!disposed) refreshButton.classList.remove('is-spinning');
-      if (manual) refreshButton.disabled = false;
     }
   }
 
-  async function loadNote() {
-    if (disposed || noteLoading) return;
-    noteLoading = true;
-    render();
-    try {
-      const data = await api.getNote(taskId, { base, signal, timeout: 30000 });
-      if (!data || typeof data.markdown !== 'string') {
-        throw new Error('笔记内容为空');
+  /* ------------------------------------------------------------------ */
+  /* 实时事件                                                            */
+  /* ------------------------------------------------------------------ */
+
+  const unsubRealtimeEvents = [
+    onRealtime('state', () => {
+      render();
+    }),
+    onRealtime('presence', () => {
+      render();
+      if (presenceOnline() === true && task && task.status === 'succeeded' && !note) {
+        void ensureNote();
       }
+    }),
+    onRealtime('hello', () => {
+      // 重连成功：先拉一次 REST 快照，再按需请求正文。
+      void loadTaskSnapshot();
+      if (task && task.status === 'succeeded' && !note) void ensureNote();
+    }),
+    onRealtime('legacy', () => {
+      render();
+      if (task && task.status === 'succeeded' && !note) void ensureNote();
+    }),
+    onRealtime('task_updated', ({ task: update }) => {
+      if (!update || update.id !== taskId) return;
+      task = { ...(task || {}), ...update };
+      taskCache.upsert(base, task);
+      render();
+      if (task.status === 'succeeded' && !note) void ensureNote();
+    }),
+    onRealtime('note', (payload) => {
+      if (!payload || payload.taskId !== taskId) return;
+      clearNoteRequestTimer();
       note = {
-        title: data.title || (task && task.title) || '',
-        markdown: data.markdown,
-        completed_at: data.completed_at || (task && task.completed_at) || null,
-        cachedAt: Date.now(),
+        title: payload.title || (task && task.title) || '',
+        markdown: payload.markdown,
+        completed_at: (task && task.completed_at) || new Date().toISOString(),
       };
+      noteState = 'ready';
       noteError = '';
-      noteCache.write(base, taskId, note);
-    } catch (error) {
-      if (error && (error.code === 'aborted' || error.code === 'unauthorized')) return;
-      if (error && error.status === 409) noteError = '笔记还在准备中，请稍后重试';
-      else if (isNetworkError(error) && note) noteError = '';
-      else noteError = error.message || '获取笔记失败';
-    } finally {
-      noteLoading = false;
-      if (!disposed) render();
-    }
-  }
+      render();
+      if (payload.cached === false) {
+        toast('笔记已收到，但本地缓存失败；离开页面后需要重新获取', { type: 'error' });
+      }
+    }),
+    onRealtime('note_unavailable', (payload) => {
+      if (!payload || payload.taskId !== taskId) return;
+      clearNoteRequestTimer();
+      noteState = 'unavailable';
+      noteError =
+        payload.reason === 'agent_offline'
+          ? '电脑离线，稍后重试'
+          : '笔记暂时取不到，可以稍后再试';
+      render();
+    }),
+    onRealtime('ticket-rejected', () => {
+      toast('实时连接暂时不可用，正在自动重试', { type: 'error' });
+    }),
+  ];
 
   /* ------------------------------------------------------------------ */
   /* 操作                                                                */
@@ -489,7 +691,7 @@ export async function taskView(container, ctx) {
     if (actionBusy) return;
     const confirmed = await confirmDialog({
       title: '从列表移除任务？',
-      message: '移除后任务不再出现在收件箱里，笔记数据仍保留在 Relay。',
+      message: '移除后任务不再出现在收件箱里。笔记正文只保存在你本机，移除后本地缓存也会被清理。',
       confirmText: '移除',
       danger: true,
     });
@@ -498,14 +700,14 @@ export async function taskView(container, ctx) {
     try {
       await api.removeTask(taskId, { base, signal });
       taskCache.remove(base, taskId);
-      noteCache.remove(base, taskId);
+      await noteCache.remove(base, taskId);
       toast('已从列表移除');
       navigate('/home', { replace: true });
     } catch (error) {
       if (error && error.code === 'aborted') return;
       if (error && (error.status === 404 || error.code === 'unauthorized')) {
         taskCache.remove(base, taskId);
-        noteCache.remove(base, taskId);
+        await noteCache.remove(base, taskId);
         navigate('/home', { replace: true });
         return;
       }
@@ -536,8 +738,16 @@ export async function taskView(container, ctx) {
         navigate('/home');
         break;
       case 'reload-note':
-        if (noteError) noteError = '';
-        void loadNote();
+        clearNoteRequestTimer();
+        noteState = 'idle';
+        noteError = '';
+        render();
+        if (isLegacyMode()) void loadLegacyNote();
+        else if (isRealtimeOpen()) await ensureNote();
+        else {
+          probeRealtime();
+          void ensureNote();
+        }
         break;
       default:
         break;
@@ -572,17 +782,13 @@ export async function taskView(container, ctx) {
     'click',
     () => {
       refreshButton.disabled = true;
-      void refreshTask({ manual: true }).finally(() => {
+      probeRealtime();
+      void loadTaskSnapshot().finally(() => {
         if (!disposed) refreshButton.disabled = false;
       });
     },
     { signal },
   );
-
-  const onVisibility = () => {
-    if (document.visibilityState === 'visible' && !isTerminal(task)) void refreshTask();
-  };
-  document.addEventListener('visibilitychange', onVisibility, { signal });
 
   const elapsedTimer = setInterval(() => {
     const node = document.getElementById('elapsed-time');
@@ -594,7 +800,7 @@ export async function taskView(container, ctx) {
     'abort',
     () => {
       disposed = true;
-      clearTimeout(pollTimer);
+      clearNoteRequestTimer();
       clearInterval(elapsedTimer);
     },
     { once: true },
@@ -604,16 +810,43 @@ export async function taskView(container, ctx) {
   /* 启动                                                                */
   /* ------------------------------------------------------------------ */
 
+  startRealtime();
   render();
-  if (task && task.status === 'succeeded' && !note) {
-    void loadNote();
+
+  // 1) 先读本地缓存（阅读器只读缓存，不请求 REST 正文）。
+  try {
+    const cachedNote = await noteCache.get(base, taskId);
+    if (disposed) {
+      return () => {};
+    }
+    if (cachedNote && !note) {
+      note = cachedNote;
+      noteState = 'ready';
+      noteError = '';
+      render();
+    }
+  } catch (error) {
+    // 缓存读失败就继续走 note_request
   }
-  // 有缓存先展示；后台刷新以服务端为准。
-  void refreshTask();
+
+  // 2) 首屏一次 REST 元数据快照（不是轮询），随后完全由 WS 推送。
+  void loadTaskSnapshot();
+
+  // 3) 若任务已知且已完成但没缓存正文，立刻按需请求。
+  if (task && task.status === 'succeeded' && !note) {
+    void ensureNote();
+  }
 
   return () => {
     disposed = true;
-    clearTimeout(pollTimer);
+    clearNoteRequestTimer();
     clearInterval(elapsedTimer);
+    unsubRealtimeEvents.forEach((unsub) => {
+      try {
+        unsub();
+      } catch (error) {
+        // 忽略
+      }
+    });
   };
 }

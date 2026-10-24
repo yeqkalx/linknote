@@ -5,13 +5,14 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "linknote-agent"
 version = "0.1.0"
-description = "LinkNote Windows PC Agent：轮询 Relay 任务并调用本机 BiliNote 生成 Markdown 笔记"
+description = "LinkNote Windows PC Agent：WebSocket 实时接收 Relay 任务并调用本机 BiliNote 生成 Markdown 笔记"
 readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "MIT" }
 authors = [{ name = "LinkNote" }]
 dependencies = [
     "httpx>=0.27,<1",
+    "websockets>=13,<16",
 ]
 
 [project.optional-dependencies]

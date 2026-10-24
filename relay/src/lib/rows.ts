@@ -9,10 +9,13 @@ import type {
   TaskSummary,
 } from '../types';
 
-/** 任务摘要列：绝不把 markdown 带进列表/轮询。 */
+/**
+ * 任务摘要列：绝不把 markdown 带进列表/轮询。
+ * `has_note` 语义：任务已产出笔记（正文不在 Relay，经 WebSocket / 手机本地缓存获取）。
+ */
 export const TASK_SUMMARY_COLUMNS = `id, url, platform, status, stage, progress, message, title,
   error_code, error_message, duration_seconds, created_at, updated_at, completed_at,
-  (CASE WHEN markdown IS NOT NULL AND length(markdown) > 0 THEN 1 ELSE 0 END) AS has_note`;
+  (CASE WHEN status = 'succeeded' THEN 1 ELSE 0 END) AS has_note`;
 
 export function toTaskSummary(row: Record<string, unknown>): TaskSummary {
   return {

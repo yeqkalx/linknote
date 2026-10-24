@@ -2,11 +2,18 @@
 from __future__ import annotations
 
 import hashlib
+import json
+import re
 import threading
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, Optional
+from urllib.parse import quote
 
 from PySide6.QtCore import QObject, QRunnable, QThreadPool, QTimer, Signal
+
+from linknote_agent.stage_map import format_elapsed as _format_elapsed
+from linknote_agent.stage_map import map_status as _map_status
 
 from .config import DesktopConfig, agent_config_path, ensure_agent_config, log_dir, user_data_dir
 from .services.agent_process import AgentProcess
@@ -59,6 +66,9 @@ class DesktopController(QObject):
     notification = Signal(str, str, str)  # title, message, level(info/success/warning/error)
     logAppended = Signal(str)
     error = Signal(str)
+    # 新增：当前任务 / 历史笔记快照（后台线程采集后通过信号送到 GUI）
+    tasksChanged = Signal(dict)
+    historyChanged = Signal(dict)
 
     def __init__(self, config: Optional[DesktopConfig] = None):
         super().__init__()
@@ -82,6 +92,7 @@ class DesktopController(QObject):
         self._notify_timer.timeout.connect(self._check_agent_events)
         self._last_agent_log_line = ""
         self._last_status: dict[str, Any] = {}
+        self._last_tasks: dict[str, Any] = {}
         self._active_workers: set[_Worker] = set()
         self._started = False
 
@@ -432,13 +443,626 @@ class DesktopController(QObject):
         return self.engine.read_log_tail(lines)
 
     def data_paths(self) -> dict[str, str]:
+        notes_dir, outbox_dir = self.history_dirs()
         return {
             "data": str(user_data_dir()),
             "logs": str(log_dir()),
             "agent_config": str(agent_config_path()),
             "engine_log": str(self.engine.log_path),
             "agent_log": str(self.agent.log_path),
+            "notes": str(notes_dir),
+            "outbox": str(outbox_dir),
         }
+
+    # ================================================================== 当前任务
+    def collect_task_snapshot(self) -> dict[str, Any]:
+        """汇总当前任务 / 队列 / 最近完成失败（Agent 日志 + Relay + 引擎状态）。
+
+        在后台线程里执行；任何子项失败都降级成字段错误，不抛出给 GUI。
+        """
+        try:
+            log_text = self.agent.log_tail(500)
+            events = parse_agent_task_events(log_text)
+            relay_me: dict[str, Any] = {}
+            relay_error = ""
+            token = self.agent.agent_token
+            if token:
+                try:
+                    relay_me = self.relay.me(token) or {}
+                except Exception as exc:  # noqa: BLE001
+                    relay_error = str(exc)
+            outbox_pending = 0
+            try:
+                _, outbox_dir = self.history_dirs()
+                outbox_pending = len(list(outbox_dir.glob("*.json"))) if outbox_dir.is_dir() else 0
+            except OSError:
+                outbox_pending = 0
+            snapshot = build_task_snapshot(
+                events,
+                relay_me=relay_me,
+                agent_running=self.agent.running,
+                agent_pid=self.agent.pid,
+                agent_paired=self.agent.is_paired,
+                outbox_pending=outbox_pending,
+            )
+            snapshot["relay_error"] = relay_error
+            snapshot["relay_url"] = self.config.relay_base_url
+            snapshot["agent_name"] = self.config.agent_name or "我的电脑"
+            snapshot["engine"] = {
+                "state": ((self._last_status or {}).get("engine") or {}).get("state", "stopped")
+            }
+            current = snapshot.get("current")
+            if current and current.get("bilinote_task"):
+                self._enrich_live_progress(current)
+            if current and current.get("started_at"):
+                try:
+                    started = datetime.fromisoformat(str(current["started_at"]))
+                    current["elapsed_seconds"] = max(
+                        0.0, (datetime.now() - started).total_seconds()
+                    )
+                except (TypeError, ValueError):
+                    current["elapsed_seconds"] = 0.0
+            for item in snapshot.get("recent") or []:
+                item.setdefault("elapsed_seconds", 0.0)
+            return snapshot
+        except Exception as exc:  # noqa: BLE001 - 任务快照失败不应让页面崩溃
+            return {
+                "error": f"读取任务状态失败：{exc}",
+                "current": None,
+                "recent": [],
+                "queue": {"queued": 0, "running": 0},
+                "agent": {"running": False, "paired": False},
+                "engine": {"state": "unknown"},
+            }
+
+    def _enrich_live_progress(self, current: dict[str, Any]) -> None:
+        """用 BiliNote `/task_status/<id>` 给当前任务补实时 stage/progress。"""
+        bilinote_task = str(current.get("bilinote_task") or "")
+        if not bilinote_task:
+            return
+        try:
+            payload = self.engine_api()._request(  # noqa: SLF001 - EngineAPI 未封装该只读接口
+                "GET", f"/task_status/{quote(bilinote_task, safe='')}", timeout=5.0
+            )
+        except Exception:  # noqa: BLE001 - 引擎没起来就沿用日志里的状态
+            return
+        if not isinstance(payload, dict):
+            return
+        backend_status = str(payload.get("status") or "").upper()
+        current["backend_status"] = backend_status
+        if backend_status == "FAILED":
+            current["message"] = str(payload.get("message") or "BiliNote 任务失败")
+            return
+        if backend_status == "SUCCESS":
+            current["progress"] = max(int(current.get("progress") or 0), 99)
+            current["message"] = "笔记已生成，正在回传手机…"
+            return
+        update = _map_status(backend_status)
+        if update is not None:
+            current["stage"] = update.stage
+            current["progress"] = max(int(current.get("progress") or 0), update.progress)
+            current["message"] = update.message
+
+    def refresh_tasks_async(self) -> None:
+        self.run_async(
+            self.collect_task_snapshot,
+            on_result=self._on_tasks,
+            on_error=lambda m: self.tasksChanged.emit(
+                {"error": f"读取任务状态失败：{m}", "current": None, "recent": []}
+            ),
+        )
+
+    def _on_tasks(self, data: dict[str, Any]) -> None:
+        self._last_tasks = data or {}
+        self.tasksChanged.emit(self._last_tasks)
+
+    @property
+    def last_tasks(self) -> dict[str, Any]:
+        return self._last_tasks
+
+    # ================================================================== 历史笔记
+    def history_dirs(self) -> tuple[Path, Path]:
+        """notes / outbox 目录：优先取 Agent 配置里的覆盖值。"""
+        notes_dir = user_data_dir() / "notes"
+        outbox_dir = user_data_dir() / "outbox"
+        try:
+            cfg = self.agent.read_config()
+        except Exception:  # noqa: BLE001
+            cfg = {}
+        raw_notes = str(cfg.get("notes_dir") or "").strip()
+        raw_outbox = str(cfg.get("outbox_dir") or "").strip()
+        if raw_notes:
+            notes_dir = Path(raw_notes)
+        if raw_outbox:
+            outbox_dir = Path(raw_outbox)
+        return notes_dir, outbox_dir
+
+    def collect_history_snapshot(self) -> dict[str, Any]:
+        try:
+            notes_dir, outbox_dir = self.history_dirs()
+            return scan_history_entries(notes_dir, outbox_dir)
+        except Exception as exc:  # noqa: BLE001
+            return {
+                "error": f"读取历史笔记失败：{exc}",
+                "items": [],
+                "counts": {"notes": 0, "pending": 0, "total": 0, "words": 0},
+            }
+
+    def refresh_history_async(self) -> None:
+        self.run_async(
+            self.collect_history_snapshot,
+            on_result=self._on_history,
+            on_error=lambda m: self.historyChanged.emit(
+                {"error": f"读取历史笔记失败：{m}", "items": [], "counts": {}}
+            ),
+        )
+
+    def _on_history(self, data: dict[str, Any]) -> None:
+        self.historyChanged.emit(data or {})
+
+    def load_note_markdown(self, path: str) -> str:
+        """读取一条本地笔记内容（限制在 notes/outbox 目录内，避免任意文件读取）。"""
+        target = Path(str(path or "")).expanduser().resolve()
+        notes_dir, outbox_dir = self.history_dirs()
+        allowed = [notes_dir.resolve(), outbox_dir.resolve()]
+        if not any(target.is_relative_to(directory) for directory in allowed):
+            raise ValueError("只允许读取 LinkNote 笔记目录内的文件")
+        if not target.is_file():
+            raise FileNotFoundError(f"文件不存在：{target}")
+        if target.suffix.lower() == ".json":
+            data = json.loads(target.read_text(encoding="utf-8-sig"))
+            if isinstance(data, dict):
+                payload = data.get("payload")
+                if isinstance(payload, dict):
+                    return str(payload.get("markdown") or "")
+            return ""
+        return target.read_text(encoding="utf-8", errors="replace")
+
+    # ================================================================== AI 模型列表
+    def fetch_provider_model_catalog(self, provider_id: str) -> dict[str, Any]:
+        """取某供应商的「可用模型」+「已配置到 BiliNote 模型库的模型」。
+
+        动态列表来自 BiliNote `/model_list/{provider_id}`（内部会做内置回退），
+        该只读接口未在 EngineAPI 封装，这里直接调用其 `_request`。
+        """
+        pid = str(provider_id or "")
+        result: dict[str, Any] = {
+            "provider_id": pid,
+            "provider_models": [],
+            "db_models": [],
+            "error": "",
+        }
+        api = self.engine_api()
+        try:
+            payload = api._request("GET", f"/model_list/{quote(pid, safe='')}", timeout=20.0)  # noqa: SLF001
+            raw: Any = []
+            if isinstance(payload, dict):
+                raw = payload.get("models") or []
+                if payload.get("error"):
+                    result["error"] = str(payload["error"])
+            elif isinstance(payload, list):
+                raw = payload
+            names: list[str] = []
+            for item in raw if isinstance(raw, list) else []:
+                if isinstance(item, dict):
+                    name = str(
+                        item.get("model_name") or item.get("id") or item.get("name") or ""
+                    ).strip()
+                else:
+                    name = str(item).strip()
+                if name and name not in names:
+                    names.append(name)
+            result["provider_models"] = names
+        except Exception as exc:  # noqa: BLE001
+            result["error"] = str(exc)
+        try:
+            db_models = api.models()
+            result["db_models"] = [
+                str(item.get("model_name"))
+                for item in db_models
+                if isinstance(item, dict)
+                and str(item.get("provider_id")) == pid
+                and item.get("model_name")
+            ]
+        except Exception as exc:  # noqa: BLE001
+            result.setdefault("db_error", str(exc))
+        return result
+
+
+# ====================================================================== 任务日志解析
+# Agent 日志格式（linknote_agent/logging_setup.py）：
+#   2026-10-24 16:05:00,123 [INFO] linknote_agent.runner: 领到任务 task_id=... url=... platform=...
+# 这些行是桌面端唯一能拿到的「Agent 正在干什么」实时信息；解析成事件后由
+# build_task_snapshot 汇总成「当前任务 / 队列 / 最近完成失败」。
+
+_LOG_LINE_RE = re.compile(
+    r"^(?P<ts>\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2})(?:[.,]\d+)?\s+"
+    r"\[(?P<level>[A-Z]+)\]\s+[^:]+:\s*(?P<message>.*)$"
+)
+
+_TASK_EVENT_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
+    (
+        "start",
+        re.compile(
+            r"^领到任务 task_id=(?P<task_id>\S+) url=(?P<url>\S+) platform=(?P<platform>\S*)"
+        ),
+    ),
+    (
+        "submitted",
+        re.compile(
+            r"^已提交 BiliNote 任务 relay_task=(?P<task_id>\S+) "
+            r"bilinote_task=(?P<bilinote_task>\S+) platform=(?P<platform>\S*)"
+        ),
+    ),
+    (
+        "completed",
+        re.compile(
+            r"^任务完成并已回传 task_id=(?P<task_id>\S+) title=(?P<title>.*?) "
+            r"markdown=(?P<markdown_chars>\d+) 字 duration=(?P<duration>\S*) 秒"
+        ),
+    ),
+    (
+        "failed",
+        re.compile(
+            r"^任务失败已回传 task_id=(?P<task_id>\S+) code=(?P<code>\S+) message=(?P<message>.*)"
+        ),
+    ),
+    (
+        "pending_note",
+        re.compile(r"^任务 (?P<task_id>\S+) 已生成笔记但 Relay 暂时不可达"),
+    ),
+    (
+        "pending_fail",
+        re.compile(r"^任务 (?P<task_id>\S+) 的失败状态无法回传"),
+    ),
+    (
+        "note_saved",
+        re.compile(r"^任务 (?P<task_id>\S+) 的笔记无法回传"),
+    ),
+    (
+        "lost",
+        re.compile(r"^任务 (?P<task_id>\S+) 已不再归本 Agent 处理：(?P<message>.*)"),
+    ),
+)
+
+_HEADING_RE = re.compile(r"^\s{0,3}#\s+(?P<title>.+?)\s*$", re.MULTILINE)
+_WORD_RE = re.compile(r"[\u4e00-\u9fff]|[A-Za-z0-9]+")
+
+
+def _safe_int(value: Any, default: int = 0) -> int:
+    try:
+        return int(float(value))
+    except (TypeError, ValueError):
+        return default
+
+
+def _parse_log_timestamp(value: Any) -> Optional[datetime]:
+    try:
+        return datetime.strptime(str(value).replace("T", " "), "%Y-%m-%d %H:%M:%S")
+    except (TypeError, ValueError):
+        return None
+
+
+def _format_ts_label(value: Any) -> str:
+    """ISO / 日志时间字符串 → 本地 'MM-DD HH:MM'。"""
+    if not value:
+        return ""
+    text = str(value).strip()
+    if not text:
+        return ""
+    parsed = _parse_log_timestamp(text)
+    if parsed is None:
+        try:
+            parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+        except ValueError:
+            return text[:16]
+    try:
+        parsed = parsed.astimezone()
+    except (OSError, ValueError):
+        pass
+    return parsed.strftime("%m-%d %H:%M")
+
+
+def _match_task_event(message: str) -> Optional[dict[str, Any]]:
+    text = (message or "").strip()
+    for kind, pattern in _TASK_EVENT_PATTERNS:
+        match = pattern.match(text)
+        if match is not None:
+            event: dict[str, Any] = {"kind": kind}
+            event.update({key: value for key, value in match.groupdict().items()})
+            return event
+    return None
+
+
+def parse_agent_task_events(text: str, limit: int = 120) -> list[dict[str, Any]]:
+    """把 Agent 日志里与任务相关的行解析为按时间排序的事件列表（可单测）。"""
+    events: list[dict[str, Any]] = []
+    for raw in (text or "").splitlines():
+        match = _LOG_LINE_RE.match(raw.strip())
+        if match is None:
+            continue
+        event = _match_task_event(match.group("message"))
+        if event is None:
+            continue
+        timestamp = _parse_log_timestamp(match.group("ts"))
+        event["timestamp"] = timestamp
+        event["ts"] = timestamp.isoformat(timespec="seconds") if timestamp else ""
+        event["time_label"] = timestamp.strftime("%m-%d %H:%M:%S") if timestamp else ""
+        events.append(event)
+    if limit and limit > 0:
+        return events[-limit:]
+    return events
+
+
+def build_task_snapshot(
+    events: list[dict[str, Any]],
+    *,
+    relay_me: Optional[dict[str, Any]] = None,
+    agent_running: bool = False,
+    agent_pid: Optional[int] = None,
+    agent_paired: bool = False,
+    outbox_pending: int = 0,
+    now: Optional[datetime] = None,
+) -> dict[str, Any]:
+    """把任务事件汇总成「当前任务 / 队列 / 最近完成失败」快照（纯函数，可单测）。"""
+    now = now or datetime.now()
+    tasks: dict[str, dict[str, Any]] = {}
+    for event in events or []:
+        if not isinstance(event, dict):
+            continue
+        task_id = str(event.get("task_id") or "").strip()
+        if not task_id:
+            continue
+        state = tasks.setdefault(
+            task_id,
+            {
+                "task_id": task_id,
+                "url": "",
+                "platform": "",
+                "title": "",
+                "bilinote_task": "",
+                "stage": "",
+                "progress": 0,
+                "status": "running",
+                "message": "",
+                "started_at": "",
+                "updated_at": "",
+                "markdown_chars": 0,
+                "duration_seconds": None,
+                "error": "",
+            },
+        )
+        kind = str(event.get("kind") or "")
+        if event.get("ts"):
+            state["updated_at"] = str(event["ts"])
+        if kind == "start":
+            state["status"] = "running"
+            state["url"] = str(event.get("url") or state["url"])
+            platform = str(event.get("platform") or "").strip()
+            if platform:
+                state["platform"] = platform
+            if not state["started_at"]:
+                state["started_at"] = str(event.get("ts") or "")
+            state["message"] = "任务已领取，正在准备处理"
+        elif kind == "submitted":
+            state["bilinote_task"] = str(event.get("bilinote_task") or state["bilinote_task"])
+            state["stage"] = "parsing"
+            state["progress"] = max(2, _safe_int(state.get("progress")))
+            state["message"] = "已提交 BiliNote 任务"
+            if not state["started_at"]:
+                state["started_at"] = str(event.get("ts") or "")
+            if not state["platform"]:
+                state["platform"] = str(event.get("platform") or "").strip()
+        elif kind == "completed":
+            state["status"] = "completed"
+            title = str(event.get("title") or state["title"]).strip()
+            if title:
+                state["title"] = title
+            state["markdown_chars"] = _safe_int(event.get("markdown_chars"))
+            duration = _safe_int(event.get("duration"))
+            if duration:
+                state["duration_seconds"] = duration
+            state["stage"] = "done"
+            state["progress"] = 100
+            state["message"] = "笔记已生成并回传手机"
+        elif kind == "failed":
+            state["status"] = "failed"
+            state["stage"] = "failed"
+            state["error"] = str(event.get("code") or "")
+            state["message"] = str(event.get("message") or "生成失败").strip()
+        elif kind == "pending_note":
+            state["status"] = "pending"
+            state["message"] = "笔记待回传（Relay 暂时不可达，会自动重试）"
+        elif kind == "pending_fail":
+            state["status"] = "failed"
+            state["message"] = "失败状态待回传（Relay 暂时不可达）"
+        elif kind == "note_saved":
+            state["status"] = "failed"
+            state["message"] = "笔记已保存到本机「历史笔记」"
+        elif kind == "lost":
+            state["status"] = "lost"
+            state["message"] = str(event.get("message") or "任务已不再归本机处理").strip()
+
+    ordered = sorted(tasks.values(), key=lambda item: str(item.get("updated_at") or ""))
+    running = [item for item in ordered if item.get("status") == "running"]
+    current = running[-1] if running else None
+    finished = [
+        item
+        for item in ordered
+        if item.get("status") in ("completed", "failed", "pending", "lost")
+    ]
+    finished.sort(key=lambda item: str(item.get("updated_at") or ""), reverse=True)
+    recent = [
+        {
+            "task_id": item["task_id"],
+            "title": item.get("title") or "",
+            "platform": item.get("platform") or "",
+            "url": item.get("url") or "",
+            "status": item.get("status"),
+            "message": item.get("message") or "",
+            "error": item.get("error") or "",
+            "updated_at": item.get("updated_at") or "",
+            "time_label": _format_ts_label(item.get("updated_at")),
+            "markdown_chars": _safe_int(item.get("markdown_chars")),
+            "duration_seconds": item.get("duration_seconds"),
+        }
+        for item in finished[:8]
+    ]
+
+    relay_me = relay_me or {}
+    queue = relay_me.get("queue") if isinstance(relay_me.get("queue"), dict) else {}
+    relay_agent = relay_me.get("agent") if isinstance(relay_me.get("agent"), dict) else {}
+    devices = relay_me.get("devices")
+    return {
+        "generated_at": now.isoformat(timespec="seconds"),
+        "generated_label": now.strftime("%H:%M:%S"),
+        "current": dict(current) if current is not None else None,
+        "recent": recent,
+        "queue": {
+            "queued": _safe_int(queue.get("queued")),
+            "running": _safe_int(queue.get("running")),
+        },
+        "relay_online": bool(relay_me.get("online")) or bool(relay_agent.get("online")),
+        "agent_online": bool(relay_agent.get("online")),
+        "devices": len(devices) if isinstance(devices, list) else 0,
+        "agent": {
+            "running": bool(agent_running),
+            "pid": agent_pid,
+            "paired": bool(agent_paired),
+        },
+        "outbox_pending": _safe_int(outbox_pending),
+        "error": "",
+    }
+
+
+# ====================================================================== 历史笔记
+def count_words(text: str) -> int:
+    """中文字符按字计，英文/数字按词计。"""
+    return len(_WORD_RE.findall(text or ""))
+
+
+def _note_title_from_markdown(text: str, fallback: str = "") -> str:
+    match = _HEADING_RE.search(text or "")
+    title = match.group("title").strip().strip("#").strip() if match else ""
+    return (title or fallback or "未命名笔记")[:120]
+
+
+def _iso_from_timestamp(timestamp: float) -> str:
+    try:
+        return datetime.fromtimestamp(timestamp).astimezone().isoformat(timespec="seconds")
+    except (OSError, ValueError, OverflowError):
+        return ""
+
+
+def scan_history_entries(
+    notes_dir: Path | str,
+    outbox_dir: Path | str,
+    limit: int = 200,
+) -> dict[str, Any]:
+    """扫描本地 notes/*.md 与 outbox 里待回传的笔记（纯文件读取，可单测）。"""
+    notes_path = Path(notes_dir)
+    outbox_path = Path(outbox_dir)
+    items: list[dict[str, Any]] = []
+    seen_task_ids: set[str] = set()
+    notes_count = 0
+    pending_count = 0
+    failed_pending = 0
+
+    if notes_path.is_dir():
+        note_files = []
+        for path in notes_path.glob("*.md"):
+            try:
+                note_files.append((path.stat().st_mtime, path))
+            except OSError:
+                continue
+        for mtime, path in sorted(note_files, key=lambda pair: pair[0], reverse=True):
+            try:
+                text = path.read_text(encoding="utf-8", errors="replace")[:1_000_000]
+            except OSError:
+                continue
+            notes_count += 1
+            stem = path.stem
+            task_id = stem if re.fullmatch(r"[0-9a-fA-F-]{8,}", stem) else ""
+            if task_id:
+                seen_task_ids.add(task_id)
+            items.append(
+                {
+                    "id": f"note:{path.name}",
+                    "task_id": task_id,
+                    "title": _note_title_from_markdown(text, stem),
+                    "platform": "",
+                    "url": "",
+                    "created_at": _iso_from_timestamp(mtime),
+                    "time_label": datetime.fromtimestamp(mtime).strftime("%Y-%m-%d %H:%M"),
+                    "status": "saved",
+                    "status_label": "已保存本机",
+                    "source": "notes",
+                    "path": str(path),
+                    "markdown_chars": len(text),
+                    "word_count": count_words(text),
+                    "size_bytes": len(text.encode("utf-8")),
+                }
+            )
+
+    if outbox_path.is_dir():
+        for path in sorted(outbox_path.glob("*.json")):
+            try:
+                data = json.loads(path.read_text(encoding="utf-8-sig"))
+            except (OSError, ValueError):
+                continue
+            if not isinstance(data, dict):
+                continue
+            kind = str(data.get("kind") or "")
+            if kind == "fail":
+                failed_pending += 1
+                continue
+            if kind != "complete":
+                continue
+            pending_count += 1
+            task_id = str(data.get("task_id") or path.stem)
+            if task_id in seen_task_ids:
+                continue
+            payload = data.get("payload") if isinstance(data.get("payload"), dict) else {}
+            meta = payload.get("meta") if isinstance(payload.get("meta"), dict) else {}
+            markdown = str(payload.get("markdown") or "")
+            created = str(data.get("created_at") or "")
+            try:
+                size_bytes = path.stat().st_size
+            except OSError:
+                size_bytes = 0
+            items.append(
+                {
+                    "id": f"outbox:{path.name}",
+                    "task_id": task_id,
+                    "title": str(payload.get("title") or "未命名笔记")[:120],
+                    "platform": str(meta.get("platform") or ""),
+                    "url": str(meta.get("url") or ""),
+                    "created_at": created,
+                    "time_label": _format_ts_label(created),
+                    "status": "pending",
+                    "status_label": "待回传",
+                    "source": "outbox",
+                    "path": str(path),
+                    "markdown_chars": len(markdown),
+                    "word_count": count_words(markdown),
+                    "size_bytes": size_bytes,
+                }
+            )
+
+    items.sort(key=lambda item: str(item.get("created_at") or ""), reverse=True)
+    return {
+        "items": items[:limit],
+        "counts": {
+            "notes": notes_count,
+            "pending": pending_count,
+            "failed_pending": failed_pending,
+            "total": len(items),
+            "words": sum(_safe_int(item.get("word_count")) for item in items),
+        },
+        "notes_dir": str(notes_path),
+        "outbox_dir": str(outbox_path),
+        "error": "",
+    }
 
 
 

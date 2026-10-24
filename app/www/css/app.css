@@ -1,4 +1,4 @@
-﻿/* ==========================================================================
+/* ==========================================================================
    链记 LinkNote — 移动优先样式表
    浅蓝背景 + 深海军蓝 + 品牌蓝；跟随系统浅色/深色；无外部字体/CDN。
    ========================================================================== */
@@ -666,6 +666,37 @@ code {
 
 .status-pill[data-state='unknown'] {
   color: var(--ink-3);
+}
+
+/* 实时连接：连接中 / 重连中（琥珀色 + 呼吸点，明显但不抢眼） */
+.status-pill[data-state='connecting'],
+.status-pill[data-state='reconnecting'] {
+  background: var(--warn-soft);
+  border-color: transparent;
+  color: var(--warn);
+}
+
+.status-pill[data-state='connecting'] .status-dot,
+.status-pill[data-state='reconnecting'] .status-dot {
+  animation: dot-blink 1.2s ease-in-out infinite;
+}
+
+.status-pill[data-state='legacy'] {
+  border-style: dashed;
+  background: transparent;
+  color: var(--ink-3);
+}
+
+/* 详情页顶栏的紧凑 presence 胶囊 */
+.status-pill-sm {
+  padding: 3px 8px;
+  font-size: 11px;
+  gap: 4px;
+}
+
+.status-pill-sm .status-dot {
+  width: 6px;
+  height: 6px;
 }
 
 .platform-chip {
@@ -1414,6 +1445,34 @@ code {
   padding: 22px;
   color: var(--ink-3);
   font-size: 14px;
+}
+
+/* 笔记正文等待/缺失状态（实时架构下正文只存手机本地） */
+.note-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  padding: 26px 20px;
+  color: var(--ink-3);
+  text-align: center;
+}
+
+.note-state-title {
+  font-size: 15px;
+  font-weight: 650;
+  color: var(--ink-2);
+}
+
+.note-state-text {
+  max-width: 36ch;
+  font-size: 13px;
+  line-height: 1.65;
+  color: var(--ink-3);
+}
+
+.note-state .btn {
+  margin-top: 4px;
 }
 
 .reader {
@@ -2221,6 +2280,16 @@ code {
   }
   50% {
     box-shadow: 0 0 0 6px var(--coral-soft);
+  }
+}
+
+@keyframes dot-blink {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.25;
   }
 }
 

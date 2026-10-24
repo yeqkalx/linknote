@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
   Build LinkNote Desktop: PyInstaller onedir exe + Inno Setup installer, and
   verify both on this machine.
@@ -20,7 +20,8 @@
   missing). Windows PowerShell 5.1 compatible.
 
 .PARAMETER Version
-  Version string used for the installer filename and payload metadata. Default 0.2.0.
+  Version string for the installer filename / payload metadata. Defaults to the version
+  in desktop\pyproject.toml (currently 0.2.1).
 
 .PARAMETER SkipApp
   Reuse an existing dist-desktop\LinkNote instead of rebuilding it.
@@ -45,7 +46,7 @@
 #>
 [CmdletBinding()]
 param(
-    [string]$Version = '0.2.0',
+    [string]$Version = '',
     [switch]$SkipApp,
     [switch]$SkipInstaller,
     [switch]$SkipVerify,
@@ -68,6 +69,17 @@ $AppSource = Join-Path $DesktopDir 'linknote_desktop'
 $DistRoot = Join-Path $Root 'dist-desktop'
 $AppDist = Join-Path $DistRoot 'LinkNote'
 $AppExe = Join-Path $AppDist 'LinkNote.exe'
+# Version defaults to desktop\pyproject.toml so packaging follows the app version.
+if (-not $Version) {
+    $pyproject = Join-Path $DesktopDir 'pyproject.toml'
+    if (Test-Path $pyproject) {
+        $m = Select-String -Path $pyproject -Pattern '^version\s*=\s*"([0-9]+\.[0-9]+\.[0-9]+)"' | Select-Object -First 1
+        if ($m) { $Version = $m.Matches[0].Groups[1].Value }
+    }
+    if (-not $Version) { $Version = '0.2.1' }
+    Write-Host "  version:    $Version (from desktop\pyproject.toml)"
+}
+
 $SetupExe = Join-Path $DistRoot ("LinkNote-Setup-$Version.exe")
 $BuildRoot = Join-Path $DesktopDir 'build'
 $AppBuild = Join-Path $BuildRoot 'app'
@@ -78,6 +90,7 @@ $EngineManifest = Join-Path $BuildRoot 'engine-manifest.json'
 $InstallerDir = Join-Path $DesktopDir 'installer'
 $IssFile = Join-Path $InstallerDir 'LinkNote.iss'
 $ReportPath = Join-Path $BuildRoot 'build-report.json'
+
 
 $report = [ordered]@{
     generated_at = (Get-Date).ToString('o')
@@ -271,18 +284,60 @@ if (-not $SkipApp) {
     Remove-SafeDir (Join-Path $AppBuild 'work') $BuildRoot | Out-Null
     New-Item -ItemType Directory -Force -Path $AppWork | Out-Null
 
-    $pyiArgs = @(
-        '--noconfirm', '--clean',
-        '--distpath', $DistRoot,
-        '--workpath', $AppWork,
-        '--log-level', 'INFO',
-        $SpecFile
-    )
+    # Generate the Windows version resource for this build so the exe version can
+    # never drift from desktop\pyproject.toml.
+    $versionFile = Join-Path $AppBuild 'version_info.txt'
+    @"
+VSVersionInfo(
+  ffi=FixedFileInfo(
+    filevers=($($Version -replace '\.', ', '), 0),
+    prodvers=($($Version -replace '\.', ', '), 0),
+    mask=0x3f,
+    flags=0x0,
+    OS=0x40004,
+    fileType=0x1,
+    subtype=0x0,
+    date=(0, 0)
+  ),
+  kids=[
+    StringFileInfo(
+      [
+        StringTable(
+          u'080404b0',
+          [
+            StringStruct(u'CompanyName', u'LinkNote'),
+            StringStruct(u'FileDescription', u'LinkNote 链记 桌面端'),
+            StringStruct(u'FileVersion', u'$Version.0'),
+            StringStruct(u'InternalName', u'LinkNote'),
+            StringStruct(u'LegalCopyright', u'Copyright (c) 2026 LinkNote contributors. MIT License.'),
+            StringStruct(u'OriginalFilename', u'LinkNote.exe'),
+            StringStruct(u'ProductName', u'LinkNote'),
+            StringStruct(u'ProductVersion', u'$Version.0')
+          ]
+        )
+      ]
+    ),
+    VarFileInfo([VarStruct(u'Translation', [2052, 1200])])
+  ]
+)
+"@ | Set-Content -Path $versionFile -Encoding utf8
+    $env:LINKNOTE_VERSION_FILE = $versionFile
+    try {
+        $pyiArgs = @(
+            '--noconfirm', '--clean',
+            '--distpath', $DistRoot,
+            '--workpath', $AppWork,
+            '--log-level', 'INFO',
+            $SpecFile
+        )
     $stdoutLog = Join-Path $AppBuild 'pyinstaller-stdout.log'
     $stderrLog = Join-Path $AppBuild 'pyinstaller-stderr.log'
     $t0 = Get-Date
     $p = Start-Process -FilePath $PyInstaller -ArgumentList $pyiArgs -Wait -PassThru -NoNewWindow `
         -RedirectStandardOutput $stdoutLog -RedirectStandardError $stderrLog
+    } finally {
+        Remove-Item Env:\LINKNOTE_VERSION_FILE -ErrorAction SilentlyContinue
+    }
     $report.app['build_seconds'] = [math]::Round(((Get-Date) - $t0).TotalSeconds, 1)
     if ($p.ExitCode -ne 0) {
         Get-Content $stderrLog -ErrorAction SilentlyContinue | Select-Object -Last 25 | ForEach-Object { Write-Host "  $_" }
@@ -712,3 +767,6 @@ if ($appOk -and $setupOk) {
 }
 Write-Host 'BUILD INCOMPLETE' -ForegroundColor Red
 exit 1
+
+
+

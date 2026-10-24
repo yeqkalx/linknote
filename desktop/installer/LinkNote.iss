@@ -1,4 +1,4 @@
-; ---------------------------------------------------------------------------
+﻿; ---------------------------------------------------------------------------
 ; LinkNote 0.2.0 — Inno Setup 6 script (per-user, no admin required)
 ;
 ; Built by desktop\packaging\build-desktop.ps1, which passes
@@ -17,10 +17,10 @@
 ; ---------------------------------------------------------------------------
 
 #ifndef MyAppVersion
-  #define MyAppVersion "0.2.0"
+  #define MyAppVersion "0.2.1"
 #endif
 #ifndef MyVersionInfoVersion
-  #define MyVersionInfoVersion "0.2.0.0"
+  #define MyVersionInfoVersion "0.2.1.0"
 #endif
 ; The optional bundled BiliNote engine component is included unless the build
 ; passes /DNoEngine=1 (desktop\packaging\build-desktop.ps1 -SkipEngine /
@@ -134,3 +134,4 @@ function InitializeSetup(): Boolean;
 begin
   Result := True;
 end;
+

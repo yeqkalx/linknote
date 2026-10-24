@@ -121,7 +121,7 @@ https://relay.xykong.xyz/
 | D1 存储 | 5GB（单库 500MB） | Paid 5GB 起 |
 | 自定义域名/TLS | 免费 | — |
 
-估算：1 台 PC Agent 每 5 秒轮询 ≈ 17k 请求/天；再加手机前台轮询，个人 1–3 台设备仍在免费额度内。10 台常驻 Agent 会超过 10 万/天，需要升级或改 WebSocket。
+实时架构（v0.2.0+）：Agent/手机通过 Durable Object WebSocket Hibernation 长连接推送，空闲连接不计时长；D1 只存任务元数据。成本随事件量而非轮询次数增长。`npm test` 会启动本地 wrangler 验证 DO/WS；生产需要设置 `INTERNAL_SECRET`、`TICKET_SECRET` 并 apply D1 migration 0002。
 
 ## 11. 中国大陆访问备选
 

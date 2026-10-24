@@ -1,4 +1,4 @@
-"""LinkNote Desktop UI 冒烟测试（不启动真实引擎）。
+"""LinkNote Desktop UI 冒烟测试（不启动真实引擎、不访问网络）。
 
 用法（在 desktop 目录下）::
 
@@ -11,16 +11,19 @@
 
 脚本会：
 1. 用临时 LOCALAPPDATA 实例化 DesktopController（不碰用户真实配置）；
-2. 实例化 MainWindow + 6 个页面 + TrayIcon，跑 500ms 事件循环；
-3. 用伪造的状态/供应商/转写数据驱动页面渲染（不访问真实引擎与 Relay）；
-4. 实例化 OnboardingWizard 并走到第 2 步（安装 ffmpeg，不实际下载）；
-5. 截图保存到 assets/desktop-ui*.png。
+2. 写入模拟的 Agent 日志 / 本地笔记 / outbox，驱动「当前任务」「历史笔记」；
+3. 实例化 MainWindow + 8 个页面 + TrayIcon，跑 500ms 事件循环并截图；
+4. 用伪造的状态/供应商/转写数据驱动页面渲染（不访问真实引擎与 Relay）；
+5. 实例化 OnboardingWizard，依次验证 ffmpeg / AI / 配对 / 完成步骤；
+6. 验证 AI 模型自动刷新、勾选保存、配对成功常驻、历史/任务页数据；
+7. 截图保存到 assets/desktop-ui*.png。
 
 offscreen 平台在 Windows 上默认没有字体，截图会全是方框；脚本会自动设置
 QT_QPA_FONTDIR=C:\\Windows\\Fonts 以获得正常中文渲染（仍使用 offscreen 平台）。
 """
 from __future__ import annotations
 
+import json
 import os
 import sys
 import tempfile
@@ -60,6 +63,11 @@ FAKE_MODELS = [
     {"id": 2, "provider_id": "deepseek", "model_name": "deepseek-v4-pro"},
     {"id": 3, "provider_id": "qwen", "model_name": "qwen-max"},
 ]
+# 供应商动态可用模型（对应 BiliNote `/model_list/{provider_id}`）
+FAKE_PROVIDER_MODELS = {
+    "deepseek": ["deepseek-v4-flash", "deepseek-v4-pro", "deepseek-chat"],
+    "qwen": ["qwen-max", "qwen-plus"],
+}
 FAKE_TRANSCRIBER_CONFIG = {
     "transcriber_type": "fast-whisper",
     "whisper_model_size": "small",
@@ -102,6 +110,33 @@ FAKE_SYS_HEALTH = {
         "checked": True,
     },
 }
+FAKE_RELAY_ME = {
+    "online": True,
+    "agent": {
+        "id": "agent-demo",
+        "name": "我的电脑",
+        "platform": "windows",
+        "version": "0.2.0",
+        "online": True,
+    },
+    "queue": {"queued": 2, "running": 1},
+    "devices": [
+        {
+            "id": "device-demo-1",
+            "name": "Pixel 8",
+            "platform": "android",
+            "paired_at": "2026-10-20T08:30:00Z",
+            "last_seen_at": "2026-10-24T05:20:00Z",
+        },
+        {
+            "id": "device-demo-2",
+            "name": "iPad Air",
+            "platform": "ipados",
+            "paired_at": "2026-10-22T12:00:00Z",
+            "last_seen_at": None,
+        },
+    ],
+}
 
 
 class FakeEngineAPI:
@@ -110,6 +145,7 @@ class FakeEngineAPI:
     def __init__(self) -> None:
         self.calls: list[str] = []
 
+    # ---- 供应商 / 模型
     def providers(self) -> list[dict[str, Any]]:
         self.calls.append("providers")
         return [dict(item) for item in FAKE_PROVIDERS]
@@ -120,28 +156,51 @@ class FakeEngineAPI:
 
     def update_provider(self, provider_id: str, **fields: Any) -> Any:
         self.calls.append("update_provider")
+        for provider in FAKE_PROVIDERS:
+            if provider["id"] == provider_id:
+                provider.update(fields)
         return {"id": provider_id, **fields}
 
     def connect_test(self, provider_id: str, model: str | None = None) -> Any:
         self.calls.append("connect_test")
         return True
 
+    def add_model(self, provider_id: str, model_name: str) -> Any:
+        self.calls.append("add_model")
+        if not any(
+            str(item.get("provider_id")) == str(provider_id)
+            and item.get("model_name") == model_name
+            for item in FAKE_MODELS
+        ):
+            FAKE_MODELS.append(
+                {
+                    "id": len(FAKE_MODELS) + 1,
+                    "provider_id": provider_id,
+                    "model_name": model_name,
+                }
+            )
+        return True
+
+    # ---- 转写
     def transcriber_config(self) -> dict[str, Any]:
         self.calls.append("transcriber_config")
         return dict(FAKE_TRANSCRIBER_CONFIG)
 
-    def update_transcriber_config(self, transcriber_type: str, whisper_model_size: str | None = None) -> Any:
+    def update_transcriber_config(
+        self, transcriber_type: str, whisper_model_size: str | None = None
+    ) -> Any:
         self.calls.append("update_transcriber_config")
         return {"transcriber_type": transcriber_type, "whisper_model_size": whisper_model_size}
 
     def transcriber_status(self) -> dict[str, Any]:
         self.calls.append("transcriber_status")
-        return dict(FAKE_TRANSCRIBER_STATUS)
+        return json.loads(json.dumps(FAKE_TRANSCRIBER_STATUS))
 
     def download_whisper(self, model_size: str, transcriber_type: str = "fast-whisper") -> Any:
         self.calls.append("download_whisper")
         return {"msg": "模型下载已开始"}
 
+    # ---- 健康 / 网络
     def sys_health(self) -> dict[str, Any]:
         self.calls.append("sys_health")
         return dict(FAKE_SYS_HEALTH)
@@ -153,6 +212,19 @@ class FakeEngineAPI:
     def proxy_config(self) -> dict[str, Any]:
         self.calls.append("proxy_config")
         return {"enabled": False, "url": "", "effective": ""}
+
+    # ---- 只读接口（与 services/bilinote_api.EngineAPI._request 对应）
+    def _request(self, method: str, path: str, *, json: Any = None, timeout: float | None = None) -> Any:
+        self.calls.append(f"_request:{method}:{path}")
+        if path.startswith("/model_list/"):
+            provider_id = path.rsplit("/", 1)[-1]
+            names = FAKE_PROVIDER_MODELS.get(provider_id, [])
+            return {"models": [{"id": name, "object": "model"} for name in names]}
+        if path.startswith("/task_status/"):
+            return {"status": "TRANSCRIBING", "message": ""}
+        if path.startswith("/sys_check"):
+            return None
+        return None
 
 
 def _fake_status() -> dict[str, Any]:
@@ -171,30 +243,9 @@ def _fake_status() -> dict[str, Any]:
         "relay": {
             "url": "https://relay.xykong.xyz",
             "online": True,
-            "agent": {
-                "id": "agent-demo",
-                "name": "我的电脑",
-                "platform": "windows",
-                "version": "0.2.0",
-                "online": True,
-            },
-            "queue": {"queued": 1, "running": 0},
-            "devices": [
-                {
-                    "id": "device-demo-1",
-                    "name": "Pixel 8",
-                    "platform": "android",
-                    "paired_at": "2026-10-20T08:30:00Z",
-                    "last_seen_at": "2026-10-24T05:20:00Z",
-                },
-                {
-                    "id": "device-demo-2",
-                    "name": "iPad Air",
-                    "platform": "ipados",
-                    "paired_at": "2026-10-22T12:00:00Z",
-                    "last_seen_at": None,
-                },
-            ],
+            "agent": dict(FAKE_RELAY_ME["agent"]),
+            "queue": dict(FAKE_RELAY_ME["queue"]),
+            "devices": [dict(item) for item in FAKE_RELAY_ME["devices"]],
             "error": "",
         },
         "ffmpeg": {
@@ -215,6 +266,87 @@ def _fake_pairing() -> dict[str, Any]:
         "status": "pending",
         "relay_url": "https://relay.xykong.xyz",
     }
+
+
+def _fake_claimed_pairing() -> dict[str, Any]:
+    data = _fake_pairing()
+    data["status"] = "claimed"
+    data["device"] = dict(FAKE_RELAY_ME["devices"][0])
+    return data
+
+
+def _seed_local_data(controller) -> None:
+    """写入模拟 Agent 日志 / 本地笔记 / outbox，供「当前任务」「历史笔记」读取。"""
+    paths = controller.data_paths()
+    now = datetime.now()
+
+    notes_dir = Path(paths["notes"])
+    notes_dir.mkdir(parents=True, exist_ok=True)
+    (notes_dir / "task-demo-001.md").write_text(
+        "# 如何用 LinkNote 做视频笔记\n\n"
+        "## 摘要\n\n"
+        "LinkNote 会把手机发来的视频链接转成结构化 Markdown 笔记。\n\n"
+        "## 关键步骤\n\n"
+        "1. 手机上分享链接；\n2. 电脑自动下载、转写、生成；\n3. 手机端查看结果。\n",
+        encoding="utf-8",
+    )
+    (notes_dir / "task-demo-002.md").write_text(
+        "# 会议纪要：桌面端体验评审\n\n"
+        "- 配对成功后需要一直显示已配对设备\n"
+        "- AI 模型需要支持自动刷新与勾选\n"
+        "- 新增历史笔记与当前任务页\n",
+        encoding="utf-8",
+    )
+
+    outbox_dir = Path(paths["outbox"])
+    outbox_dir.mkdir(parents=True, exist_ok=True)
+    (outbox_dir / "complete-task-demo-003.json").write_text(
+        json.dumps(
+            {
+                "task_id": "task-demo-003",
+                "kind": "complete",
+                "payload": {
+                    "title": "待回传：短视频脚本速记",
+                    "markdown": "# 短视频脚本速记\n\n- 开头 3 秒抓注意力\n- 中段给方法\n",
+                    "meta": {"platform": "douyin", "url": "https://example.com/v/3"},
+                },
+                "attempts": 1,
+                "created_at": (now - timedelta(minutes=12)).isoformat(timespec="seconds"),
+            },
+            ensure_ascii=False,
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+
+    log_path = Path(paths["agent_log"])
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+
+    def ts(minutes_ago: int) -> str:
+        value = now - timedelta(minutes=minutes_ago)
+        return value.strftime("%Y-%m-%d %H:%M:%S")
+
+    lines = [
+        f"{ts(30)},001 [INFO] linknote_agent.runner: 领到任务 task_id=task-demo-old url=https://www.bilibili.com/video/BV1xx platform=bilibili",
+        f"{ts(29)},000 [INFO] linknote_agent.runner: 已提交 BiliNote 任务 relay_task=task-demo-old bilinote_task=bili-1001 platform=bilibili",
+        f"{ts(26)},001 [INFO] linknote_agent.runner: 任务完成并已回传 task_id=task-demo-old title=旧视频笔记 markdown=1200 字 duration=754 秒",
+        f"{ts(18)},001 [WARNING] linknote_agent.runner: 任务 task-demo-fail 的失败状态无法回传：Relay 暂时不可达",
+        f"{ts(15)},000 [ERROR] linknote_agent.runner: 任务失败已回传 task_id=task-demo-fail code=quota_exceeded message=模型账户余额不足",
+        f"{ts(5)},001 [INFO] linknote_agent.runner: 领到任务 task_id=task-demo-current url=https://www.youtube.com/watch?v=demo platform=youtube",
+        f"{ts(5)},002 [INFO] linknote_agent.runner: 已提交 BiliNote 任务 relay_task=task-demo-current bilinote_task=bili-2002 platform=youtube",
+    ]
+    log_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+    controller.agent.save_pairing(
+        {
+            "agent_token": "agt_demo_token_123456",
+            "agent_id": "agent-demo",
+            "paired_at": "2026-10-20T08:30:00Z",
+            "device_id": "device-demo-1",
+            "device_name": "Pixel 8",
+            "device_platform": "android",
+        }
+    )
 
 
 def _prepare_environment() -> Path:
@@ -306,12 +438,34 @@ def main() -> int:
     from linknote_desktop.ui import utils as ui_utils
 
     controller = DesktopController()
-    # 冒烟期间不跑真实状态轮询 / 不访问真实引擎
     controller.config.onboarding_done = True  # 主窗口不自动弹出向导，单独测试
     fake_api = FakeEngineAPI()
     controller.engine_api = lambda: fake_api  # type: ignore[method-assign]
     controller.refresh_status_async = lambda: None  # type: ignore[method-assign]
     controller.ffmpeg_ready = lambda: False  # type: ignore[method-assign]
+    controller._collect_status_safe = _fake_status  # type: ignore[method-assign]
+
+    # 配对 / 任务 / 历史在冒烟里不访问真实 Relay
+    controller.relay.me = lambda token: json.loads(json.dumps(FAKE_RELAY_ME))  # type: ignore[method-assign]
+    controller.create_pairing_async = lambda agent_name=None: controller.pairingChanged.emit(  # type: ignore[method-assign]
+        _fake_pairing()
+    )
+    controller.cancel_pairing = lambda: controller.pairingChanged.emit({})  # type: ignore[method-assign]
+    controller.revoke_device = lambda device_id: None  # type: ignore[method-assign]
+    controller.unpair = lambda: controller.pairingChanged.emit({})  # type: ignore[method-assign]
+
+    # 冒烟里没有真实 Agent 子进程：把快照里的 Agent 运行态伪装成运行中，
+    # 让「当前任务」页展示和真实场景一致的运行中样式。
+    _real_collect_tasks = controller.collect_task_snapshot
+
+    def _fake_collect_tasks() -> dict:
+        snapshot = _real_collect_tasks()
+        snapshot["agent"] = {"running": True, "pid": 5150, "paired": True}
+        return snapshot
+
+    controller.collect_task_snapshot = _fake_collect_tasks  # type: ignore[method-assign]
+
+    _seed_local_data(controller)
 
     window = MainWindow(controller)
     window.show()
@@ -322,7 +476,7 @@ def main() -> int:
     _pump(app, 500)
 
     check("MainWindow 尺寸 1000x720", window.width() == 1000 and window.height() == 720)
-    check("6 个页面已创建", len(window.page_keys()) == 6)
+    check("8 个页面已创建", len(window.page_keys()) == 8)
     check("默认页为状态页", window.current_page_key() == "status")
     window.show_page("ai")
     _pump(app, 80)
@@ -356,20 +510,92 @@ def main() -> int:
         print(f"[warn] TrayIcon 在 offscreen 下不可用：{exc}")
         check("TrayIcon 创建（offscreen 允许失败）", True)
 
-    # ---- 数据加载验证（走的是真实的 controller.run_async 回调链路）
+    # ---- 数据加载验证（走真实的 controller.run_async 回调链路）
     window.show_page("ai")
-    _pump(app, 400)
+    _pump(app, 500)
     ai_page = window._pages["ai"]
     check("AI 页加载供应商列表", ai_page._provider_combo.count() >= 1)
-    check("AI 页加载模型列表", ai_page._model_combo.count() >= 1)
+    check("AI 页自动加载可用模型（可勾选）", len(ai_page._available_models) >= 2)
+    check("AI 页模型列表为勾选样式", len(ai_page._model_rows) >= 2)
+    check(
+        "AI 页默认勾选当前模型",
+        any(row.isChecked() for row in ai_page._model_rows.values()),
+    )
+    # 保存 API Key 后应自动重新拉取模型（不需要手动刷新）
+    ai_page._api_key_edit.setText("sk-test-abcdefghijklmn")
+    ai_page._save_provider()
+    _pump(app, 600)
+    check("AI 保存 Key 后自动刷新模型列表", len(ai_page._model_rows) >= 2)
+    ai_save_msg = ai_page._provider_msg._label.text()
+    check(
+        "AI 保存 Key 成功提示",
+        bool(ai_save_msg) and "失败" not in ai_save_msg,
+    )
+    # 测试连接成功后也应自动拉取
+    ai_page._test_provider()
+    _pump(app, 600)
+    check("AI 测试连接后自动刷新模型列表", len(ai_page._model_rows) >= 2)
+    # 勾选并保存为手机默认
+    ai_page._select_model("deepseek-chat")
+    check("AI 勾选模型生效", ai_page._selected_model == "deepseek-chat")
+    ai_page._save_default_model()
+    _pump(app, 700)
+    check("AI 保存后手机默认模型更新", controller.config.model_name == "deepseek-chat")
+    check(
+        "AI 保存后同步 Agent 配置",
+        str(controller.agent.read_config().get("model_name")) == "deepseek-chat",
+    )
+    # 恢复默认模型，保证后续截图/JSON 一致，并重新加载一次模型列表
+    controller.config.provider_id = "deepseek"
+    controller.config.model_name = "deepseek-v4-flash"
+    controller.save_config()
+    ai_page._load_models()  # noqa: SLF001
+    _pump(app, 500)
+
     window.show_page("transcription")
-    _pump(app, 400)
+    _pump(app, 450)
     trans_page = window._pages["transcription"]
     check("转写页加载配置", trans_page._size_combo.currentText() == "small")
     check("转写页加载模型状态", trans_page._rows_layout.count() >= 3)
     window.show_page("engine")
-    _pump(app, 400)
+    _pump(app, 450)
     check("引擎页加载系统健康", window._pages["engine"]._health_layout.count() >= 2)
+
+    # ---- 当前任务页
+    window.show_page("tasks")
+    _pump(app, 800)
+    tasks_page = window._pages["tasks"]
+    snapshot = tasks_page._snapshot or {}
+    check("当前任务页读取到快照", bool(snapshot.get("generated_label")))
+    check("当前任务页识别运行中任务", bool(snapshot.get("current")))
+    check("当前任务页显示最近完成/失败", len(snapshot.get("recent") or []) >= 2)
+    check("当前任务页显示队列", int((snapshot.get("queue") or {}).get("queued") or 0) >= 1)
+    check("当前任务页当前任务卡片可见", not tasks_page._current_empty.isVisible())
+
+    # ---- 历史笔记页
+    window.show_page("history")
+    _pump(app, 800)
+    history_page = window._pages["history"]
+    check("历史笔记页读取本地笔记", len(history_page._items) >= 2)
+    check("历史笔记页统计字数", int(history_page._counts.get("words") or 0) > 0)
+    _pump(app, 250)
+    check(
+        "历史笔记页 Markdown 预览",
+        bool(history_page._preview_view.markdown_text().strip()),
+    )
+
+    # ---- 配对成功态（状态页 PairingPanel）
+    controller.pairingChanged.emit(_fake_claimed_pairing())
+    _pump(app, 250)
+    panel = window._pages["status"]._pairing_panel
+    check("配对成功后设备列表常驻", panel._devices_layout.count() >= 2)
+    check("配对成功文案", "配对成功" in panel._state_badge.text())
+    check("配对成功后设备区仍然可见", not panel._devices_container.isHidden())
+    # 恢复到等待领取，截图同时展示二维码 + 设备
+    controller.pairingChanged.emit(_fake_pairing())
+    _pump(app, 200)
+    check("配对等待态显示二维码", bool(panel._qr_label.pixmap()))
+
     window.show_page("status")
     _pump(app, 200)
 
@@ -381,19 +607,11 @@ def main() -> int:
     for key in window.page_keys():
         try:
             window.show_page(key)
-            _pump(app, 320)
+            _pump(app, 420)
             path = assets / f"desktop-ui-{key}.png"
             ok = _grab_widget(window, path)
             screenshots.append((path, ok))
             print(f"[smoke] 页面 {key:<14} 截图: {path.name} ({'ok' if ok else 'failed'})")
-            if key == "transcription":
-                trans_page = window._pages["transcription"]
-                print(
-                    "[debug] transcription combo at grab:",
-                    trans_page._size_combo.count(),
-                    repr(trans_page._size_combo.currentText()),
-                    trans_page._size_combo.currentIndex(),
-                )
         except Exception as exc:  # noqa: BLE001
             errors.append(f"页面 {key} 渲染异常: {exc}")
             print(f"[error] 页面 {key} 渲染异常: {exc}")
@@ -403,29 +621,56 @@ def main() -> int:
     window.show_page("status")
     _pump(app, 120)
 
-    # ---- 首次配置向导：走到第 2 步（安装 ffmpeg），不实际下载
+    # ---- 首次配置向导：ffmpeg / AI / 配对 / 完成 步骤
     wizard = None
     try:
         wizard = OnboardingWizard(controller)
         wizard.show()
         _pump(app, 120)
         wizard._go(wizard.FFMPEG)  # noqa: SLF001 - 冒烟脚本直接驱动步骤
-        _pump(app, 450)
+        _pump(app, 500)
         check("向导当前为第 2 步（安装 ffmpeg）", wizard._step == wizard.FFMPEG)
         wizard_path = assets / "desktop-ui-onboarding.png"
         ok = _save(wizard, wizard_path)
         screenshots.append((wizard_path, ok))
         check("向导截图", ok)
         print(f"[ok] OnboardingWizard 第 2 步渲染正常，截图: {wizard_path}")
-        # 再走一步看 AI 页（使用 FakeEngineAPI，不访问真实引擎）
+
         wizard._go(wizard.AI)  # noqa: SLF001
-        _pump(app, 400)
+        _pump(app, 500)
         check("向导 AI 步骤加载供应商", wizard._ob_provider_combo.count() >= 1)
         ai_path = assets / "desktop-ui-onboarding-ai.png"
         ok = _save(wizard, ai_path)
         screenshots.append((ai_path, ok))
         print(f"[ok] OnboardingWizard AI 步骤渲染正常，截图: {ai_path}")
-        # 完成步骤汇总页（不触发真实下载/配对）
+
+        # 配对步骤：模拟「首次未配对」场景，验证始终可见 / 可生成配对码 / 二维码
+        controller.agent.clear_pairing()
+        unpaired_status = _fake_status()
+        unpaired_status["agent"]["paired"] = False
+        unpaired_status["relay"]["devices"] = []
+        controller._on_status(unpaired_status)  # noqa: SLF001
+        _pump(app, 150)
+        wizard._go(wizard.PAIR)  # noqa: SLF001
+        _pump(app, 550)
+        pair_panel = wizard._pairing_panel
+        check("向导配对步骤可见", pair_panel.isVisible())
+        check("向导配对步骤显示配对码", bool(pair_panel._pair_code_label.text().strip()))
+        check("向导配对步骤显示二维码", bool(pair_panel._qr_label.pixmap()))
+        pair_path = assets / "desktop-ui-onboarding-pair.png"
+        ok = _save(wizard, pair_path)
+        screenshots.append((pair_path, ok))
+        check("向导配对步骤截图", ok)
+        print(f"[ok] OnboardingWizard 配对步骤渲染正常，截图: {pair_path}")
+        # 手机领取 → 成功态：设备列表仍常驻（状态刷新后）
+        controller.pairingChanged.emit(_fake_claimed_pairing())
+        _pump(app, 220)
+        check("向导配对成功态文案", "配对成功" in pair_panel._state_badge.text())
+        _seed_local_data(controller)  # 恢复模拟配对 token
+        controller._on_status(_fake_status())  # noqa: SLF001
+        _pump(app, 220)
+        check("向导配对成功态设备列表常驻", pair_panel._devices_layout.count() >= 2)
+
         wizard._go(wizard.FINISH)  # noqa: SLF001
         _pump(app, 200)
         finish_path = assets / "desktop-ui-onboarding-finish.png"
@@ -447,7 +692,7 @@ def main() -> int:
     try:
         controller.config.onboarding_done = False
         window._maybe_show_onboarding()  # noqa: SLF001 - 验证自动弹窗接线
-        _pump(app, 250)
+        _pump(app, 300)
         check("首次配置自动弹出向导", window._onboarding is not None)
         auto_wizard = window._onboarding
         if auto_wizard is not None:
@@ -455,7 +700,7 @@ def main() -> int:
                 auto_wizard.close()
             except Exception:  # noqa: BLE001
                 pass
-            _pump(app, 200)
+            _pump(app, 250)
         check("向导关闭后 onboarding_done 已落盘", bool(controller.config.onboarding_done))
     except Exception as exc:  # noqa: BLE001
         errors.append(f"首次配置自动弹出异常: {exc}")

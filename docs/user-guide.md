@@ -11,21 +11,21 @@
 优先双击：
 
 ```text
-dist-desktop\LinkNote-Setup-0.2.0.msi
+dist-desktop\LinkNote-Setup-0.2.2.msi
 ```
 
 - Windows Installer per-user，安装界面为英文，应用内全中文
 - 不需要管理员；安装到 `%LOCALAPPDATA%\Programs\LinkNote`
 - 默认创建桌面/开始菜单快捷方式；数据目录由安装服务创建
-- 如果 `LinkNote-Setup-0.2.0.exe` 被杀软报“无法创建临时目录”，直接换 MSI 即可
+- 如果 `LinkNote-Setup-0.2.2.exe` 被杀软报“无法创建临时目录”，直接换 MSI 即可
 
-备用 EXE（Inno）安装包：`dist-desktop\LinkNote-Setup-0.2.0.exe`
+备用 EXE（Inno）安装包：`dist-desktop\LinkNote-Setup-0.2.2.exe`
 
 ### A2. 首次打开：7 步配置向导
 
 程序会自动弹出向导：
 
-1. **欢迎 + 隐私说明**：视频/音频/API Key/转写内容留本机；Relay 中转并保存最终 Markdown。
+1. **欢迎 + 隐私说明**：视频/音频/API Key/转写内容留本机；Relay 只中转链接/状态和最终 Markdown，正文不落 Relay 数据库，手机本地缓存。
 2. **ffmpeg**：检测不到就点“下载 ffmpeg”（约 100 MB，自动解压）。
 3. **引擎**：启动内置 BiliNote 引擎；状态变绿后继续。
 4. **AI 模型**：选 DeepSeek/OpenAI 等，粘贴自己的 API Key，点“保存并测试连接”。
@@ -105,5 +105,5 @@ uv pip install --python .venv\Scripts\python.exe -e .
 ## 隐私
 
 - 视频、音频、Whisper 转写内容、API Key 都在你的电脑。
-- Relay 中转：链接、任务状态、最终 Markdown。
-- **Markdown 会保存在 Relay 数据库中**，供手机读取；当前没有端到端加密。
+- Relay 中转：链接、任务状态、最终 Markdown（即时转发，不持久化正文）。
+- **Markdown 不保存在 Relay 数据库中**，只在手机本地缓存；转发瞬间 Relay 可见明文，当前没有端到端加密。

@@ -245,6 +245,14 @@ export const api = {
     return request('/me', { method: 'DELETE', base, signal, timeout });
   },
 
+  /**
+   * 实时连接 ticket（docs/realtime-protocol.md §1.2）
+   * PWA 用短时 ticket 连 `/api/v1/ws?ticket=...`（浏览器 WebSocket 不能带 Authorization 头）。
+   */
+  getRealtimeTicket({ base, signal, timeout = 12000 } = {}) {
+    return request('/realtime/ticket', { method: 'POST', body: {}, base, signal, timeout });
+  },
+
   /** §6.1 提交任务（client_key 用于断网重试幂等） */
   createTask({ url, clientKey = null, base, signal, timeout = 20000 } = {}) {
     return request('/tasks', {
@@ -269,7 +277,7 @@ export const api = {
     return request(`/tasks/${encodeURIComponent(taskId)}`, { base, signal, timeout });
   },
 
-  /** §6.4 获取 Markdown（仅 succeeded） */
+  /** §6.4 获取 Markdown（仅 succeeded；只在旧版 Relay 兼容模式下使用） */
   getNote(taskId, { base, signal, timeout = 30000 } = {}) {
     return request(`/tasks/${encodeURIComponent(taskId)}/note`, { base, signal, timeout });
   },

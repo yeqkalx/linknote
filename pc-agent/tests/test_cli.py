@@ -1,13 +1,14 @@
-"""CLI：help/version、run 未配对拦截、status、unpair、install-autostart、--once 端到端。"""
+"""CLI：help/version、run 未配对拦截、status、unpair、install-autostart、--once/WS 模式。"""
 
 from __future__ import annotations
 
+import asyncio
 import json
 import sys
 
 import pytest
 
-from linknote_agent.cli import build_parser, cmd_install_autostart, main
+from linknote_agent.cli import build_parser, cmd_install_autostart, cmd_run, main
 from linknote_agent.config import AgentConfig, default_config_path
 
 AGENT_TOKEN = "agt_test_token_0123456789"
@@ -64,6 +65,9 @@ def test_status_without_pair(isolated_home, capsys, fake_bilinote, fake_relay):
     assert data["paired"] is False
     assert data["backend_alive"] is True
     assert data["config_path"].endswith("agent.json")
+    assert data["transport_mode"] == "websocket"
+    assert data["ws_url"].startswith("ws") and data["ws_url"].endswith("/api/v1/agent/ws")
+    assert data["notes_pending_ack"] == 0
 
 
 def test_status_paired_shows_relay_info(capsys, fake_relay, fake_bilinote):
@@ -109,6 +113,8 @@ def test_status_human_output(capsys, fake_relay, fake_bilinote):
     assert "LinkNote PC Agent 状态" in out
     assert "配对：已配对" in out
     assert "BiliNote 后端" in out
+    assert "传输模式：WebSocket 推送" in out
+    assert "待手机 ack 笔记" in out
 
 
 def test_status_invalid_config_returns_2(capsys):
@@ -217,3 +223,88 @@ def test_install_autostart_non_windows(monkeypatch, tmp_path):
     monkeypatch.setattr(sys, "platform", "linux")
     args = build_parser().parse_args(["install-autostart", "--script", str(tmp_path / "x.ps1")])
     assert cmd_install_autostart(args, run_command=lambda command: None) == 2
+
+
+# ---------------------------------------------------------------- WS 模式 CLI
+
+
+class _FakeWSClient:
+    def __init__(self) -> None:
+        self.events = asyncio.Queue()
+        self.sent = []
+        self.connected = False
+        self.stop_called = False
+        self.url = "ws://fake/api/v1/agent/ws"
+
+    async def run(self) -> None:
+        self.connected = True
+        try:
+            await asyncio.Event().wait()
+        finally:
+            self.connected = False
+
+    async def stop(self) -> None:
+        self.stop_called = True
+        self.connected = False
+
+    async def send(self, payload) -> bool:
+        return self.connected
+
+
+async def test_cmd_run_defaults_to_websocket(fake_relay, fake_bilinote, capsys):
+    _save_paired_config()
+    fake_ws = _FakeWSClient()
+    stop = asyncio.Event()
+    args = build_parser().parse_args(["run"])
+
+    async def stopper():
+        await asyncio.sleep(0.15)
+        stop.set()
+
+    await asyncio.gather(
+        cmd_run(
+            args,
+            relay_transport=fake_relay.transport,
+            bilinote_transport=fake_bilinote.transport,
+            ws_client=fake_ws,
+            stop_event=stop,
+        ),
+        stopper(),
+    )
+    out = capsys.readouterr().out
+    assert "传输模式：WebSocket 推送" in out
+    assert fake_ws.stop_called is True
+    # WS 模式不会用 REST 轮询任务
+    assert fake_relay.calls("GET", "/api/v1/agent/tasks/next") == []
+
+
+async def test_cmd_run_poll_flag_uses_rest(fake_relay, fake_bilinote, capsys):
+    _save_paired_config()
+    fake_ws = _FakeWSClient()
+    stop = asyncio.Event()
+    args = build_parser().parse_args(["run", "--poll"])
+
+    async def stopper():
+        await asyncio.sleep(0.15)
+        stop.set()
+
+    await asyncio.gather(
+        cmd_run(
+            args,
+            relay_transport=fake_relay.transport,
+            bilinote_transport=fake_bilinote.transport,
+            ws_client=fake_ws,
+            stop_event=stop,
+        ),
+        stopper(),
+    )
+    out = capsys.readouterr().out
+    assert "传输模式：REST 轮询" in out
+    assert fake_ws.stop_called is False
+    assert fake_relay.calls("GET", "/api/v1/agent/tasks/next")  # REST 模式确实在轮询
+
+
+def test_run_parser_has_poll_flag():
+    args = build_parser().parse_args(["run", "--poll"])
+    assert args.poll is True
+    assert build_parser().parse_args(["run"]).poll is False

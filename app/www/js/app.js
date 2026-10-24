@@ -7,6 +7,7 @@ import { setUnauthorizedHandler } from './api.js';
 import { installNativeBridge } from './bridge.js';
 import { initPwa } from './pwa.js';
 import { onQueueEvent, startQueue } from './queue.js';
+import { startRealtime, stopRealtime } from './realtime.js';
 import {
   defineRoutes,
   getCurrent,
@@ -132,6 +133,7 @@ function configureUnauthorized() {
   setUnauthorizedHandler((error) => {
     if (authRedirecting) return;
     authRedirecting = true;
+    stopRealtime();
     toast((error && error.message) || '登录状态已失效，请重新配对', { type: 'error' });
     const current = getCurrent();
     if (current && current.path && current.path !== '/pair' && current.path !== '/home') {
@@ -203,6 +205,8 @@ function bootApp() {
     installNativeBridge({ onShare: handleSharedText });
     configureQueue();
     configureConnectivity();
+    // 已配对则立刻建立实时连接；未配对时 startRealtime 会自动停掉。
+    startRealtime();
   } catch (error) {
     renderFatal(error);
   }

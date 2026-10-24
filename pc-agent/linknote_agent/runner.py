@@ -1,4 +1,7 @@
-"""单任务串行执行器：领任务 → 确保 BiliNote 后端 → 提交 → 轮询进度 → complete/fail。
+"""单任务串行执行器（REST 轮询版）：领任务 → BiliNote 流水线 → complete/fail。
+
+这是契约 v1 的兼容模式（``run --poll`` / ``run --once``）；
+默认的 ``run`` 已改为 WebSocket 推送，见 :mod:`linknote_agent.ws_runner`。
 
 关键行为（对齐 docs/api-contract.md）：
 - 每 3–5 秒 ``GET /api/v1/agent/tasks/next``；同一时刻只跑一个任务；
@@ -16,21 +19,18 @@ import asyncio
 import time
 from typing import Any, Optional
 
-from .backend import BackendError, BackendSupervisor
-from .bilinote_client import BiliNoteClient, BiliNoteError
+from .backend import BackendSupervisor
+from .bilinote_client import BiliNoteClient
 from .config import AgentConfig
 from .logging_setup import get_logger
 from .outbox import Outbox
-from .platforms import UnsupportedUrlError, ensure_supported_url, resolve_short_link
 from .relay_client import RelayClient, RelayError
 from .stage_map import (
     FAIL_MESSAGE_MAX_CHARS,
-    format_elapsed,
-    map_status,
-    normalize_status,
     translate_failure,
     truncate_message,
 )
+from .task_pipeline import ProgressEvent, TaskPipeline
 
 logger = get_logger("runner")
 
@@ -154,19 +154,6 @@ class AgentRunner:
                 return
             await self._wait_stop(stop, max(0.05, float(self.config.heartbeat_interval_seconds)))
 
-    async def _lease_heartbeat_loop(self, task_id: str) -> None:
-        interval = max(0.05, float(self.config.lease_heartbeat_interval_seconds))
-        while True:
-            await asyncio.sleep(interval)
-            try:
-                data = await self.relay.task_heartbeat(task_id)
-                logger.debug("租约续期成功 task_id=%s %s", task_id, data)
-            except RelayError as exc:
-                # 续租失败不打断生成：进度回传也会顺延租约；真过期了 progress 会 404/409。
-                logger.warning("租约续期失败 task_id=%s：%s", task_id, exc.message)
-            except Exception:  # noqa: BLE001
-                logger.exception("租约续期出现未预期异常")
-
     # ================================================================ outbox
 
     async def _flush_outbox(self) -> None:
@@ -187,6 +174,7 @@ class AgentRunner:
     # ================================================================ 单任务
 
     async def execute_task(self, task: dict[str, Any]) -> None:
+        """REST 轮询模式：领到任务后跑 BiliNote 流水线，再用 REST 回传结果。"""
         task_id = str(task.get("id") or "").strip()
         raw_url = str(task.get("url") or "").strip()
         if not task_id:
@@ -194,69 +182,31 @@ class AgentRunner:
             return
 
         self._busy = True
-        started = self._clock()
         logger.info("领到任务 task_id=%s url=%s platform=%s", task_id, raw_url, task.get("platform"))
         try:
-            try:
-                platform, url = ensure_supported_url(raw_url)
-            except UnsupportedUrlError as exc:
-                await self._fail(task_id, "unsupported_platform", str(exc))
-                return
-
-            relay_platform = str(task.get("platform") or "").strip()
-            if relay_platform and relay_platform != platform:
-                logger.warning(
-                    "Relay 标记平台 %s 与链接实际平台 %s 不一致，按实际平台处理",
-                    relay_platform,
-                    platform,
-                )
-
-            await self._progress(
-                task_id, "parsing", 1, "已领取任务，正在准备处理"
+            pipeline = TaskPipeline(
+                self.config, self.bilinote, backend=self.backend, sleep=self._sleep, clock=self._clock
             )
-            timeout_s = int(float(self.config.backend_start_timeout or 90))
-            await self._progress(
+
+            async def on_progress(event: ProgressEvent) -> bool:
+                return await self._progress(task_id, event.stage, event.progress, event.message)
+
+            async def on_lease(relay_task_id: str) -> Any:
+                return await self.relay.task_heartbeat(relay_task_id)
+
+            outcome = await pipeline.execute(
                 task_id,
-                "parsing",
-                2,
-                f"正在检查 BiliNote 后端，必要时自动启动（最多 {timeout_s} 秒）",
+                raw_url,
+                on_progress=on_progress,
+                on_lease=on_lease,
+                platform_hint=str(task.get("platform") or ""),
             )
-            try:
-                await self.backend.ensure_running()
-            except BackendError as exc:
-                await self._fail(
-                    task_id, "backend_unavailable", f"BiliNote 后端不可用：{exc.message}"
+            if outcome.kind == "completed":
+                await self._complete(
+                    task_id, outcome.result or {}, outcome.platform, outcome.url
                 )
-                return
-
-            real_url = await resolve_short_link(url)
-            if real_url != url:
-                logger.info("短链展开：%s -> %s", url, real_url)
-
-            try:
-                bilinote_task_id = await self.bilinote.generate_note(
-                    real_url,
-                    platform,
-                    provider_id=self.config.provider_id,
-                    model_name=self.config.model_name,
-                    quality=self.config.quality,
-                    style=self.config.style,
-                    screenshot=self.config.screenshot,
-                    link=self.config.insert_video_links,
-                )
-            except BiliNoteError as exc:
-                logger.error("提交 BiliNote 任务失败 task_id=%s：%s", task_id, exc.message)
-                failure = translate_failure(exc.message)
-                await self._fail(task_id, failure.code, failure.message)
-                return
-
-            logger.info(
-                "已提交 BiliNote 任务 relay_task=%s bilinote_task=%s platform=%s",
-                task_id,
-                bilinote_task_id,
-                platform,
-            )
-            await self._await_bilinote(task_id, bilinote_task_id, platform, url, started)
+            elif outcome.kind == "failed" and outcome.failure is not None:
+                await self._fail(task_id, outcome.failure.code, outcome.failure.message)
         except asyncio.CancelledError:
             raise
         except TaskLostError as exc:
@@ -267,92 +217,6 @@ class AgentRunner:
             await self._fail(task_id, failure.code, failure.message)
         finally:
             self._busy = False
-
-    async def _await_bilinote(
-        self,
-        relay_task_id: str,
-        bilinote_task_id: str,
-        platform: str,
-        url: str,
-        started: float,
-    ) -> None:
-        lease_task = asyncio.create_task(
-            self._lease_heartbeat_loop(relay_task_id), name=f"lease-{relay_task_id}"
-        )
-        try:
-            last_status = ""
-            last_progress_at = 0.0
-            status_errors = 0
-            while True:
-                await asyncio.sleep(max(0.01, float(self.config.task_status_poll_interval_seconds)))
-                elapsed = self._clock() - started
-                if elapsed > float(self.config.task_timeout_seconds):
-                    await self._fail(
-                        relay_task_id,
-                        "task_timeout",
-                        f"处理超时（已等待 {format_elapsed(elapsed)}），已放弃等待。"
-                        "视频可能过长或网络较慢，请稍后重试。",
-                    )
-                    return
-
-                try:
-                    status_payload = await self.bilinote.get_task_status(bilinote_task_id)
-                except BiliNoteError as exc:
-                    status_errors += 1
-                    logger.warning(
-                        "查询 BiliNote 任务状态失败（第 %d 次）：%s", status_errors, exc.message
-                    )
-                    if status_errors >= max(1, int(self.config.max_status_errors)):
-                        await self._fail(
-                            relay_task_id,
-                            "backend_unavailable",
-                            "查询 BiliNote 任务状态连续失败，后端可能已经退出。"
-                            f"请检查 BiliNote 后端与日志。（最后错误：{exc.message}）",
-                        )
-                        return
-                    continue
-                status_errors = 0
-
-                status = normalize_status(status_payload.get("status"))
-                if status == "FAILED":
-                    reason = str(
-                        status_payload.get("message")
-                        or status_payload.get("result")
-                        or "BiliNote 返回任务失败"
-                    )
-                    logger.error("BiliNote 任务失败 bilinote_task=%s：%s", bilinote_task_id, reason)
-                    failure = translate_failure(reason)
-                    await self._fail(relay_task_id, failure.code, failure.message)
-                    return
-
-                if status == "SUCCESS":
-                    result = status_payload.get("result")
-                    if not isinstance(result, dict):
-                        result = {}
-                    await self._complete(relay_task_id, result, platform, url)
-                    return
-
-                update = map_status(status, elapsed)
-                if update is None:
-                    logger.debug("BiliNote 返回未映射状态 %r，继续等待", status)
-                    continue
-
-                now = self._clock()
-                if status != last_status or (
-                    now - last_progress_at
-                ) >= float(self.config.progress_min_interval_seconds):
-                    sent = await self._progress(
-                        relay_task_id, update.stage, update.progress, update.message
-                    )
-                    if sent:
-                        last_status = status
-                        last_progress_at = now
-        finally:
-            lease_task.cancel()
-            try:
-                await lease_task
-            except (asyncio.CancelledError, Exception):  # noqa: BLE001
-                pass
 
     # ================================================================ 回传
 

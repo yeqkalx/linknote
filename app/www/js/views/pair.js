@@ -1,4 +1,4 @@
-﻿/**
+/**
  * 链记 LinkNote — 配对页
  * 输入 8 位配对码（忽略大小写/横线）+ 设备名，POST /api/v1/pairings/claim。
  * 高级选项里可以修改 Relay 地址（APK / 局域网调试必须）。
@@ -6,6 +6,7 @@
 import { api, isNetworkError } from '../api.js';
 import { APP_NAME, APP_TAGLINE, DEFAULT_DEVICE_NAME, NATIVE_DEFAULT_RELAY } from '../config.js';
 import { navigate } from '../router.js';
+import { startRealtime } from '../realtime.js';
 import { auth, settings, takeNavIntent } from '../store.js';
 import { icon, setButtonBusy, toast } from '../ui.js';
 import {
@@ -256,6 +257,8 @@ export async function pairView(container, ctx) {
         });
         const intent = takeNavIntent();
         toast('配对成功，欢迎使用链记', { type: 'success' });
+        // 拿到 device token 后立刻建立实时连接（home 也会幂等地再调一次）。
+        startRealtime({ force: true });
         navigate(intent || '/home', { replace: true });
       } catch (error) {
         if (error && error.code === 'aborted') return;

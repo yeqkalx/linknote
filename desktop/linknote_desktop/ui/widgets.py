@@ -29,6 +29,7 @@ from PySide6.QtWidgets import (
     QProgressBar,
     QPushButton,
     QSizePolicy,
+    QTextBrowser,
     QVBoxLayout,
     QWidget,
 )
@@ -552,7 +553,13 @@ class DeviceRow(QFrame):
 
     revokeRequested = Signal(str)
 
-    def __init__(self, device: dict, parent: Optional[QWidget] = None):
+    def __init__(
+        self,
+        device: dict,
+        parent: Optional[QWidget] = None,
+        *,
+        revoke_text: str = "撤下",
+    ):
         super().__init__(parent)
         self.setObjectName("HoverCard")
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
@@ -579,7 +586,7 @@ class DeviceRow(QFrame):
         column.addWidget(meta)
         layout.addLayout(column, 1)
 
-        revoke = button("撤下", "Danger")
+        revoke = button(revoke_text, "Danger")
         revoke.setFixedHeight(30)
         revoke.setMinimumWidth(64)
         revoke.clicked.connect(lambda: self.revokeRequested.emit(str(device.get("id") or "")))
@@ -815,4 +822,236 @@ def toolbar(*widgets: QWidget, spacing: int = 8) -> QWidget:
     for widget in widgets:
         layout.addWidget(widget, 0)
     return container
+
+
+class CheckIndicator(QWidget):
+    """自绘复选框（品牌蓝，不依赖 QSS indicator 图片）。"""
+
+    def __init__(self, parent: Optional[QWidget] = None, size: int = 18):
+        super().__init__(parent)
+        self._checked = False
+        self._enabled = True
+        self.setFixedSize(size, size)
+
+    def set_checked(self, checked: bool) -> None:
+        self._checked = bool(checked)
+        self.update()
+
+    def set_enabled(self, enabled: bool) -> None:
+        self._enabled = bool(enabled)
+        self.update()
+
+    def paintEvent(self, event) -> None:  # noqa: N802
+        painter = QPainter(self)
+        try:
+            painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+            rect = QRectF(0.5, 0.5, self.width() - 1.0, self.height() - 1.0)
+            if self._checked:
+                painter.setPen(QPen(QColor(style.CORAL_STRONG), 1))
+                painter.setBrush(QColor(style.CORAL if self._enabled else "#BFD3FF"))
+            else:
+                border = style.LINE_STRONG if self._enabled else style.LINE
+                painter.setPen(QPen(QColor(border), 1.4))
+                painter.setBrush(QColor(style.CARD if self._enabled else style.PAPER_DEEP))
+            painter.drawRoundedRect(rect, 5.5, 5.5)
+            if self._checked:
+                pen = QPen(QColor(style.WHITE), 2.0)
+                pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+                pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
+                painter.setPen(pen)
+                left = self.width() * 0.24
+                mid_x = self.width() * 0.44
+                right = self.width() * 0.76
+                top = self.height() * 0.52
+                bottom = self.height() * 0.74
+                painter.drawLine(int(left), int(top), int(mid_x), int(bottom))
+                painter.drawLine(int(mid_x), int(bottom), int(right), int(self.height() * 0.28))
+        finally:
+            painter.end()
+
+
+class CheckRow(QFrame):
+    """可勾选的单行（模型列表等）：点整行切换勾选。"""
+
+    clicked = Signal()
+
+    def __init__(
+        self,
+        title: str,
+        subtitle: str = "",
+        parent: Optional[QWidget] = None,
+        *,
+        badge_text: str = "",
+        badge_state: str = "neutral",
+    ):
+        super().__init__(parent)
+        self.setObjectName("CheckRow")
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+        self._checked = False
+        self._hover = False
+        self._enabled = True
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(12, 9, 12, 9)
+        layout.setSpacing(10)
+
+        self.indicator = CheckIndicator(self)
+        layout.addWidget(self.indicator, 0, Qt.AlignmentFlag.AlignVCenter)
+
+        column = QVBoxLayout()
+        column.setContentsMargins(0, 0, 0, 0)
+        column.setSpacing(1)
+        self._title = QLabel(title)
+        self._title.setWordWrap(True)
+        column.addWidget(self._title)
+        self._subtitle = QLabel(subtitle)
+        self._subtitle.setWordWrap(True)
+        self._subtitle.setVisible(bool(subtitle))
+        column.addWidget(self._subtitle)
+        layout.addLayout(column, 1)
+
+        self._badge: Optional[StatusBadge] = None
+        if badge_text:
+            self._badge = StatusBadge(badge_text, badge_state)
+            layout.addWidget(self._badge, 0, Qt.AlignmentFlag.AlignVCenter)
+        self._refresh_style()
+
+    # ---------------------------------------------------------------- 状态
+    def isChecked(self) -> bool:  # noqa: N802 - 与 Qt 命名一致
+        return self._checked
+
+    def setChecked(self, checked: bool) -> None:  # noqa: N802
+        self._checked = bool(checked)
+        self.indicator.set_checked(self._checked)
+        self._refresh_style()
+
+    def set_badge(self, text: str, state: str = "neutral") -> None:
+        if self._badge is None:
+            return
+        self._badge.set_state(state, text)
+
+    def setEnabled(self, enabled: bool) -> None:  # noqa: N802
+        self._enabled = bool(enabled)
+        self.indicator.set_enabled(self._enabled)
+        self.setCursor(
+            Qt.CursorShape.PointingHandCursor if enabled else Qt.CursorShape.ArrowCursor
+        )
+        self._refresh_style()
+
+    def _refresh_style(self) -> None:
+        if not self._enabled:
+            background, border = style.PAPER_DEEP, style.LINE
+            title_color, subtitle_color = style.MUTED, style.MUTED
+        elif self._checked:
+            background, border = style.CORAL_SOFT, style.CORAL
+            title_color, subtitle_color = style.INK, style.CORAL_INK
+        elif self._hover:
+            background, border = "#EFF4FF", style.LINE_STRONG
+            title_color, subtitle_color = style.INK, style.MUTED
+        else:
+            background, border = style.CARD_ALT, style.LINE
+            title_color, subtitle_color = style.INK, style.MUTED
+        self.setStyleSheet(
+            "QFrame#CheckRow {"
+            f"background-color: {background}; border: 1px solid {border}; border-radius: 9px;"
+            "}"
+        )
+        weight = "bold" if self._checked else "normal"
+        self._title.setStyleSheet(
+            f"QLabel {{ color: {title_color}; font-size: 12.5px; font-weight: {weight}; "
+            "background: transparent; border: none; }"
+        )
+        self._subtitle.setStyleSheet(
+            f"QLabel {{ color: {subtitle_color}; font-size: 11px; "
+            "background: transparent; border: none; }"
+        )
+
+    # ---------------------------------------------------------------- 事件
+    def mouseReleaseEvent(self, event) -> None:  # noqa: N802
+        if self._enabled and event.button() == Qt.MouseButton.LeftButton:
+            self.clicked.emit()
+        super().mouseReleaseEvent(event)
+
+    def keyPressEvent(self, event) -> None:  # noqa: N802
+        if self._enabled and event.key() in (
+            Qt.Key.Key_Space,
+            Qt.Key.Key_Return,
+            Qt.Key.Key_Enter,
+        ):
+            self.clicked.emit()
+            return
+        super().keyPressEvent(event)
+
+    def enterEvent(self, event) -> None:  # noqa: N802
+        self._hover = True
+        self._refresh_style()
+        super().enterEvent(event)
+
+    def leaveEvent(self, event) -> None:  # noqa: N802
+        self._hover = False
+        self._refresh_style()
+        super().leaveEvent(event)
+
+
+class MarkdownView(QTextBrowser):
+    """只读 Markdown 预览（Qt 原生渲染，不加载外部资源）。"""
+
+    def __init__(self, parent: Optional[QWidget] = None):
+        super().__init__(parent)
+        self.setObjectName("MarkdownView")
+        self.setOpenExternalLinks(True)
+        self.setReadOnly(True)
+        self.setFrameShape(QFrame.Shape.NoFrame)
+        self.document().setDocumentMargin(4)
+
+    def set_markdown(self, text: str) -> None:
+        content = str(text or "").strip()
+        if not content:
+            self.setPlainText("")
+            return
+        try:
+            self.setMarkdown(content)
+        except Exception:  # noqa: BLE001 - 极端 Markdown 也不该让预览崩
+            self.setPlainText(content)
+
+    def markdown_text(self) -> str:
+        return self.toPlainText()
+
+
+class StatTile(QFrame):
+    """仪表盘风格的小统计块（数值 + 说明）。"""
+
+    def __init__(
+        self,
+        label: str,
+        value: str = "—",
+        hint: str = "",
+        parent: Optional[QWidget] = None,
+    ):
+        super().__init__(parent)
+        self.setObjectName("StatTile")
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(14, 11, 14, 11)
+        layout.setSpacing(1)
+        label_widget = QLabel(label)
+        label_widget.setObjectName("Help")
+        layout.addWidget(label_widget)
+        self._value = QLabel(value)
+        self._value.setObjectName("StatValue")
+        layout.addWidget(self._value)
+        self._hint = QLabel(hint)
+        self._hint.setObjectName("Help")
+        self._hint.setWordWrap(True)
+        self._hint.setVisible(bool(hint))
+        layout.addWidget(self._hint)
+
+    def set_value(self, value: str, hint: Optional[str] = None, color: str = "") -> None:
+        self._value.setText(str(value))
+        if color:
+            self._value.setStyleSheet(f"QLabel#StatValue {{ color: {color}; }}")
+        if hint is not None:
+            self._hint.setText(hint)
+            self._hint.setVisible(bool(hint))
 

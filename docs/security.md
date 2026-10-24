@@ -11,7 +11,7 @@
 | LLM API Key | BiliNote 本机配置 | 用户自己 |
 | 视频链接 | Relay D1 | Relay 运营者（就是用户自己） |
 | 任务进度 | Relay D1 | 同上 |
-| Markdown 笔记 | Relay D1 明文 | 同上 |
+| Markdown 笔记 | 只经 Relay 转发，不落 D1/DO | 手机本地缓存；转发瞬间 Relay 可见明文 |
 | Agent token | PC `~/.linknote/agent.json` | 本机用户 |
 | Device token | 手机 localStorage | 手机用户 |
 
@@ -60,7 +60,7 @@
 | 风险 | 影响 | 建议 |
 |---|---|---|
 | 配对创建/领取无限流 | 攻击者可刷 D1、爆破配对码 | 上线前加 Cloudflare Rate Limiting 或 D1 计数（按 IP） |
-| Relay 明文存 Markdown | 平台运营者/数据库泄露可读笔记 | 后续做 E2E：手机生成密钥对，Agent 用公钥加密 markdown，Relay 只存密文 |
+| 转发瞬间 Relay 可见 Markdown | 平台运营者/链路可读笔记 | 后续做 E2E：手机生成密钥对，Agent 用公钥加密 markdown，Relay 只转发密文 |
 | token 存 localStorage | 手机 XSS/恶意扩展可窃取 | 前端严格 CSP；APK 后续可接 Android Keystore |
 | Agent token 明文存 `~/.linknote/agent.json` | 本机其他用户可读 | Windows 接 DPAPI；限制文件 ACL 为当前用户 |
 | 无账号找回 | token 丢失只能重配 | 可接受；后续加恢复码 |

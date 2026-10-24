@@ -4,30 +4,27 @@ from __future__ import annotations
 from collections import deque
 from typing import Optional
 
-from PySide6.QtCore import Qt, QTimer
+from PySide6.QtCore import Qt
 from PySide6.QtGui import QFont
 from PySide6.QtWidgets import (
     QFrame,
     QGridLayout,
     QHBoxLayout,
     QLabel,
-    QMessageBox,
     QVBoxLayout,
     QWidget,
 )
 
 from .. import style, utils
+from ..pairing_panel import PairingPanel
 from ..widgets import (
     Card,
     CodeView,
-    DeviceRow,
-    EmptyState,
     InfoLine,
     InlineMessage,
     StatusBadge,
     StatusDot,
     button,
-    clear_layout,
     progress_bar,
 )
 from .base import BasePage
@@ -147,22 +144,13 @@ class StatusPage(BasePage):
     # ------------------------------------------------------------ 构建
     def build(self) -> None:
         self._status: dict = self.controller.last_status or {}
-        self._pairing: dict = self.controller.pairing_state() or {}
-        self._devices: list[dict] = []
         self._events: deque[str] = deque(maxlen=self.MAX_EVENTS)
-        self._devices_signature: tuple = ()
-        self._qr_code = ""
-        self._pairing_inflight = False
         self._ffmpeg_downloading = False
         self._ffmpeg_last_text = ""
 
         self._build_cards()
-        self._build_pairing_card()
+        self._build_pairing_panel()
         self._build_events_card()
-
-        self._countdown = QTimer(self)
-        self._countdown.setInterval(1000)
-        self._countdown.timeout.connect(self._tick_countdown)
 
         if self._status:
             self._apply_status(self._status)
@@ -226,146 +214,10 @@ class StatusPage(BasePage):
         card.add_action("重新检测", "", self._refresh_status)
         return card
 
-    def _build_pairing_card(self) -> None:
-        card = Card(spacing=10)
-        card.add_header(
-            "配对手机",
-            "手机 LinkNote 输入配对码，就能把视频链接发到这台电脑。",
-        )
-        self._pairing_card = card
-
-        # ---- 状态一：展示配对码
-        self._pair_code_box = QWidget()
-        code_row = QHBoxLayout(self._pair_code_box)
-        code_row.setContentsMargins(0, 0, 0, 0)
-        code_row.setSpacing(20)
-        left = QVBoxLayout()
-        left.setContentsMargins(0, 0, 0, 0)
-        left.setSpacing(6)
-
-        state_row = QHBoxLayout()
-        state_row.setContentsMargins(0, 0, 0, 0)
-        state_row.setSpacing(7)
-        self._pair_state_dot = StatusDot(style.WARN, 8)
-        state_row.addWidget(self._pair_state_dot, 0, Qt.AlignmentFlag.AlignVCenter)
-        self._pair_state_label = QLabel("等待手机领取…")
-        self._pair_state_label.setStyleSheet(
-            f"QLabel {{ color: {style.WARN}; font-size: 12px; font-weight: bold; }}"
-        )
-        state_row.addWidget(self._pair_state_label, 0)
-        state_row.addStretch(1)
-        left.addLayout(state_row)
-
-        self._pair_code_label = QLabel("")
-        code_font = QFont("Consolas")
-        code_font.setStyleHint(QFont.StyleHint.Monospace)
-        code_font.setPointSizeF(22.0)
-        code_font.setWeight(QFont.Weight.Bold)
-        code_font.setLetterSpacing(QFont.SpacingType.AbsoluteSpacing, 3.0)
-        self._pair_code_label.setFont(code_font)
-        self._pair_code_label.setStyleSheet(f"QLabel {{ color: {style.CORAL_INK}; }}")
-        self._pair_code_label.setTextInteractionFlags(
-            Qt.TextInteractionFlag.TextSelectableByMouse
-        )
-        left.addWidget(self._pair_code_label)
-
-        self._pair_expiry_label = QLabel("")
-        self._pair_expiry_label.setObjectName("Muted")
-        left.addWidget(self._pair_expiry_label)
-
-        self._pair_relay_label = QLabel("")
-        self._pair_relay_label.setObjectName("MonoMuted")
-        self._pair_relay_label.setWordWrap(True)
-        left.addWidget(self._pair_relay_label)
-
-        pair_hint = QLabel("手机打开 LinkNote → 配对 → 输入这组配对码，10 分钟内有效。")
-        pair_hint.setObjectName("Help")
-        pair_hint.setWordWrap(True)
-        left.addWidget(pair_hint)
-        left.addSpacing(2)
-
-        button_row = QHBoxLayout()
-        button_row.setContentsMargins(0, 0, 0, 0)
-        button_row.setSpacing(8)
-        self._pair_copy_button = button("复制配对码", "Primary", self._copy_pair_code)
-        self._pair_cancel_button = button("取消", "", self._cancel_pairing)
-        button_row.addWidget(self._pair_copy_button, 0)
-        button_row.addWidget(self._pair_cancel_button, 0)
-        button_row.addStretch(1)
-        left.addLayout(button_row)
-        code_row.addLayout(left, 1)
-
-        qr_frame = QFrame()
-        qr_frame.setObjectName("QRFrame")
-        qr_frame.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
-        qr_frame.setFixedSize(168, 196)
-        qr_layout = QVBoxLayout(qr_frame)
-        qr_layout.setContentsMargins(10, 10, 10, 8)
-        qr_layout.setSpacing(4)
-        self._qr_label = QLabel()
-        self._qr_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self._qr_label.setFixedSize(146, 146)
-        qr_layout.addWidget(self._qr_label, 0, Qt.AlignmentFlag.AlignHCenter)
-        qr_caption = QLabel("手机扫码自动填写")
-        qr_caption.setObjectName("Muted")
-        qr_caption.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        qr_layout.addWidget(qr_caption)
-        code_row.addWidget(qr_frame, 0, Qt.AlignmentFlag.AlignTop)
-        card.add(self._pair_code_box)
-
-        # ---- 状态二：还没有配对码
-        self._pair_empty_box = QWidget()
-        empty_row = QHBoxLayout(self._pair_empty_box)
-        empty_row.setContentsMargins(0, 0, 0, 0)
-        empty_row.setSpacing(16)
-        empty_row.addWidget(
-            EmptyState("还没有配对手机", "生成配对码后，在手机上输入即可完成配对。"),
-            1,
-        )
-        self._pair_generate_button = button("生成配对码", "Primary", self._generate_pairing)
-        self._pair_generate_button.setMinimumWidth(120)
-        empty_row.addWidget(self._pair_generate_button, 0, Qt.AlignmentFlag.AlignVCenter)
-        card.add(self._pair_empty_box)
-
-        # ---- 状态三：配对码过期
-        self._pair_expired_box = QWidget()
-        expired_row = QHBoxLayout(self._pair_expired_box)
-        expired_row.setContentsMargins(0, 0, 0, 0)
-        expired_row.setSpacing(12)
-        expired_message = InlineMessage("配对码已过期，请重新生成一个。", "warning")
-        expired_row.addWidget(expired_message, 1, Qt.AlignmentFlag.AlignVCenter)
-        self._pair_regenerate_button = button(
-            "重新生成", "Primary", self._generate_pairing
-        )
-        expired_row.addWidget(self._pair_regenerate_button, 0, Qt.AlignmentFlag.AlignVCenter)
-        card.add(self._pair_expired_box)
-
-        self._pair_msg = InlineMessage()
-        card.add(self._pair_msg)
-
-        card.add_divider()
-
-        devices_header = QHBoxLayout()
-        devices_header.setContentsMargins(0, 0, 0, 0)
-        devices_header.setSpacing(10)
-        devices_title = QLabel("已配对设备")
-        devices_title.setObjectName("CardTitle")
-        devices_header.addWidget(devices_title, 1)
-        self._add_phone_button = button("添加手机", "", self._generate_pairing)
-        devices_header.addWidget(self._add_phone_button, 0)
-        card.body.addLayout(devices_header)
-
-        self._devices_container = QWidget()
-        self._devices_layout = QVBoxLayout(self._devices_container)
-        self._devices_layout.setContentsMargins(0, 0, 0, 0)
-        self._devices_layout.setSpacing(7)
-        card.body.addWidget(self._devices_container)
-        self._devices_empty = QLabel("还没有配对设备")
-        self._devices_empty.setObjectName("Help")
-        self._devices_empty.setWordWrap(True)
-        card.body.addWidget(self._devices_empty)
-
-        self.add(card)
+    def _build_pairing_panel(self) -> None:
+        self._pairing_panel = PairingPanel(self.controller)
+        self._pairing_panel.message.connect(self.toast)
+        self.add(self._pairing_panel)
 
     def _build_events_card(self) -> None:
         card = Card(spacing=8)
@@ -388,23 +240,17 @@ class StatusPage(BasePage):
             self._apply_status(current)
         elif not self._status:
             self.controller.refresh_status_async()
-        self._pairing = self.controller.pairing_state() or self._pairing
-        self._render_pairing()
-        self._render_devices()
+        self._pairing_panel.refresh()
         self._render_events()
 
     def on_status(self, status: dict) -> None:
         super().on_status(status)
         self._status = status or {}
         self._apply_status(self._status)
-        self._render_pairing()
-        self._render_devices()
+        self._pairing_panel.update_status(self._status)
 
     def on_pairing_changed(self, state: dict) -> None:
-        self._pairing = state or {}
-        self._pairing_inflight = False
-        self._render_pairing()
-        self._render_devices()
+        self._pairing_panel.update_pairing(state or {})
 
     def on_log_appended(self, line: str) -> None:
         text = utils.clip_text(line, 220)
@@ -417,9 +263,7 @@ class StatusPage(BasePage):
         self._render_events()
 
     def on_error(self, message: str) -> None:
-        self._pairing_inflight = False
-        self._set_pair_buttons_enabled(True)
-        self._pair_msg.set_message(f"操作失败：{message}", "error")
+        self._pairing_panel.on_error(message)
 
     def on_notification(self, title: str, message: str, level: str) -> None:
         combined = f"{title} {message}".lower()
@@ -614,150 +458,6 @@ class StatusPage(BasePage):
         self._ffmpeg_progress_label.show()
         self._ffmpeg_card.set_message("正在下载 ffmpeg，完成后会自动安装。", "info")
         self.controller.download_ffmpeg_async()
-
-    # ------------------------------------------------------------ 配对
-    def _generate_pairing(self) -> None:
-        if self._pairing_inflight:
-            return
-        self._pairing_inflight = True
-        self._set_pair_buttons_enabled(False)
-        self._pair_msg.set_message("正在向 Relay 申请配对码…", "info")
-        self.controller.create_pairing_async()
-
-    def _set_pair_buttons_enabled(self, enabled: bool) -> None:
-        self._pair_generate_button.setEnabled(enabled)
-        self._pair_regenerate_button.setEnabled(enabled)
-        self._add_phone_button.setEnabled(enabled)
-
-    def _copy_pair_code(self) -> None:
-        code = self._pair_code_label.text()
-        if not code:
-            return
-        if utils.copy_text(code):
-            self.toast("配对码已复制", "success")
-        else:
-            self.toast("复制失败，请手动选择配对码", "error")
-
-    def _cancel_pairing(self) -> None:
-        self.controller.cancel_pairing()
-        self._pairing = {}
-        self._pair_msg.clear()
-        self._render_pairing()
-        self.toast("已取消当前配对码", "info")
-
-    def _revoke_device(self, device_id: str) -> None:
-        if not device_id:
-            return
-        device = next((d for d in self._devices if str(d.get("id")) == device_id), {})
-        name = device.get("name") or "这台手机"
-        answer = QMessageBox.question(
-            self,
-            "撤下手机",
-            f"撤下「{name}」后，该手机将无法再向这台电脑发送任务。确定撤下吗？",
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-            QMessageBox.StandardButton.No,
-        )
-        if answer != QMessageBox.StandardButton.Yes:
-            return
-        self.controller.revoke_device(device_id)
-        self.toast(f"已撤下「{name}」", "info")
-
-    def _render_pairing(self) -> None:
-        status = self._status or {}
-        agent = status.get("agent") or {}
-        relay = status.get("relay") or {}
-        devices = relay.get("devices") or []
-        paired = bool(agent.get("paired")) or bool(devices)
-
-        pairing = self._pairing or {}
-        code = pairing.get("code")
-        code_text = utils.normalize_pair_code(code) if code else ""
-        state = pairing.get("status") or ""
-        remaining, expired = utils.format_remaining(pairing.get("expires_at"))
-        if code_text and (expired or state == "expired"):
-            state = "expired"
-        if state == "claimed":
-            state = "done"
-
-        show_code = bool(code_text) and state not in ("expired", "done")
-        self._pair_code_box.setVisible(show_code)
-        self._pair_expired_box.setVisible(bool(code_text) and state == "expired")
-        self._pair_empty_box.setVisible(not show_code and state != "expired")
-
-        if show_code:
-            self._pair_code_label.setText(code_text)
-            self._pair_expiry_label.setText(remaining)
-            relay_url = pairing.get("relay_url") or relay.get("url") or self.controller.config.relay_base_url
-            self._pair_relay_label.setText(f"Relay：{relay_url}")
-            if code_text != self._qr_code:
-                self._qr_code = code_text
-                pixmap = utils.pairing_qr_pixmap(code_text, 146, relay_url)
-                if pixmap.isNull():
-                    self._qr_label.setText("二维码生成失败")
-                    self._qr_label.setObjectName("Help")
-                else:
-                    self._qr_label.setPixmap(pixmap)
-            self._pair_state_label.setText("等待手机领取…")
-            self._pair_state_label.setStyleSheet(
-                f"QLabel {{ color: {style.WARN}; font-size: 12px; font-weight: bold; }}"
-            )
-            self._pair_state_dot.set_state(style.WARN, busy=True)
-            if not self._countdown.isActive():
-                self._countdown.start()
-            self._pairing_inflight = False
-            self._set_pair_buttons_enabled(True)
-            self._pair_msg.clear()
-        else:
-            self._countdown.stop()
-            self._pair_state_dot.set_state(style.IDLE, busy=False)
-            if state == "expired":
-                self._pair_msg.set_message("配对码已过期，点击「重新生成」再试一次。", "warning")
-            self._pairing_inflight = False
-            self._set_pair_buttons_enabled(True)
-
-        self._add_phone_button.setVisible(paired)
-        if not paired and not show_code and state != "expired":
-            self._pair_msg.clear()
-
-    def _tick_countdown(self) -> None:
-        if not self._pair_code_box.isVisible():
-            self._countdown.stop()
-            return
-        remaining, expired = utils.format_remaining((self._pairing or {}).get("expires_at"))
-        self._pair_expiry_label.setText(remaining)
-        if expired:
-            self._pairing["status"] = "expired"
-            self._render_pairing()
-
-    def _render_devices(self) -> None:
-        relay = self._status.get("relay") or {}
-        devices = relay.get("devices") or []
-        if not isinstance(devices, list):
-            devices = []
-        signature = tuple(
-            (str(d.get("id")), str(d.get("name")), str(d.get("platform")), str(d.get("paired_at")))
-            for d in devices
-            if isinstance(d, dict)
-        )
-        self._devices = [d for d in devices if isinstance(d, dict)]
-        if signature == self._devices_signature:
-            return
-        self._devices_signature = signature
-        clear_layout(self._devices_layout)
-        if not self._devices:
-            self._devices_empty.setText(
-                "还没有配对设备。点击「添加手机」或生成配对码完成第一台手机配对。"
-            )
-            self._devices_empty.show()
-        else:
-            self._devices_empty.hide()
-            for device in self._devices:
-                row = DeviceRow(device)
-                row.revokeRequested.connect(self._revoke_device)
-                self._devices_layout.addWidget(row)
-        agent = self._status.get("agent") or {}
-        paired = bool(agent.get("paired")) or bool(self._devices)
-        self._add_phone_button.setVisible(paired)
 
     # ------------------------------------------------------------ 事件渲染
     def _render_events(self) -> None:

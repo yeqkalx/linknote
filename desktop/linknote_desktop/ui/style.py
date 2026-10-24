@@ -517,6 +517,53 @@ QLabel#WizardStepSub {{
     font-size: 12.5px;
     color: {MUTED};
 }}
+
+/* ---------------------------------------------------------------- 历史笔记 / 当前任务 */
+QFrame#StatTile {{
+    background-color: {CARD_ALT};
+    border: 1px solid {LINE};
+    border-radius: 10px;
+}}
+QLabel#StatValue {{
+    font-size: 20px;
+    font-weight: bold;
+    color: {INK};
+}}
+QTextBrowser#MarkdownView {{
+    background-color: transparent;
+    border: none;
+    color: {INK};
+    font-size: 13px;
+    selection-background-color: {CORAL_SOFT};
+    selection-color: {INK};
+}}
+QListWidget#HistoryList {{
+    background-color: transparent;
+    border: none;
+    outline: 0;
+}}
+QListWidget#HistoryList::item {{
+    border: none;
+    margin: 0;
+    padding: 0;
+}}
+QListWidget#HistoryList::item:selected {{
+    background: transparent;
+}}
+QListWidget#HistoryList QScrollBar:vertical {{
+    background: transparent;
+    width: 8px;
+}}
+QTabWidget#HistoryTabs::pane {{
+    border: none;
+}}
+QScrollArea#WizardScroll {{
+    background: transparent;
+    border: none;
+}}
+QScrollArea#WizardScroll > QWidget > QWidget {{
+    background: transparent;
+}}
 """
 
 

@@ -16,12 +16,14 @@ from PySide6.QtWidgets import (
     QLabel,
     QLineEdit,
     QPushButton,
+    QScrollArea,
     QStackedWidget,
     QVBoxLayout,
     QWidget,
 )
 
 from . import style, utils
+from .pairing_panel import PairingPanel
 from .widgets import (
     Card,
     InlineMessage,
@@ -190,7 +192,14 @@ class OnboardingWizard(QDialog):
             self._build_finish_page(),
         ]
         for page in self._pages:
-            self._stack.addWidget(page)
+            scroll = QScrollArea()
+            scroll.setObjectName("WizardScroll")
+            scroll.setWidgetResizable(True)
+            scroll.setFrameShape(QFrame.Shape.NoFrame)
+            scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+            scroll.viewport().setAutoFillBackground(False)
+            scroll.setWidget(page)
+            self._stack.addWidget(scroll)
 
     # ------------------------------------------------------------ 通用小件
     def _page(self) -> tuple[QWidget, QVBoxLayout]:
@@ -479,87 +488,20 @@ class OnboardingWizard(QDialog):
         layout.addWidget(
             self._page_title(
                 "配对手机",
-                "用手机 LinkNote 扫描二维码或输入配对码，就能把链接发到这台电脑。",
+                "用手机 LinkNote 扫描二维码或输入配对码。配对成功后，已配对手机会一直显示在这里，"
+                "可随时添加/更换手机或解除设备。",
             )
         )
-        card = Card()
-        status_row = QHBoxLayout()
-        status_row.setContentsMargins(0, 0, 0, 0)
-        status_row.setSpacing(9)
-        self._ob_pair_dot = StatusDot(style.WARN, 8)
-        status_row.addWidget(self._ob_pair_dot, 0, Qt.AlignmentFlag.AlignVCenter)
-        self._ob_pair_state = QLabel("正在准备配对码…")
-        self._ob_pair_state.setStyleSheet(
-            f"QLabel {{ color: {style.WARN}; font-size: 12.5px; font-weight: bold; }}"
-        )
-        status_row.addWidget(self._ob_pair_state, 1)
-        card.body.addLayout(status_row)
-
-        content_row = QHBoxLayout()
-        content_row.setContentsMargins(0, 4, 0, 0)
-        content_row.setSpacing(18)
-        left = QVBoxLayout()
-        left.setContentsMargins(0, 0, 0, 0)
-        left.setSpacing(4)
-        self._ob_pair_code = QLabel("—")
-        code_font = QFont("Consolas")
-        code_font.setStyleHint(QFont.StyleHint.Monospace)
-        code_font.setPointSizeF(20.0)
-        code_font.setWeight(QFont.Weight.Bold)
-        code_font.setLetterSpacing(QFont.SpacingType.AbsoluteSpacing, 3.0)
-        self._ob_pair_code.setFont(code_font)
-        self._ob_pair_code.setStyleSheet(f"QLabel {{ color: {style.CORAL_INK}; }}")
-        self._ob_pair_code.setTextInteractionFlags(
-            Qt.TextInteractionFlag.TextSelectableByMouse
-        )
-        left.addWidget(self._ob_pair_code)
-        self._ob_pair_expiry = QLabel("")
-        self._ob_pair_expiry.setObjectName("Muted")
-        left.addWidget(self._ob_pair_expiry)
-        self._ob_pair_relay = QLabel("")
-        self._ob_pair_relay.setObjectName("MonoMuted")
-        self._ob_pair_relay.setWordWrap(True)
-        left.addWidget(self._ob_pair_relay)
-        pair_hint = QLabel("手机打开 LinkNote → 配对 → 输入配对码（10 分钟内有效）。")
-        pair_hint.setObjectName("Help")
-        pair_hint.setWordWrap(True)
-        left.addWidget(pair_hint)
-        left.addSpacing(4)
-        pair_actions = QHBoxLayout()
-        pair_actions.setContentsMargins(0, 0, 0, 0)
-        pair_actions.setSpacing(8)
-        self._ob_pair_copy_button = button("复制配对码", "Primary", self._copy_pair_code)
-        pair_actions.addWidget(self._ob_pair_copy_button, 0)
-        self._ob_pair_regen_button = button("生成新配对码", "", self._generate_pairing)
-        pair_actions.addWidget(self._ob_pair_regen_button, 0)
-        pair_actions.addStretch(1)
-        left.addLayout(pair_actions)
-        left.addStretch(1)
-        content_row.addLayout(left, 1)
-
-        qr_frame = QFrame()
-        qr_frame.setObjectName("QRFrame")
-        qr_frame.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
-        qr_frame.setFixedSize(148, 172)
-        qr_layout = QVBoxLayout(qr_frame)
-        qr_layout.setContentsMargins(10, 10, 10, 8)
-        qr_layout.setSpacing(4)
-        self._ob_pair_qr = QLabel()
-        self._ob_pair_qr.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self._ob_pair_qr.setFixedSize(126, 126)
-        qr_layout.addWidget(self._ob_pair_qr, 0, Qt.AlignmentFlag.AlignHCenter)
-        qr_caption = QLabel("手机扫码自动填写")
-        qr_caption.setObjectName("Muted")
-        qr_caption.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        qr_layout.addWidget(qr_caption)
-        content_row.addWidget(qr_frame, 0, Qt.AlignmentFlag.AlignTop)
-        card.body.addLayout(content_row)
-
+        self._pairing_panel = PairingPanel(self.controller)
         self._ob_pair_msg = InlineMessage()
-        card.body.addWidget(self._ob_pair_msg)
-
-        card.body.addWidget(hint_label("也可以稍后配对：先完成向导，进入主界面后随时生成配对码。"))
-        layout.addWidget(card)
+        self._pairing_panel.message.connect(
+            lambda text, level: self._ob_pair_msg.set_message(text, level)
+        )
+        layout.addWidget(self._pairing_panel)
+        layout.addWidget(self._ob_pair_msg)
+        layout.addWidget(
+            hint_label("也可以稍后配对：完成向导后，随时可以在「状态」页生成配对码。")
+        )
         layout.addStretch(1)
         return page
 
@@ -1210,94 +1152,9 @@ class OnboardingWizard(QDialog):
 
     # ------------------------------------------------------------ 配对
     def _enter_pair_step(self) -> None:
-        if bool(getattr(self.controller.agent, "is_paired", False)):
-            self._render_pairing()
-            return
-        state = dict(self.controller.pairing_state() or {})
-        self._pairing = state
-        if state.get("code") and state.get("status") != "expired":
-            self._render_pairing()
-            return
-        self._generate_pairing()
-
-    def _generate_pairing(self) -> None:
-        self._ob_pair_state.setText("正在生成配对码…")
-        self._ob_pair_state.setStyleSheet(
-            f"QLabel {{ color: {style.WARN}; font-size: 12.5px; font-weight: bold; }}"
-        )
-        self._ob_pair_dot.set_state(style.WARN, busy=True)
-        self._ob_pair_regen_button.setEnabled(False)
-        self._ob_pair_msg.clear()
-        try:
-            self.controller.create_pairing_async()
-        except Exception as exc:  # noqa: BLE001
-            self._ob_pair_regen_button.setEnabled(True)
-            self._ob_pair_msg.set_message(f"生成配对码失败：{exc}", "error")
-
-    def _copy_pair_code(self) -> None:
-        text = self._ob_pair_code.text().strip()
-        if not text or text == "—":
-            return
-        if utils.copy_text(text):
-            self._ob_pair_msg.set_message("配对码已复制到剪贴板。", "success")
-        else:
-            self._ob_pair_msg.set_message("复制失败，请手动选择配对码。", "warning")
-
-    def _render_pairing(self) -> None:
-        paired = bool(getattr(self.controller.agent, "is_paired", False))
-        state = self._pairing or {}
-        code = utils.normalize_pair_code(state.get("code")) if state.get("code") else ""
-        status = str(state.get("status") or "")
-        remaining, expired = utils.format_remaining(state.get("expires_at"))
-        relay_url = state.get("relay_url") or self.controller.config.relay_base_url
-        if paired:
-            self._ob_pair_dot.set_state(style.OK, busy=False)
-            self._ob_pair_state.setText("配对成功！这台手机已经可以发送链接了。")
-            self._ob_pair_state.setStyleSheet(
-                f"QLabel {{ color: {style.OK}; font-size: 12.5px; font-weight: bold; }}"
-            )
-            device_name = self._paired_device_name()
-            if device_name:
-                self._ob_pair_expiry.setText(f"已绑定：{device_name}")
-            self._ob_pair_msg.set_message("配对完成，下一步即可开始使用。", "success")
-            self._ob_pair_regen_button.setEnabled(True)
-            return
-        if code and status != "expired" and not expired:
-            self._ob_pair_dot.set_state(style.WARN, busy=True)
-            self._ob_pair_state.setText("等待手机领取…")
-            self._ob_pair_state.setStyleSheet(
-                f"QLabel {{ color: {style.WARN}; font-size: 12.5px; font-weight: bold; }}"
-            )
-            self._ob_pair_code.setText(code)
-            self._ob_pair_expiry.setText(remaining)
-            self._ob_pair_relay.setText(f"Relay：{relay_url}")
-            pixmap = utils.pairing_qr_pixmap(code, 126, relay_url)
-            if pixmap.isNull():
-                self._ob_pair_qr.setText("二维码生成失败")
-            else:
-                self._ob_pair_qr.setPixmap(pixmap)
-            self._ob_pair_regen_button.setEnabled(True)
-            self._ob_pair_msg.clear()
-            return
-        if code and (status == "expired" or expired):
-            self._ob_pair_dot.set_state(style.WARN, busy=False)
-            self._ob_pair_state.setText("配对码已过期，请点击「生成新配对码」。")
-            self._ob_pair_state.setStyleSheet(
-                f"QLabel {{ color: {style.WARN}; font-size: 12.5px; font-weight: bold; }}"
-            )
-            self._ob_pair_code.setText(code)
-            self._ob_pair_expiry.setText("配对码已过期")
-            self._ob_pair_msg.set_message("配对码已过期，请重新生成。", "warning")
-            self._ob_pair_regen_button.setEnabled(True)
-            return
-        self._ob_pair_dot.set_state(style.IDLE, busy=False)
-        self._ob_pair_state.setText("尚未生成配对码")
-        self._ob_pair_state.setStyleSheet(
-            f"QLabel {{ color: {style.MUTED}; font-size: 12.5px; font-weight: bold; }}"
-        )
-        self._ob_pair_code.setText("—")
-        self._ob_pair_expiry.setText("")
-        self._ob_pair_regen_button.setEnabled(True)
+        """配对步骤始终可用：即使引擎/Agent 没起来也能生成配对码。"""
+        self._pairing_panel.update_status(self._status)
+        self._pairing_panel.ensure_pairing_code()
 
     def _paired_device_name(self) -> str:
         status = self._status or {}
@@ -1415,7 +1272,7 @@ class OnboardingWizard(QDialog):
         if self._step == self.FINISH:
             self._refresh_summary()
         if self._step == self.PAIR:
-            self._render_pairing()
+            self._pairing_panel.update_status(self._status)
 
     def _on_engine_changed(self, data: dict) -> None:
         state = str((data or {}).get("state") or "")
@@ -1451,13 +1308,13 @@ class OnboardingWizard(QDialog):
             elif level == "error":
                 self._engine_msg.set_message(message, "error")
                 self._engine_retry_button.setEnabled(True)
-        if "配对" in combined and self._step == self.PAIR and level == "success":
-            self._render_pairing()
+        if "配对" in combined and self._step == self.PAIR:
+            self._pairing_panel.refresh()
 
     def _on_pairing_changed(self, state: dict) -> None:
         self._pairing = state or {}
         if self._step == self.PAIR:
-            self._render_pairing()
+            self._pairing_panel.update_pairing(self._pairing)
 
     # ============================================================ 关闭
     def closeEvent(self, event) -> None:  # noqa: N802

@@ -2,16 +2,19 @@
 
 手机分享视频链接 → 云端 Relay → **这台电脑上的 BiliNote** 生成 AI 笔记 → Markdown 回到手机。
 
-本目录是常驻在 Windows 上的 PC Agent：轮询 Relay 领取任务，调用本机 BiliNote 后端
-（`http://127.0.0.1:8483/api`）生成笔记并回传进度/结果。视频、音频、Whisper 模型、
-LLM API Key **都不离开这台电脑**，云端只中转链接、状态和 Markdown。
+本目录是常驻在 Windows 上的 PC Agent：通过 **Relay WebSocket 实时通道**接收手机任务，
+调用本机 BiliNote 后端（`http://127.0.0.1:8483/api`）生成笔记，把进度和 Markdown 回传。
+视频、音频、Whisper 模型、LLM API Key **都不离开这台电脑**；云端只中转链接、状态和
+一次性的笔记正文（不落 D1/DO SQLite）。
 
-- 接口契约：[../docs/api-contract.md](../docs/api-contract.md)（唯一约定，本实现严格遵守）
+- 接口契约：[../docs/api-contract.md](../docs/api-contract.md)（REST）
+- 实时协议：[../docs/realtime-protocol.md](../docs/realtime-protocol.md)（WS，冻结）
 - 架构说明：[../docs/architecture.md](../docs/architecture.md)
 
 ```
-Relay（HTTPS 轮询 + Bearer agt_...）
-   │  GET /agent/tasks/next     POST progress / complete / fail
+Relay（WSS 实时通道 + Bearer agt_...）
+   │  ← hello / task / note_request / ack_note / ping
+   │  → task_update / task_note / pong
    ▼
 PC Agent（本程序：python -m linknote_agent run）
    │  http://127.0.0.1:8483/api
@@ -36,7 +39,8 @@ uv venv .venv --python 3.11
 uv pip install --python .venv\Scripts\python.exe -e ".[dev]"
 ```
 
-只有两个运行时依赖：`httpx`；`dev` 额外装 `pytest` / `pytest-asyncio`。
+运行时依赖：`httpx`（REST）、`websockets`（实时通道）；`dev` 额外装
+`pytest` / `pytest-asyncio`。
 
 ## 配对（第一次使用）
 
@@ -74,24 +78,44 @@ uv pip install --python .venv\Scripts\python.exe -e ".[dev]"
 # 或者双击 packaging\start_agent.cmd
 ```
 
-启动后：
+启动后（WebSocket 推送模式）：
 
-- 每 30 秒向 Relay 发一次心跳（手机端据此显示「电脑在线」）；
-- 每 3–5 秒 `GET /api/v1/agent/tasks/next` 领任务，同一时刻只跑一个（BiliNote 后端本身串行）；
+- 用 `agent_token`（Header `Authorization: Bearer ...`）连 `wss://<relay>/api/v1/agent/ws`，
+  收到 `hello` 后开始工作；服务端推 `task` 才处理（同一时刻只跑一个任务，BiliNote 后端本身串行）；
+- 每 25 秒发应用层 `ping`，对端回 `pong`；超过 60 秒没有任何消息判定断线并重连；
+- 断线按 `1/2/4/8/15/30 秒 + 抖动` 永久重连；网络类错误时每秒探测 Relay 主机，
+  网络一恢复立即重连；
+- 重连成功后重新 `hello`，补发当前任务状态和所有未 ack 的笔记；服务端也会重推
+  `queued/running` 任务（契约 §11.3：每次最多 50 条，其余由 Agent 用 REST 补领一次）；
+- **WS 断开期间**用 REST `GET /api/v1/agent/tasks/next` 兜底领任务，WS 恢复后立即停用；
+  不做空闲轮询（hello 后的一次性补领 + 断开兜底，两处都用任务 id 去重，避免重复处理）；
+- 服务端主动关闭码按契约 §11.1 分类：`4001`（被另一个 Agent 实例顶掉，日志报「重复实例」并
+  继续退避重连）、`4002`（心跳超时）、`1000/1001`（主动关闭）都会自动重连；
 - 领到任务后自动检查 BiliNote 后端，没启动就拉起 `BiliNoteBackend.exe`
   （隐藏窗口 + 日志重定向到 `~/.linknote/logs/bilinote_backend.log`）；
-- 提交 `/generate_note`，每 3 秒轮询 `/task_status/{id}`，状态变化立刻回传 progress；
-- 成功后取 `result.markdown` + `result.audio_meta.title` 回传 complete；失败把常见错误
-  翻译成中文回传 fail；
-- Relay 暂时不可达时，已生成的结果先落本地 outbox，下一轮循环/下次启动自动补传。
+- 提交 `/generate_note`，每 3 秒轮询 `/task_status/{id}`，状态变化时通过 WS
+  `task_update` 回传 `status/progress/stage/message`；
+- 成功后把 Markdown **先保存到本机**（`notes/` + `outbox/`），再发 `task_note`；
+  手机收到后发 `ack_note`，Agent 收到才清理 outbox（`notes/` 永久保留）；
+- 手机请求未缓存的笔记（`note_request`）时，从本地 outbox/notes 重发 `task_note`；
+- 失败把常见错误翻成中文，通过 WS `task_update status=failed error=... error_code=...` 回传。
 
 调试用：
 
 ```powershell
-.venv\Scripts\python.exe -m linknote_agent run --once --verbose   # 只处理一轮
-.venv\Scripts\python.exe -m linknote_agent status               # 查看配对/Relay/后端状态
+.venv\Scripts\python.exe -m linknote_agent run --once --verbose   # 用 REST 领一个任务并处理（调试）
+.venv\Scripts\python.exe -m linknote_agent run --poll             # 强制旧 REST 轮询（排障/兼容）
+.venv\Scripts\python.exe -m linknote_agent status               # 查看配对/Relay/WS/后端状态
 .venv\Scripts\python.exe -m linknote_agent status --json        # 机器可读
 ```
+
+### 笔记与 outbox 的关系（实时模式）
+
+- 笔记正文**只在本机**：`~/.linknote/notes/<task_id>.md` 永久保留；
+- `~/.linknote/outbox/note-<task_id>.json` 是「待手机 ack」队列（含正文副本）：
+  断线/重启后会重发 `task_note`；收到 `ack_note` 后该 JSON 删除，Markdown 文件保留；
+- 超过 `note_retention_days`（默认 7 天）仍未 ack 的 outbox 记录会被清理（本地 md 不删）；
+- 手机端 `note_request` 即使 outbox 已清理，也会从 `notes/*.md` 读取并重发。
 
 ## 登录自启（可选）
 
@@ -121,8 +145,8 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\packaging\install_autostar
 | 命令 | 作用 |
 |---|---|
 | `pair [--relay URL] [--name 名字] [--no-wait]` | 创建配对、保存 token、显示配对码并轮询领取 |
-| `run [--once] [--relay URL]` | 常驻轮询任务（`--once` 只处理一轮，调试用） |
-| `status [--json]` | 查看配对、Relay 在线/设备、BiliNote 后端、outbox 待补传数量 |
+| `run [--poll] [--once] [--relay URL]` | 常驻运行（默认 WebSocket 推送；`--poll` 强制 REST 轮询，`--once` 只走一次 REST 领取） |
+| `status [--json]` | 查看配对、Relay/WS 地址、BiliNote 后端、outbox/待 ack 笔记数量 |
 | `install-autostart [--remove]` | 安装/移除登录自启快捷方式 |
 | `unpair [--yes] [--revoke-devices]` | 清除本机凭据；`--revoke-devices` 同时撤销所有手机 |
 | `--help` / `<command> --help` | 查看帮助 |
@@ -150,13 +174,24 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\packaging\install_autostar
 | `style` | `minimal` | 笔记风格（必须是非空字符串） |
 | `screenshot` | `false` | 是否生成视频截图（会显著变慢） |
 | `insert_video_links` | `true` | 笔记里插入可跳转的时间点链接 |
-| `poll_interval_seconds` | `4.0` | 空闲时领任务间隔（契约建议 3–5 秒） |
+| `poll_interval_seconds` | `4.0` | REST 轮询模式空闲领取间隔（WS 断开兜底时用 `fallback_poll_interval_seconds`） |
+| `fallback_poll_interval_seconds` | `4.0` | WS 断开期间 REST 兜底领取任务的间隔 |
 | `task_status_poll_interval_seconds` | `3.0` | 轮询 BiliNote 状态间隔 |
 | `progress_min_interval_seconds` | `8.0` | 同状态进度回传最小间隔（契约 ≤10 秒） |
-| `heartbeat_interval_seconds` | `30.0` | Agent 心跳间隔（契约 30 秒） |
+| `heartbeat_interval_seconds` | `30.0` | REST Agent 心跳间隔（WS 模式下仍保留，兼容旧 REST 在线状态） |
 | `lease_heartbeat_interval_seconds` | `300.0` | 长任务租约续期间隔（契约 5 分钟） |
 | `task_timeout_seconds` | `3600.0` | 单任务最长等待，超时判失败 |
 | `max_status_errors` | `20` | 连续查询 BiliNote 状态失败多少次判定后端失联 |
+| `use_websocket` | `true` | 是否走 WS 推送；false 等价 `run --poll` |
+| `ws_url` | `""` | 留空由 `relay_base_url` 推导；本地联调可填 `ws://127.0.0.1:8798/api/v1/agent/ws` |
+| `ws_ping_interval_seconds` | `25.0` | 应用层 ping 间隔（实时协议 25 秒） |
+| `ws_dead_timeout_seconds` | `60.0` | 多久没收到任何消息判定断线（协议建议 30–60 秒） |
+| `ws_hello_timeout_seconds` | `10.0` | 连接后等待 hello 的超时 |
+| `ws_reconnect_delays` | `[1,2,4,8,15,30]` | 断线退避基数（秒），可写成 `"1,2,4,8,15,30"` |
+| `ws_jitter_ratio` | `0.2` | 每次退避附加 0–20% 抖动，总上限 30 秒 |
+| `rest_fallback` | `true` | WS 断开期间是否用 REST `/agent/tasks/next` 兜底 |
+| `rest_heartbeat_enabled` | `true` | WS 模式是否同时发 REST 心跳（兼容旧 REST 在线状态） |
+| `note_retention_days` | `7.0` | 未 ack 笔记在 outbox 的保留天数（`notes/` 永久保留） |
 | `outbox_dir` / `notes_dir` / `log_dir` | `""`（用 `~/.linknote/` 下默认子目录） | 可自定义 |
 | `verbose` | `false` | 是否输出 DEBUG 日志 |
 
@@ -167,8 +202,8 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\packaging\install_autostar
 | `agent.json` | 配置 + agent_token（原子写；POSIX 上权限 0600，Windows 上 token 仅存本机） |
 | `logs/agent.log` | Agent 日志（5 MB 滚动 ×3） |
 | `logs/bilinote_backend.log` | 自动拉起的 BiliNote 后端 stdout/stderr |
-| `outbox/*.json` | Relay 暂时不可达时暂存的结果，恢复后自动补传 |
-| `notes/<task_id>.md` | 补传失败/笔记超 1.5 MB 时本地留档的 Markdown |
+| `outbox/*.json` | WS 模式：`note-*.json` 待手机 ack 的笔记（正文副本）；REST 模式：`complete-*`/`fail-*` 待补传 |
+| `notes/<task_id>.md` | 笔记正文永久留档（笔记从不写进 Relay D1/DO SQLite） |
 
 ## 状态映射
 
@@ -183,8 +218,8 @@ BiliNote 任务状态 → 契约 stage（`docs/api-contract.md` §7.2 只允许�
 | `SUMMARIZING` | `summarizing` | 70 | AI 正在总结内容（已用 3 分 5 秒） |
 | `FORMATTING` | `formatting` | 85 | 正在整理格式（已用 3 分 20 秒） |
 | `SAVING` | `saving` | 95 | 正在保存笔记（已用 3 分 25 秒） |
-| `SUCCESS` | —（complete） | 100 | `POST /complete` 回传标题 + Markdown |
-| `FAILED` | —（fail） | — | `POST /fail` 回传中文原因 |
+| `SUCCESS` | `saving` → done | 100 | WS `task_update status=completed` + `task_note`（正文不回写服务器） |
+| `FAILED` | — | — | WS `task_update status=failed error=中文原因 error_code=...` |
 
 > 契约里 Agent 能回传的 stage 没有 `pending`，而 BiliNote 的 `PENDING` 是「已进后端队列、
 > 还没开始处理」。这里映射为 `parsing` 并在 message 里明确写「等待 BiliNote 开始处理」，
@@ -208,20 +243,24 @@ Agent 会把 BiliNote 的原始报错翻译成中文再回传 fail（手机端�
 
 1. **`run` 提示「还没有配对」**：先 `pair`；或本机 `~/.linknote/agent.json` 丢了
    （token 丢失只能重新配对）。
-2. **手机端显示电脑离线**：`status` 看 Relay 是否可达；心跳失败日志在 `agent.log`。
-   代理/VPN 可能拦截 `connect`，给 `httpx` 配代理见「已知风险」。
-3. **`401` 配对失效**：Relay 侧 token 被撤销/重配过。重新 `pair`（新 token 覆盖旧配置）。
-4. **BiliNote 后端拉不起来**：
+2. **手机端显示电脑离线**：`status` 看 Relay 是否可达；WS 日志（连接/重连/心跳）在
+   `agent.log`。代理/VPN 可能拦截 `connect`，给 `httpx`/`websockets` 配代理见「已知风险」。
+3. **`401` 配对失效**：Relay 侧 token 被撤销/重配过。重新 `pair`（新 token 覆盖旧配置）；
+   WS 握手 401 时 Agent 会记 ERROR、继续按退避重连并用 REST 兜底，不会崩溃。
+4. **WS 连不上但 REST 正常**：检查防火墙/代理是否允许 `Upgrade`；Agent 会自动走
+   REST `/agent/tasks/next` 兜底保活，`status` 里能看到 WS 地址。
+5. **BiliNote 后端拉不起来**：
    - 确认 `backend_exe` 指向真实文件；
    - 看 `~/.linknote/logs/bilinote_backend.log`（通常是 BiliNote 自身配置/端口占用）；
    - 也可以手动先打开 BiliNote，再 `run`（`auto_start_backend=false` 时只探测不拉起）。
-5. **转写/模型报错**：Agent 只是转发 BiliNote 的错误，按手机端提示去 BiliNote 设置里修。
-6. **outbox 里有堆积**：Relay 长时间不可达导致；恢复网络后 `run` 会自动补传，
-   `status` 里能看到待补传数量。补传被 Relay 拒绝（任务已被回收）时笔记会存到
-   `~/.linknote/notes/<task_id>.md`，不会丢。
-7. **开机自启后「没反应」**：pythonw 没有窗口是正常的；看
+6. **转写/模型报错**：Agent 只是转发 BiliNote 的错误，按手机端提示去 BiliNote 设置里修。
+7. **outbox 里有待 ack 笔记堆积**：手机没上线/没 ack。恢复后重连会自动重发，
+   手机打开该任务会发 `note_request` 再要一次；超过 7 天未 ack 的 outbox 记录会自动清理，
+   `notes/` 里的 Markdown 不会丢。
+8. **开机自启后「没反应」**：pythonw 没有窗口是正常的；看
    `%USERPROFILE%\.linknote\logs\agent.log` 和 `status.cmd` 的输出。
-8. **端口/地址**：BiliNote 默认 8483；Relay 本地 wrangler 默认 8787。Agent 不监听任何端口。
+9. **端口/地址**：BiliNote 默认 8483；Relay 本地 wrangler 默认 8787（realtime 调试脚本是
+   8798）。Agent 不监听任何端口。
 
 ## 测试
 
@@ -229,16 +268,37 @@ Agent 会把 BiliNote 的原始报错翻译成中文再回传 fail（手机端�
 .venv\Scripts\python.exe -m pytest -q
 ```
 
-测试**不依赖真实 Relay / BiliNote**：用 `httpx.MockTransport` 在进程内模拟两端
-（见 `tests/conftest.py` 的 `FakeRelay` / `FakeBiliNote`），覆盖：
+当前 **206 passed**。测试**不依赖真实 Relay / BiliNote**：REST 用 `httpx.MockTransport`
+在进程内模拟（`tests/conftest.py` 的 `FakeRelay` / `FakeBiliNote`）；WS 用注入的 fake
+connection + 本机 `websockets` fake server（真实握手，随机端口）验证。覆盖：
 
-- 配置读写/原子写/环境变量/损坏容错；
+- 配置读写/原子写/环境变量/损坏容错（含所有 WS 字段与列表类型转换）；
 - 配对流程（创建、保存 token、打印配对码、claimed / expired / 超时 / Relay 断开）；
 - 任务生命周期（领任务 → 启动后端 → 提交 → 进度 → complete），进度映射与 10 秒节流；
-- 失败路径与中文错误翻译、租约/Agent 心跳、outbox 落盘与重启补传、本地留档；
+- 失败路径与中文错误翻译、租约/Agent 心跳、REST outbox 落盘与重启补传、本地留档；
+- **实时通道**：WS URL 推导、退避序列 `1/2/4/8/15/30+jitter`、真实本地 WS 握手
+  （路径 + `Authorization: Bearer` + hello + 收发）、401 分类、ping/pong、
+  死连接超时重连、网络探测提前重连、事件分发、任务更新、`task_note` 只落本地、
+  `note_request` 重发、`ack_note` 清理、重连补发、REST 兜底、旧 outbox 迁移；
 - BiliNote 请求体字段（与 `wecom_bot` 完全一致）、ResponseWrapper 解包；
 - CLI（`--help`、未配对拦截、`status --json`、`unpair`、`install-autostart` 命令拼装、
-  `run --once` 端到端）。
+  `run --once`、`run --poll`、默认 WS 模式）。
+
+真实链路验证（2026-10-24，fake BiliNote + fake phone，节选）：
+
+**生产 relay `wss://relay.xykong.xyz`（relay v0.2.0）**
+- `pair --relay https://relay.xykong.xyz` → 手机 REST claim → Agent WSS 握手 **HTTP 101**
+  （Header `Authorization: Bearer agt_…`），首帧 `{"type":"hello","agent_id":"..."}`；
+  从启动到连上 1.22s；
+- 手机建任务 → **1.3s 后手机收到 `note`**；`task_updated` 序列 `parsing 1 → parsing 2 →
+  downloading 20 → transcribing 45 → summarizing 70 → succeeded 100`；
+- `ack_note` 后 Agent outbox 清空、`notes/<task_id>.md` 保留；`GET /tasks/:id` 无 `markdown`
+  字段、`GET /tasks/:id/note` 返回 **410 `note_not_stored`**；
+- 手机离线时生成 → 手机上线发 `note_request` → Agent 从本地重发 `task_note` → ack 清理；
+- 同 token 第二条连接顶替：旧连接收到服务端 **close 4001**，Agent 日志提示「可能重复启动
+  Agent」并自动重连成功（契约 §11.1 关闭码处理）。
+
+**本机 relay 8797（同一套脚本）**：上述全流程同样通过；Agent 连接 0.62s、任务到 note 1.12s。
 
 ## 与契约相关的重要说明（实现选择）
 
@@ -258,11 +318,34 @@ Agent 会把 BiliNote 的原始报错翻译成中文再回传 fail（手机端�
    `model_auth_error` / `quota_exceeded` / `transcriber_not_ready` / `unsupported_platform` /
    `backend_unavailable` / `task_timeout` / `empty_note` / `note_too_large` 等可读 code，
    `message` 始终是可直接展示的中文。
+8. **实时模式的任务领取**：WS 在线时**不轮询** REST `/agent/tasks/next`（避免「推送 + REST
+   轮询」重复处理同一任务）。只在两处用 REST 补领：① 收到 hello 后按 `GET /agent/me` 的
+   `queue.queued` 一次性补领（契约 §11.3：hello 每次最多推送 50 条，其余由 Agent 用 REST 兜底）；
+   ② WS 断开期间兜底轮询。两处都用任务 id 去重，同一任务不会处理两次。
+9. **task_update 字段**：除协议示例的 `status/progress/title/error` 外，按契约 §11.2 增量约定
+   附带可选 `stage`（契约 §8 六种）、`message`（≤200）与 failed 时的 `error_code`（≤64）；
+   非法 stage 会被 Relay 忽略而不是报错。
+10. **ack_note 转发**：协议 §2.1 未列该消息，契约 §11.3 已明确 Relay 会转发给 Agent
+    （`{"type":"ack_note","task_id"}`），Agent 收到才删 outbox 记录、保留 `notes/`。
+11. **服务端关闭码**：契约 §11.1 的 `4001`（被新 Agent 顶掉）/`4002`（心跳超时）/
+    `4003`（手机设备被撤销，不涉及 Agent）都会被识别并记录；`4001` 会提示「可能重复启动
+    Agent」，并按退避继续重连（不会崩、也不会热循环）。
+12. **笔记正文永不回写服务器**：WS 模式只发 `task_note`；REST `/complete` 仅存在于
+    `--poll/--once` 兼容路径（旧客户端），新链路不调用。
+13. **笔记大小**：单条 `task_note` ≤1.5 MiB；超限时任务置失败并只在本地保留 Markdown
+    （不让手机端无限重试一个必然被拒的正文）。
+14. **REST 心跳保留**：WS 模式下仍每 30 秒发 `POST /agent/heartbeat`，仅用于兼容旧 REST
+    在线状态/`GET /agent/me`；手机 presence 以 DO 实时通道为准。
 
 ## 已知风险
 
-- Windows 家庭宽带下 Relay 走 HTTPS 出站轮询，不需要入口映射；但公司代理/Clash TUN 可能
-  影响 `connect`，必要时给 `httpx` 配代理（后续可加 `HTTPS_PROXY` 支持）。
+- Windows 家庭宽带下 Relay 走 WSS 出站长连接，不需要入口映射；但公司代理/Clash TUN 可能
+  影响 `connect`/`Upgrade`，必要时给 `httpx`/`websockets` 配代理（后续可加 `HTTPS_PROXY` 支持）。
+- WS 断线期间只有 REST `/agent/tasks/next` 兜底能领到 **queued** 任务；正在 running 的任务
+  要靠 Relay hello 后重推（实时协议已约定），若 Relay 未实现该行为，重启后的 running 任务
+  需等租约过期回收。
+- 手机长时间不 ack 时 outbox 会保留正文副本到 `note_retention_days`（默认 7 天），
+  磁盘占用与笔记数量成正比；`notes/` 永久保留，需要用户自行清理。
 - BiliNote 后端无鉴权、只有本机用；Agent 不把它暴露到公网。
 - 自动拉起的后端进程在 Agent 退出后**不杀**（那是用户自己的 BiliNote），下次直接复用。
 

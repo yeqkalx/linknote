@@ -14,7 +14,7 @@ from typing import Any, Iterable
 
 APP_NAME = "LinkNote"
 APP_NAME_CN = "链记"
-APP_VERSION = "0.2.0"
+APP_VERSION = "0.2.2"
 DEFAULT_RELAY_URL = "https://relay.xykong.xyz"
 DEFAULT_BACKEND_URL = "http://127.0.0.1:8483/api"
 DEFAULT_PROVIDER = "deepseek"

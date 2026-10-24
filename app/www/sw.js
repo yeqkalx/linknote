@@ -6,7 +6,7 @@
  * - 页面导航：网络优先；离线回退到缓存的 index.html（hash 路由只有一个入口）。
  * - API（/api/）：不拦截、不缓存，永远走网络；离线由页面的本地队列兜底。
  */
-const SW_VERSION = '0.2.0';
+const SW_VERSION = '0.3.0';
 const SHELL_CACHE = `linknote-shell-v${SW_VERSION}`;
 const SCOPE = self.registration.scope;
 const toUrl = (path) => new URL(path, SCOPE).href;
@@ -28,6 +28,7 @@ const PRECACHE = [
   'js/router.js',
   'js/bridge.js',
   'js/pwa.js',
+  'js/realtime.js',
   'js/views/pair.js',
   'js/views/home.js',
   'js/views/task.js',
