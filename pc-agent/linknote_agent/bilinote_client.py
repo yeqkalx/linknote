@@ -96,6 +96,45 @@ class BiliNoteClient:
         except Exception:  # noqa: BLE001 - 连不上就是没起来
             return False
 
+    async def engine_health(self, timeout: float = 2.0) -> bool:
+        """v0.3 readiness 用的引擎健康探测（BiliNote ``/api/health``，总超时 ≤ ``timeout``）。
+
+        - ``/api/health`` 返回 2xx → 健康；
+        - BiliNote 老版本没有 ``/api/health``（404/405）→ 回退到
+          ``/get_all_providers``（与 :meth:`is_alive` 同一个探针），避免把老版本误判为不可用；
+        - 超时/连不上/其它状态码 → 不健康。
+
+        总耗时受 ``timeout`` 约束（含回退请求），供 agent_ready 上报使用。
+        """
+        import asyncio
+
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + max(0.1, float(timeout))
+
+        async def _get(path: str) -> int:
+            remaining = deadline - loop.time()
+            if remaining <= 0.05:
+                raise asyncio.TimeoutError
+            resp = await self._client.get(path, timeout=remaining)
+            return resp.status_code
+
+        try:
+            status = await asyncio.wait_for(_get("/health"), timeout=max(0.1, timeout))
+            if 200 <= status < 300:
+                return True
+            if status in (404, 405):
+                fallback = await asyncio.wait_for(
+                    _get("/get_all_providers"), timeout=max(0.1, timeout)
+                )
+                return 200 <= fallback < 300
+            return False
+        except asyncio.TimeoutError:
+            logger.debug("BiliNote 引擎健康探测超时（%.1fs）", timeout)
+            return False
+        except Exception as exc:  # noqa: BLE001 - 连不上/协议错误都视为不可用
+            logger.debug("BiliNote 引擎健康探测失败：%s", exc)
+            return False
+
     async def generate_note(
         self,
         video_url: str,

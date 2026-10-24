@@ -13,6 +13,7 @@ from PySide6.QtWidgets import (
     QFrame,
     QHBoxLayout,
     QLabel,
+    QLineEdit,
     QListWidget,
     QListWidgetItem,
     QSplitter,
@@ -38,16 +39,18 @@ from .base import BasePage
 
 class HistoryPage(BasePage):
     PAGE_KEY = "history"
-    PAGE_TITLE = "历史笔记"
-    PAGE_SUBTITLE = "保存在这台电脑上的笔记。回传失败的笔记会自动留档，可在这里预览或打开文件。"
+    PAGE_TITLE = "笔记库"
+    PAGE_SUBTITLE = "保存在这台电脑上的笔记。可搜索、预览，或打开原文件与笔记目录。"
 
     def build(self) -> None:
+        self._all_items: list[dict[str, Any]] = []
         self._items: list[dict[str, Any]] = []
         self._current_markdown = ""
         self._counts: dict[str, Any] = {}
         self._notes_dir = ""
         self._rows: list[_HistoryRow] = []
         self._list_items: list[QListWidgetItem] = []
+        self._filter_text = ""
 
         self._build_toolbar()
         self._build_stats()
@@ -60,6 +63,13 @@ class HistoryPage(BasePage):
         layout = QHBoxLayout(row)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(8)
+        self._search_edit = QLineEdit()
+        self._search_edit.setPlaceholderText("搜索标题或平台，如「会议」/ bilibili")
+        self._search_edit.setClearButtonEnabled(True)
+        self._search_edit.setMinimumWidth(240)
+        self._search_edit.setMaximumWidth(340)
+        self._search_edit.textChanged.connect(self._apply_filter)
+        layout.addWidget(self._search_edit, 0)
         self._refreshed_label = QLabel("正在读取本地笔记…")
         self._refreshed_label.setObjectName("Help")
         layout.addWidget(self._refreshed_label, 1)
@@ -166,7 +176,7 @@ class HistoryPage(BasePage):
     def _on_history_changed(self, data: dict) -> None:
         self._refresh_button.setEnabled(True)
         data = data or {}
-        self._items = [item for item in (data.get("items") or []) if isinstance(item, dict)]
+        self._all_items = [item for item in (data.get("items") or []) if isinstance(item, dict)]
         self._counts = data.get("counts") if isinstance(data.get("counts"), dict) else {}
         self._notes_dir = str(data.get("notes_dir") or "")
         error = str(data.get("error") or "")
@@ -175,6 +185,47 @@ class HistoryPage(BasePage):
         else:
             self._error_msg.clear()
         self._render_stats()
+        self._apply_filter()
+
+    def _apply_filter(self) -> None:
+        """按标题/平台过滤列表（数据来自 notes 目录 + outbox 元数据）。"""
+        self._filter_text = self._search_edit.text().strip().lower() if hasattr(self, "_search_edit") else ""
+        if self._filter_text:
+            def matches(item: dict[str, Any]) -> bool:
+                title = str(item.get("title") or "").lower()
+                platform = str(item.get("platform") or "").lower()
+                platform_label = utils.format_platform(item.get("platform")).lower()
+                return (
+                    self._filter_text in title
+                    or self._filter_text in platform
+                    or self._filter_text in platform_label
+                )
+
+            self._items = [item for item in self._all_items if matches(item)]
+        else:
+            self._items = list(self._all_items)
+        total = len(self._all_items)
+        shown = len(self._items)
+        if total and shown != total:
+            self._list_count_badge.set_state("info", f"{shown} / {total} 篇")
+        else:
+            self._list_count_badge.set_state(
+                "info" if total else "neutral", f"{shown} 篇"
+            )
+        if not self._all_items:
+            self._list_empty.setText(
+                "还没有本地笔记。手机生成的笔记默认回传手机；"
+                "当回传失败或笔记过大时，LinkNote 会自动把它们留档到本机，"
+                "之后就会出现在这里。"
+            )
+            self._list_empty.show()
+        elif not self._items:
+            self._list_empty.setText(
+                f"没有匹配「{self._search_edit.text().strip()}」的笔记，试试其他关键词。"
+            )
+            self._list_empty.show()
+        else:
+            self._list_empty.hide()
         self._rebuild_list()
 
     def _render_stats(self) -> None:
@@ -188,18 +239,6 @@ class HistoryPage(BasePage):
             color=style.WARN if pending else style.INK,
         )
         self._words_tile.set_value(f"{words:,}", hint="中文字符 + 英文单词")
-        self._list_count_badge.set_state(
-            "info" if self._items else "neutral", f"{len(self._items)} 篇"
-        )
-        if not self._items:
-            self._list_empty.setText(
-                "还没有本地笔记。手机生成的笔记默认回传手机；"
-                "当回传失败或笔记过大时，LinkNote 会自动把它们留档到本机，"
-                "之后就会出现在这里。"
-            )
-            self._list_empty.show()
-        else:
-            self._list_empty.hide()
 
     def _rebuild_list(self) -> None:
         self._list.blockSignals(True)

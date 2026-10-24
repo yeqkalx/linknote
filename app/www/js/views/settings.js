@@ -167,6 +167,16 @@ export async function settingsView(container, ctx) {
   function renderPairing() {
     const presence = getRealtimeSnapshot().presence.online;
     const online = typeof presence === 'boolean' ? presence : Boolean(agent && agent.online);
+    const readiness = readinessInfo();
+    const issues =
+      online && readiness.ready === false
+        ? readiness.issues.length
+          ? readiness.issues
+          : [{ code: 'unknown', label: '需要处理一项设置' }]
+        : [];
+    let onlineText = '电脑在线，可以接收任务';
+    if (issues.length) onlineText = `电脑在线 · 需要处理 ${issues.length} 项`;
+    else if (readiness.ready === true) onlineText = '电脑在线 · 可生成';
     const deviceName = (device && device.name) || settings.getDeviceName();
     const platform = (device && device.platform) || devicePlatform();
     const pairedAt = device && device.paired_at ? formatDateTime(device.paired_at) : '';
@@ -179,11 +189,18 @@ export async function settingsView(container, ctx) {
           <p class="agent-name">${escapeHtml((agent && agent.name) || '我的电脑')}</p>
           <p class="agent-sub">${
             online
-              ? '电脑在线，可以接收任务'
+              ? escapeHtml(onlineText)
               : agent && agent.last_seen_at
                 ? `最近在线：${escapeHtml(formatRelativeTime(agent.last_seen_at))}`
                 : '电脑离线，任务会排队'
           }</p>
+          ${
+            issues.length
+              ? `<ul class="agent-issue-list">${issues
+                  .map((issue) => `<li>${escapeHtml(issueLabel(issue))}</li>`)
+                  .join('')}</ul>`
+              : ''
+          }
         </div>
         <span class="status-pill" data-state="${online ? 'online' : 'offline'}">
           <span class="status-dot" aria-hidden="true"></span>${online ? '在线' : '离线'}
@@ -207,6 +224,33 @@ export async function settingsView(container, ctx) {
       <div class="kv"><span class="kv-key">设备系统</span><span class="kv-value">${escapeHtml(platformLabel(platform))}</span></div>
       ${pairedAt ? `<div class="kv"><span class="kv-key">配对时间</span><span class="kv-value">${escapeHtml(pairedAt)}</span></div>` : ''}
       <div class="kv"><span class="kv-key">设备 ID</span><span class="kv-value mono">${escapeHtml(deviceId)}</span></div>`;
+  }
+
+  /** readiness（在线 ≠ 可生成）：优先实时快照，旧 Relay 退回 /me 增量字段 */
+  function readinessInfo() {
+    const snapshot = getRealtimeSnapshot();
+    if (snapshot.mode !== 'legacy') {
+      return {
+        ready: snapshot.readiness.ready,
+        issues: Array.isArray(snapshot.readiness.issues) ? snapshot.readiness.issues : [],
+      };
+    }
+    if (agent && typeof agent.ready === 'boolean') {
+      return { ready: agent.ready, issues: Array.isArray(agent.issues) ? agent.issues : [] };
+    }
+    return { ready: null, issues: [] };
+  }
+
+  function issueLabel(issue) {
+    if (issue && typeof issue.label === 'string' && issue.label.trim()) return issue.label.trim();
+    const code = issue && typeof issue.code === 'string' ? issue.code : '';
+    const labels = {
+      model_not_configured: '未配置 AI 模型',
+      engine_unreachable: 'BiliNote 引擎不可用',
+      ffmpeg_missing: '缺少 ffmpeg',
+      agent_paused: 'Agent 已暂停',
+    };
+    return labels[code] || '需要处理一项设置';
   }
 
   /** 实时事件到来时，避免打断用户正在编辑的设备名 */
@@ -501,25 +545,32 @@ export async function settingsView(container, ctx) {
   }
 
   async function renderCacheSummary() {
-    const summary = (await cacheSummary(base)) || { taskCount: 0, noteCount: 0, noteChars: 0 };
+    const summary = (await cacheSummary(base)) || {};
     if (signal.aborted) return;
-    const size = summary.noteChars ? `，约 ${formatBytes(summary.noteChars * 2)}` : '';
-    cacheSummaryEl.textContent = `${summary.taskCount} 个任务 / ${summary.noteCount} 篇笔记${size}`;
+    const bytes = Number(summary.noteBytes) || 0;
+    const size = bytes ? ` · ${formatBytes(bytes)}` : '';
+    const pinnedText = summary.pinnedCount ? `（固定 ${summary.pinnedCount} 篇）` : '';
+    cacheSummaryEl.textContent = `${summary.taskCount || 0} 个任务 / ${summary.noteCount || 0} 篇笔记${size}${pinnedText}`;
   }
 
   clearCacheButton.addEventListener(
     'click',
     async () => {
+      const summary = (await cacheSummary(base)) || {};
+      const pinnedCount = Number(summary.pinnedCount) || 0;
       const confirmed = await confirmDialog({
         title: '清除离线缓存？',
-        message: '会删除本机缓存的任务列表与笔记。配对关系、待发送队列不受影响。',
+        message: pinnedCount
+          ? `会清除 ${summary.noteCount || 0} 篇笔记中未固定的部分；已固定的 ${pinnedCount} 篇会保留。任务缓存与待发送队列不受影响。`
+          : '会删除本机缓存的任务列表与笔记。配对关系、待发送队列不受影响。',
         confirmText: '清除',
         danger: true,
       });
       if (!confirmed) return;
-      await clearCaches(base);
+      const result = await clearCaches(base, { keepPinned: true });
       await renderCacheSummary();
-      toast('已清除离线缓存', { type: 'success' });
+      const kept = result && result.kept ? `，保留了 ${result.kept} 篇固定笔记` : '';
+      toast(`已清除离线缓存${kept}`, { type: 'success' });
     },
     { signal },
   );
@@ -540,6 +591,10 @@ export async function settingsView(container, ctx) {
       refreshPairingLive();
     }),
     onRealtime('presence', () => {
+      renderRealtimeInfo();
+      refreshPairingLive();
+    }),
+    onRealtime('readiness', () => {
       renderRealtimeInfo();
       refreshPairingLive();
     }),

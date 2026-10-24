@@ -14,7 +14,7 @@ from PySide6.QtWidgets import (
 )
 
 from .. import style
-from ..widgets import InlineMessage
+from ..widgets import InlineMessage, button
 from .. import utils
 
 ENGINE_GATE_TEXT = "BiliNote 引擎未运行。请先到「引擎与 ffmpeg」页启动引擎，以下功能暂不可用。"
@@ -63,19 +63,51 @@ class BasePage(QScrollArea):
     # ------------------------------------------------------------ 构建
     def _build_header(self) -> QWidget:
         header = QWidget()
-        layout = QVBoxLayout(header)
-        layout.setContentsMargins(0, 0, 0, 2)
-        layout.setSpacing(3)
+        row = QHBoxLayout(header)
+        row.setContentsMargins(0, 0, 0, 2)
+        row.setSpacing(12)
+
+        column = QVBoxLayout()
+        column.setContentsMargins(0, 0, 0, 0)
+        column.setSpacing(3)
         title = QLabel(self.PAGE_TITLE)
         title.setObjectName("H1")
         title.setWordWrap(True)
-        layout.addWidget(title)
+        column.addWidget(title)
         if self.PAGE_SUBTITLE:
             subtitle = QLabel(self.PAGE_SUBTITLE)
             subtitle.setObjectName("Muted")
             subtitle.setWordWrap(True)
-            layout.addWidget(subtitle)
+            column.addWidget(subtitle)
+        row.addLayout(column, 1)
+
+        self._header_actions = QHBoxLayout()
+        self._header_actions.setContentsMargins(0, 0, 0, 0)
+        self._header_actions.setSpacing(8)
+        row.addLayout(self._header_actions, 0)
+        self._back_button = None
+        self._back_target = "settings"
         return header
+
+    def set_back_visible(
+        self,
+        visible: bool,
+        target: str = "settings",
+        label: str = "← 返回设置",
+    ) -> None:
+        """隐藏的二级页面（AI/转写/引擎/日志）显示「返回设置」按钮。"""
+        self._back_target = target
+        if self._back_button is None:
+            self._back_button = button(
+                label,
+                "",
+                on_click=lambda: self.navigateRequested.emit(self._back_target),
+            )
+            self._back_button.setFixedHeight(30)
+            self._header_actions.addWidget(
+                self._back_button, 0, Qt.AlignmentFlag.AlignTop
+            )
+        self._back_button.setVisible(bool(visible))
 
     def build(self) -> None:
         """子类在这里创建页面内容（所有控件初始化也在这一步完成）。"""

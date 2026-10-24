@@ -1,10 +1,13 @@
 """WebSocket 推送版单任务执行器（默认 ``run`` 模式）。
 
-按 ``docs/realtime-protocol.md``：
+按 ``docs/realtime-protocol.md`` + ``docs/v0.3-protocol-delta.md``：
 - 不再轮询任务；服务端推 ``task`` 才处理（同一时刻只跑一个任务）；
 - 任务过程用 WS 发 ``task_update``（running/progress/completed/failed，带可选 stage/message）；
 - 完成时把正文保存在本地 ``notes/`` + ``outbox/``，然后发 ``task_note``（**不写 D1**）；
-- 收 ``note_request`` 从本地重发 ``task_note``；收 ``ack_note`` 清理 outbox（保留 notes 文件）；
+- 收 ``note_request`` 从本地重发 ``task_note``；
+- 收 ``ack_note``：``persisted!==false`` 才清 outbox；``false`` 时保留并按
+  30s/2min/10min 最多重发 3 次（v0.3 §2）；
+- 连接收到 ``hello`` 后立即上报一次 ``agent_ready``（readiness 变化时重发，v0.3 §3）；
 - WS 断开期间用 REST ``GET /api/v1/agent/tasks/next`` 兜底领取任务，WS 恢复后停用；
 - 重连成功后（收到 hello）重发当前任务状态与所有未 ack 笔记。
 """
@@ -20,12 +23,15 @@ from .bilinote_client import BiliNoteClient
 from .config import AgentConfig
 from .logging_setup import get_logger
 from .outbox import KIND_FAIL, Outbox
+from .readiness import ReadinessChecker
 from .relay_client import MARKDOWN_MAX_BYTES, RelayClient, RelayError
 from .relay_ws import (
     EVENT_AUTH_ERROR,
     EVENT_CONNECTED,
     EVENT_DISCONNECTED,
     EVENT_RECONNECT_SCHEDULED,
+    EVENT_SERVER_PING,
+    EVENT_SERVER_PROBE,
     RealtimeClient,
 )
 from .stage_map import FAIL_MESSAGE_MAX_CHARS, translate_failure, truncate_message
@@ -56,6 +62,7 @@ class RealtimeAgentRunner:
         backend: Optional[BackendSupervisor] = None,
         outbox: Optional[Outbox] = None,
         ws_client: Optional[Any] = None,
+        readiness: Optional[ReadinessChecker] = None,
         sleep=asyncio.sleep,
         clock=None,
     ):
@@ -66,20 +73,22 @@ class RealtimeAgentRunner:
         self.outbox = outbox or Outbox(
             config.resolved_outbox_dir(), notes_dir=config.resolved_notes_dir()
         )
+        self._sleep = sleep
+        self._clock = clock or time.monotonic
         self.ws = ws_client or RealtimeClient(
             config.relay_base_url,
             config.agent_token,
             ws_url=config.ws_url,
+            # v0.3：协议层 ping（不再发应用层 JSON ping）
             ping_interval=config.ws_ping_interval_seconds,
-            dead_timeout=config.ws_dead_timeout_seconds,
+            ping_timeout=config.ws_ping_timeout_seconds,
             hello_timeout=config.ws_hello_timeout_seconds,
             reconnect_delays=config.ws_reconnect_delays,
             jitter_ratio=config.ws_jitter_ratio,
             sleep=sleep,
-            clock=clock or time.monotonic,
+            clock=self._clock,
         )
-        self._sleep = sleep
-        self._clock = clock or time.monotonic
+        self.readiness = readiness or ReadinessChecker(config, bilinote, clock=self._clock)
 
         self._queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue(maxsize=TASK_QUEUE_MAX)
         self._known_task_ids: set[str] = set()
@@ -92,6 +101,12 @@ class RealtimeAgentRunner:
         self._hello_seen = False
         self._stop: Optional[asyncio.Event] = None
         self._auth_error_logged = False
+
+        # readiness（agent_ready）：记住上次上报的签名，只有变化时重发（hello 后强制首发）
+        self._last_readiness: Optional[tuple] = None
+        self._readiness_lock = asyncio.Lock()
+        # ack persisted=false 的重发调度（每个 task 最多一串 30s/2min/10min）
+        self._ack_retry_tasks: dict[str, asyncio.Task] = {}
 
     # ================================================================ 状态
 
@@ -136,6 +151,7 @@ class RealtimeAgentRunner:
             await stop.wait()
         finally:
             stop.set()
+            self._cancel_all_ack_retries()
             for task in tasks:
                 task.cancel()
             for task in tasks:
@@ -220,6 +236,18 @@ class RealtimeAgentRunner:
             await self.on_ws_ready()
             return
 
+        if msg_type in (EVENT_SERVER_PING, EVENT_SERVER_PROBE):
+            # 服务端 JSON ping/probe：Agent 已在客户端回 pong/probe_ack；
+            # 借这次自然时机刷新 readiness（带 30s 缓存，不会每次都探测引擎）。
+            logger.debug(
+                "服务端 %s（ts=%s replied=%s），刷新 readiness",
+                msg_type,
+                message.get("ts"),
+                message.get("replied"),
+            )
+            await self.report_readiness()
+            return
+
         if msg_type == "task":
             task = message.get("task")
             if isinstance(task, dict):
@@ -231,13 +259,28 @@ class RealtimeAgentRunner:
         if msg_type == "note_request":
             task_id = str(message.get("task_id") or "")
             if task_id:
+                # 手机主动来要笔记：取消该任务已有的 ack 重发，立即重发一次；
+                # 若手机再次 ack persisted=false，会重新排一轮。
+                self._cancel_ack_retry(task_id)
                 await self.resend_note(task_id)
             return
 
         if msg_type == "ack_note":
             task_id = str(message.get("task_id") or "")
-            if task_id and not self.outbox.ack_note(task_id):
-                logger.debug("收到 ack_note 但 outbox 已无对应记录 task_id=%s", task_id)
+            if not task_id:
+                return
+            persisted = message.get("persisted", True)
+            if persisted is False:
+                # v0.3 §2：手机写入本地缓存失败，保留 outbox，30s/2min/10min 最多重发 3 次。
+                logger.warning(
+                    "手机报告笔记未成功保存（ack persisted=false），保留 outbox 并排队重发 task_id=%s",
+                    task_id,
+                )
+                self._schedule_ack_retry(task_id)
+            else:
+                self._cancel_ack_retry(task_id)
+                if not self.outbox.ack_note(task_id):
+                    logger.debug("收到 ack_note 但 outbox 已无对应记录 task_id=%s", task_id)
             return
 
         if msg_type == "phone_online":
@@ -257,7 +300,10 @@ class RealtimeAgentRunner:
     # ================================================================ 连接就绪
 
     async def on_ws_ready(self) -> None:
-        """收到 hello（首次连接/重连）后：重发当前状态 + 所有未 ack 笔记 + 未送达失败。"""
+        """收到 hello（首次连接/重连）后：重发当前状态 + 未 ack 笔记/失败 + readiness。"""
+        # 新连接后统一重发（相当于「重启补发」）；旧的 ack 重发定时器作废，手机再 ack false 会重排。
+        self._cancel_all_ack_retries()
+
         if self._active_task_id is not None:
             await self._send_running_update(
                 self._active_task_id,
@@ -277,6 +323,104 @@ class RealtimeAgentRunner:
 
         # 契约 §11.3：hello 后 Relay 每次最多补发 50 条 queued/running，其余用 REST 兜底补领。
         await self.pull_pending_via_rest()
+
+        # v0.3 §3：收到 hello 后立即上报一次 agent_ready（新连接必须首发，即使未变化）。
+        await self.report_readiness(force=True)
+
+    # ================================================================ readiness
+
+    async def report_readiness(self, *, force: bool = False) -> bool:
+        """上报 ``agent_ready``（ready + issues）。
+
+        - ``force=True``：新连接/hello 后强制发一次；
+        - 否则只有 readiness 签名变化才发（避免重复消息）。
+        返回是否成功发出。
+        """
+        async with self._readiness_lock:
+            report = await self.readiness.check(force=False)
+            signature = report.signature
+            if not force and signature == self._last_readiness:
+                return False
+            payload = {"type": "agent_ready", **report.to_payload()}
+            sent = await self.ws.send(payload)
+            if sent:
+                changed = self._last_readiness is not None and signature != self._last_readiness
+                self._last_readiness = signature
+                codes = [issue.code for issue in report.issues]
+                if force or changed:
+                    logger.info(
+                        "已上报 agent_ready ready=%s issues=%s%s",
+                        report.ready,
+                        codes,
+                        "（新连接首发）" if force else "（readiness 变化）",
+                    )
+                else:
+                    logger.debug("已上报 agent_ready（状态未变）ready=%s issues=%s", report.ready, codes)
+            else:
+                logger.warning(
+                    "agent_ready 发送失败（连接断开），重连 hello 后会重发；当前 ready=%s issues=%s",
+                    report.ready,
+                    [issue.code for issue in report.issues],
+                )
+            return sent
+
+    # ================================================================ ack 重发
+
+    def _schedule_ack_retry(self, task_id: str) -> None:
+        """ack persisted=false：按 30s/2min/10min 最多重发 3 次 task_note（后台任务，不阻塞主循环）。"""
+        if task_id in self._ack_retry_tasks:
+            logger.debug("ack 重发已在排队，忽略重复调度 task_id=%s", task_id)
+            return
+        if self.outbox.note_for(task_id) is None:
+            logger.debug("ack 重发没有本地笔记，跳过 task_id=%s", task_id)
+            return
+        task = asyncio.create_task(self._ack_retry_loop(task_id), name=f"ack-retry-{task_id}")
+        self._ack_retry_tasks[task_id] = task
+
+        def _cleanup(finished: asyncio.Task, tid: str = task_id, expected: asyncio.Task = task) -> None:
+            if self._ack_retry_tasks.get(tid) is expected:
+                self._ack_retry_tasks.pop(tid, None)
+
+        task.add_done_callback(_cleanup)
+
+    def _cancel_ack_retry(self, task_id: str) -> None:
+        task = self._ack_retry_tasks.pop(task_id, None)
+        if task is not None and not task.done():
+            task.cancel()
+
+    def _cancel_all_ack_retries(self) -> None:
+        tasks = list(self._ack_retry_tasks.values())
+        self._ack_retry_tasks.clear()
+        for task in tasks:
+            if not task.done():
+                task.cancel()
+
+    async def _ack_retry_loop(self, task_id: str) -> None:
+        delays = [max(0.0, float(d)) for d in self.config.note_ack_retry_delays_seconds]
+        if not delays:
+            return
+        for attempt, delay in enumerate(delays, start=1):
+            await self._sleep(delay)
+            if self._stop is not None and self._stop.is_set():
+                return
+            found = self.outbox.note_for(task_id)
+            if found is None:
+                logger.debug("ack 重发任务已从 outbox 清理，停止 task_id=%s", task_id)
+                return
+            title, markdown = found
+            sent = await self._send_task_note(task_id, title, markdown)
+            logger.info(
+                "ack persisted=false 第 %d/%d 次重发 task_note task_id=%s（sent=%s）",
+                attempt,
+                len(delays),
+                task_id,
+                sent,
+            )
+        logger.warning(
+            "ack persisted=false 已重发 %d 次仍未确认手机保存，等待 note_request 或重启补发 task_id=%s",
+            len(delays),
+            task_id,
+        )
 
     async def pull_pending_via_rest(self) -> int:
         """hello 后用 REST 补领经过 50 条推送上限后剩余的排队任务（去重后入队）。
@@ -434,6 +578,14 @@ class RealtimeAgentRunner:
             self._active_task_id = None
             self._active_progress = 0
             self._active_stage = ""
+            # 任务刚跑过转写/LLM，引擎状态可能变化：失效健康缓存，只在 readiness 变化时重发。
+            self.readiness.invalidate_engine_cache()
+            try:
+                await self.report_readiness()
+            except asyncio.CancelledError:
+                raise
+            except Exception:  # noqa: BLE001 - readiness 失败不影响任务结果
+                logger.debug("任务结束后刷新 readiness 失败", exc_info=True)
 
     async def _deliver_completed(self, task_id: str, outcome: TaskOutcome) -> None:
         title, markdown = extract_title_and_markdown(
@@ -636,12 +788,14 @@ class RealtimeAgentRunner:
             pass
 
     async def _close_ws(self) -> None:
+        self._cancel_all_ack_retries()
         try:
             await self.ws.stop()
         except Exception:  # noqa: BLE001
             pass
 
     async def close(self) -> None:
+        self._cancel_all_ack_retries()
         await self._close_ws()
         await self.backend.close()
 

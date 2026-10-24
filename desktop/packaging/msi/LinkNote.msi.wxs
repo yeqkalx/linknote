@@ -1,6 +1,6 @@
 ﻿<?xml version="1.0" encoding="utf-8"?>
 <?ifndef ProductVersion ?>
-<?define ProductVersion = "0.2.1" ?>
+<?define ProductVersion = "0.3.0" ?>
 <?endif?>
 <Wix xmlns="http://schemas.microsoft.com/wix/2006/wi">
   <Product
@@ -143,4 +143,5 @@
     <WixVariable Id="WixUILicenseRtf" Value="$(var.LicenseRtf)" />
   </Product>
 </Wix>
+
 

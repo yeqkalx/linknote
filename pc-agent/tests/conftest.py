@@ -415,6 +415,8 @@ class FakeBiliNote:
 
     def __init__(self) -> None:
         self.alive = True
+        self.health_ok = True  # v0.3 readiness：/api/health 探针结果
+        self.health_calls = 0
         self.requests: list[dict[str, Any]] = []
         self.generate_bodies: list[dict[str, Any]] = []
         self.generate_error: Optional[tuple[str, int]] = None
@@ -446,6 +448,14 @@ class FakeBiliNote:
         path = request.url.path
         body = _read_json(request)
         self.requests.append({"method": method, "path": path, "json": body})
+
+        if path == "/api/health":
+            self.health_calls += 1
+            if not self.health_ok:
+                return httpx.Response(503, json={"code": 503, "msg": "engine unavailable", "data": None})
+            return httpx.Response(
+                200, json={"code": 0, "msg": "success", "data": {"status": "ok"}}
+            )
 
         if path == "/api/get_all_providers":
             if not self.alive:

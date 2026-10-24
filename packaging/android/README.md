@@ -109,25 +109,25 @@ cd android
 - `-SkipSync`：跳过 `cap sync`（确认 web assets 未变时用）。
 - `-SkipPatch`：不重打 MainActivity/Manifest/应用名补丁（图标替换仍执行）。
 
-### 构建记录（当前交付 APK：PWA 0.3.0）
+### 构建记录（当前交付 APK：PWA v0.3）
 
 | 项 | 值 |
 | --- | --- |
 | 交付路径 | `C:\yeqkalx\code\bilinote-to-android\release\LinkNote-debug.apk` |
-| 构建时间 | 2026-10-24 16:32:04（Asia/Shanghai, UTC+08:00） |
-| app/www 冻结时间 | 2026-10-24 16:28:02（PWA 0.3.0，31 个文件；此后未再改动） |
-| 大小 | 4,687,552 字节（4.47 MiB / 约 4.69 MB） |
-| SHA256 | `C3C3229DDC46CA18BADC86AA1F15AB960A38BFC4F344222AA85619E7CF6F2D06` |
+| 构建时间 | 2026-10-24 19:14:09（Asia/Shanghai, UTC+08:00） |
+| app/www 冻结时间 | 2026-10-24 19:03:10（PWA v0.3，31 个文件；此后未再改动） |
+| 大小 | 4,700,200 字节（4.48 MiB / 约 4.70 MB） |
+| SHA256 | `5925CC0F1E9BC60C150F178F348BCEADAC32C1C2FE1BF2896FE3B64193A4EACD` |
 | 构建命令 | `powershell -ExecutionPolicy Bypass -File packaging\android\build-android.ps1`（内部：cap sync → 品牌图标 → 打补丁 → gradlew assembleDebug → 复制 release） |
-| Android 版本 | versionCode=`2`、versionName=`1.1`（上一版 1 / 1.0；本轮对应 PWA 0.3.0 发版做 bump，已写入 `build-android.ps1` 补丁逻辑，cap add 重建后也会自动应用） |
-| PWA 版本 | 0.3.0：`assets/public/js/config.js` 中 `APP_VERSION='0.3.0'`、`sw.js` 中 `SW_VERSION='0.3.0'`；`assets/public/js/realtime.js`（16,597 B，WebSocket + ticket + presence）+ 本地笔记缓存均已在 APK 内。 |
-| 图标 | `res/mipmap-{mdpi,hdpi,xhdpi,xxhdpi,xxxhdpi}-v4/` 下 `ic_launcher.png`、`ic_launcher_round.png`、`ic_launcher_foreground.png` 共 15 个 PNG 与 `assets\android-icons\` 源文件 **SHA256 逐字节一致**；adaptive icon 背景色在 `resources.arsc` 中为 `color/ic_launcher_background = #fffdfeff`（#FDFEFF；本轮 0.3.0 图标集已由 Lead 更新，上一版为 #1C1A18）。 |
-| 图标/补丁幂等性 | 图标为纯覆盖复制、manifest/strings/version 补丁均为条件改写，重复执行内容不变（上一轮已实测：重跑 `build-android.ps1` 后 Gradle `assembleDebug` UP-TO-DATE、APK 同一 SHA256）。 |
-| 校验 | aapt2：package=`xyz.xykong.linknote`、versionCode=2、versionName=1.1、minSdk=24、targetSdk=36、compileSdk=36、label=`链记`、launchable-activity=`xyz.xykong.linknote.MainActivity`；INTERNET 权限。Manifest：`ACTION_SEND`+`text/plain` intent-filter ✓、`android:allowBackup="false"` ✓、launchMode=singleTask ✓。assets/public：33 个文件 = `app/www` 31/31 全部存在且**逐字节 SHA256 一致** + Capacitor 生成的 0 字节 `cordova.js`/`cordova_plugins.js`；含 index.html/css/js/vendor/icons/manifest/sw.js/share.html/js/realtime.js。apksigner：v2 签名通过（Android Debug 证书）。apkanalyzer summary：`xyz.xykong.linknote 2 1.1`。 |
-| 校验原始输出 | `packaging\android\verification\`（aapt2-badging.txt、aapt2-manifest-xmltree.txt、AndroidManifest.printed.xml、apkanalyzer-summary.txt、apksigner-verify.txt、apk-filelist.txt、apk-filelist-with-sizes.txt、icon-verify.txt、pwa-0.3.0-verify.txt、SHA256SUMS.txt、manifest-patch-selftest.xml） |
-| 未验证 | 真机/模拟器安装、launcher 图标实际显示、WebSocket/presence/分享端到端（本机 `adb devices` 为空、无模拟器）；release 签名（仅 debug 证书） |
+| Android 版本 | versionCode=`3`、versionName=`1.2`（task-19 按建议 bump；上一版为 2 / 1.1。已写入 `build-android.ps1` 补丁逻辑，cap add 重建后也会自动应用） |
+| PWA 版本 | v0.3：`assets/public/js/config.js` 中 `APP_VERSION='0.3.0'`、`sw.js` 中 `SW_VERSION='0.3.0'`；`assets/public/js/realtime.js`（19,859 B）含 `ack_note`、`persisted`、`readiness`（准备度/在线 ≠ 可生成）逻辑；本地笔记缓存（noteCache/persist）随 store.js 一并打包。 |
+| 图标 | `res/mipmap-{mdpi,hdpi,xhdpi,xxhdpi,xxxhdpi}-v4/` 下 `ic_launcher.png`、`ic_launcher_round.png`、`ic_launcher_foreground.png` 共 15 个 PNG 与 `assets\android-icons\` 源文件 **SHA256 逐字节一致**；adaptive icon 背景色在 `resources.arsc` 中为 `color/ic_launcher_background = #fffdfeff`（#FDFEFF）。 |
+| 图标/补丁幂等性 | 图标为纯覆盖复制、manifest/strings/version 补丁均为条件改写，重复执行内容不变（此前已实测：重跑 `build-android.ps1` 后 Gradle `assembleDebug` UP-TO-DATE、APK 同一 SHA256）。 |
+| 校验 | aapt2：package=`xyz.xykong.linknote`、versionCode=3、versionName=1.2、minSdk=24、targetSdk=36、compileSdk=36、label=`链记`、launchable-activity=`xyz.xykong.linknote.MainActivity`；INTERNET 权限。Manifest：`ACTION_SEND`+`text/plain` intent-filter ✓、`android:allowBackup="false"` ✓、launchMode=singleTask ✓。assets/public：33 个文件 = `app/www` 31/31 全部存在且**逐字节 SHA256 一致** + Capacitor 生成的 0 字节 `cordova.js`/`cordova_plugins.js`；含 index.html/css/js/vendor/icons/manifest/sw.js/share.html/js/realtime.js。apksigner：v2 签名通过（Android Debug 证书）。apkanalyzer summary：`xyz.xykong.linknote 3 1.2`。 |
+| 校验原始输出 | `packaging\android\verification\`（aapt2-badging.txt、aapt2-manifest-xmltree.txt、AndroidManifest.printed.xml、apkanalyzer-summary.txt、apksigner-verify.txt、apk-filelist.txt、apk-filelist-with-sizes.txt、icon-verify.txt、pwa-v0.3-verify.txt、SHA256SUMS.txt、manifest-patch-selftest.xml） |
+| 未验证 | 真机/模拟器安装、launcher 图标实际显示、WebSocket/presence/readiness/ack 持久化/分享端到端（本机 `adb devices` 为空、无模拟器）；release 签名（仅 debug 证书） |
 
-> 注：debug APK 的 zip 时间戳/签名不同，同样的源码两次构建 SHA256 也会变化，故以上记录对应交付的那一次构建。历史构建记录见 git 历史（PWA 0.2.0：`2FFAC878…FE012`，PWA 0.1.0：`E1C960…46CA`）。
+> 注：debug APK 的 zip 时间戳/签名不同，同样的源码两次构建 SHA256 也会变化，故以上记录对应交付的那一次构建。历史构建记录见 git 历史（PWA 0.3.0 初版：`C3C3229D…F2D06`，PWA 0.2.0：`2FFAC878…FE012`，PWA 0.1.0：`E1C960…46CA`）。
 
 ## 5. 分享接收（Android → WebView）
 

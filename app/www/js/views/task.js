@@ -1,17 +1,21 @@
 /**
- * 链记 LinkNote — 任务详情 / 阅读器
+ * 链记 LinkNote — 任务详情 / 阅读器（v0.3）
  *
- * 实时架构（docs/realtime-protocol.md）：
- * - 任务状态由 WS `task_updated` 推送，不再 3s 轮询。
- * - 笔记正文只从 WS `note` 收：先写手机本地缓存（IndexedDB 优先），阅读器只读本地缓存。
- * - 缓存缺失时向 Relay 发 `note_request`；`note_unavailable` 时提示「电脑离线，稍后重试」。
- * - 收到正文后由 realtime 模块统一回 `ack_note`（Agent 才会清理本地正文）。
+ * - 任务状态由 WS `task_updated` 推送，不轮询；主视图只保留三态摘要
+ *   （等待电脑 / 获取内容 / 生成笔记），详细阶段折叠，不展示不可靠的百分比。
+ * - 笔记正文只从 WS `note` 收：写入手机本地缓存（IndexedDB 优先）后由 realtime
+ *   回 ack persisted；保存失败会提示“未保存到手机，可重试”并支持补存 + 补 ack。
+ * - 阅读器底部精简为 3 组：复制 / 导出（下载+分享）/ 更多（固定、重新生成、移除…）。
+ * - 电脑状态卡同时展示 readiness（在线 · 可生成 / 需要处理 N 项）。
  */
 import { api, isNetworkError } from '../api.js';
 import {
+  READINESS_ISSUE_LABELS,
   REALTIME_NOTE_TIMEOUT_MS,
   STAGES,
   STAGE_LABELS,
+  STAGE_PHASE,
+  TASK_PHASES,
   TERMINAL_STATUSES,
 } from '../config.js';
 import { renderMarkdown } from '../markdown.js';
@@ -22,6 +26,7 @@ import {
   onRealtime,
   probeRealtime,
   requestNote,
+  sendAckNote,
   startRealtime,
 } from '../realtime.js';
 import { navigate } from '../router.js';
@@ -29,6 +34,7 @@ import { auth, noteCache, settings, taskCache } from '../store.js';
 import {
   confirmDialog,
   icon,
+  openSheet,
   platformChip,
   statusChip,
   toast,
@@ -53,6 +59,14 @@ function stageIndex(stage) {
   return STAGES.findIndex((item) => item.key === stage);
 }
 
+function phaseIndexOf(task) {
+  if (!task) return 0;
+  if (task.status === 'queued') return 0;
+  const phase = STAGE_PHASE[task.stage] || 'generating';
+  const index = TASK_PHASES.findIndex((item) => item.key === phase);
+  return index >= 0 ? index : 0;
+}
+
 function sourceUrlOf(task) {
   if (!task || typeof task.url !== 'string') return '';
   const value = task.url.trim();
@@ -60,56 +74,38 @@ function sourceUrlOf(task) {
   return '';
 }
 
-function timelineHtml(task) {
+function issueLabelOf(issue) {
+  if (issue && typeof issue.label === 'string' && issue.label.trim()) return issue.label.trim();
+  const code = issue && typeof issue.code === 'string' ? issue.code : '';
+  return READINESS_ISSUE_LABELS[code] || '需要处理一项设置';
+}
+
+function timelineListHtml(task) {
   const currentIndex = stageIndex(task.stage);
   const done = task.status === 'succeeded' || task.stage === 'done';
   return `
-    <section class="card timeline-card">
-      <h2 class="card-title">生成阶段</h2>
-      <ol class="timeline">
-        ${STAGES.map((stage, index) => {
-          let state = 'pending';
-          if (done) state = 'done';
-          else if (currentIndex >= 0 && index < currentIndex) state = 'done';
-          else if (currentIndex >= 0 && index === currentIndex) state = 'active';
-          const dot =
-            state === 'done'
-              ? icon('check', { size: 12 })
-              : state === 'active'
-                ? icon('sparkles', { size: 12 })
-                : '';
-          return `
-            <li class="timeline-item is-${state}">
-              <span class="timeline-dot" aria-hidden="true">${dot}</span>
-              <div class="timeline-body">
-                <span class="timeline-label">${escapeHtml(stage.label)}</span>
-                <span class="timeline-hint">${escapeHtml(stage.hint)}</span>
-              </div>
-            </li>`;
-        }).join('')}
-      </ol>
-    </section>`;
-}
-
-function agentStatusHtml(agent) {
-  if (!agent) return '';
-  const online = agent.online === true;
-  const reconnecting = agent.reconnecting === true;
-  const subText = reconnecting
-    ? '实时连接中断，正在重连…'
-    : online
-      ? '电脑在线'
-      : agent.last_seen_at
-        ? `最近在线：${escapeHtml(formatRelativeTime(agent.last_seen_at))}`
-        : '电脑当前离线';
-  return `
-    <div class="task-agent ${online && !reconnecting ? '' : 'is-offline'}">
-      <span class="agent-icon ${online && !reconnecting ? 'is-online' : ''}" aria-hidden="true">${icon(online && !reconnecting ? 'cloud' : 'cloud-off', { size: 18 })}</span>
-      <div class="agent-info">
-        <p class="agent-name">${escapeHtml(agent.name || '我的电脑')}</p>
-        <p class="agent-sub">${subText}</p>
-      </div>
-    </div>`;
+    <ol class="timeline">
+      ${STAGES.map((stage, index) => {
+        let state = 'pending';
+        if (done) state = 'done';
+        else if (currentIndex >= 0 && index < currentIndex) state = 'done';
+        else if (currentIndex >= 0 && index === currentIndex) state = 'active';
+        const dot =
+          state === 'done'
+            ? icon('check', { size: 12 })
+            : state === 'active'
+              ? icon('sparkles', { size: 12 })
+              : '';
+        return `
+          <li class="timeline-item is-${state}">
+            <span class="timeline-dot" aria-hidden="true">${dot}</span>
+            <div class="timeline-body">
+              <span class="timeline-label">${escapeHtml(stage.label)}</span>
+              <span class="timeline-hint">${escapeHtml(stage.hint)}</span>
+            </div>
+          </li>`;
+      }).join('')}
+    </ol>`;
 }
 
 export async function taskView(container, ctx) {
@@ -133,6 +129,9 @@ export async function taskView(container, ctx) {
   // idle | loading | waiting-connection | unavailable | timeout | ready
   let noteState = 'idle';
   let noteError = '';
+  let noteSaved = null; // true=已保存到手机 false=保存失败 null=未知/未收到
+  let noteSaveError = '';
+  let pinned = false;
   let stateError = '';
   let removed = false;
   let disposed = false;
@@ -160,7 +159,7 @@ export async function taskView(container, ctx) {
   const presencePill = container.querySelector('#task-presence');
 
   /* ------------------------------------------------------------------ */
-  /* 在线状态 / 连接状态                                                 */
+  /* 在线状态 / readiness                                                */
   /* ------------------------------------------------------------------ */
 
   function presenceOnline() {
@@ -168,6 +167,20 @@ export async function taskView(container, ctx) {
     if (typeof rt.presence.online === 'boolean') return rt.presence.online;
     if (agent && typeof agent.online === 'boolean') return agent.online;
     return null;
+  }
+
+  function readinessInfo() {
+    const rt = getRealtimeSnapshot();
+    if (rt.mode !== 'legacy') {
+      return {
+        ready: rt.readiness.ready,
+        issues: Array.isArray(rt.readiness.issues) ? rt.readiness.issues : [],
+      };
+    }
+    if (agent && typeof agent.ready === 'boolean') {
+      return { ready: agent.ready, issues: Array.isArray(agent.issues) ? agent.issues : [] };
+    }
+    return { ready: null, issues: [] };
   }
 
   function agentUi() {
@@ -181,6 +194,46 @@ export async function taskView(container, ctx) {
       reconnecting: rtDown,
       last_seen_at: rt.presence.lastSeen || baseAgent.last_seen_at || null,
     };
+  }
+
+  function agentStatusHtml(uiAgent) {
+    if (!uiAgent) return '';
+    const online = uiAgent.online === true;
+    const reconnecting = uiAgent.reconnecting === true;
+    const readiness = readinessInfo();
+    const issues =
+      online && !reconnecting && readiness.ready === false
+        ? readiness.issues.length
+          ? readiness.issues
+          : [{ code: 'unknown', label: '需要处理一项设置' }]
+        : [];
+    let subText;
+    if (reconnecting) subText = '实时连接中断，正在重连…';
+    else if (!online) {
+      subText = uiAgent.last_seen_at
+        ? `最近在线：${escapeHtml(formatRelativeTime(uiAgent.last_seen_at))}`
+        : '电脑当前离线';
+    } else if (issues.length) subText = `在线 · 需要处理 ${issues.length} 项`;
+    else if (readiness.ready === true) subText = '在线 · 可生成';
+    else subText = '在线';
+    return `
+      <div class="task-agent ${online && !reconnecting ? '' : 'is-offline'}">
+        <span class="agent-icon ${online && !reconnecting ? 'is-online' : ''}" aria-hidden="true">${icon(
+          online && !reconnecting ? 'cloud' : 'cloud-off',
+          { size: 18 },
+        )}</span>
+        <div class="agent-info">
+          <p class="agent-name">${escapeHtml(uiAgent.name || '我的电脑')}</p>
+          <p class="agent-sub">${subText}</p>
+          ${
+            issues.length
+              ? `<ul class="agent-issue-list">${issues
+                  .map((issue) => `<li>${escapeHtml(issueLabelOf(issue))}</li>`)
+                  .join('')}</ul>`
+              : ''
+          }
+        </div>
+      </div>`;
   }
 
   function connectionBanner() {
@@ -220,7 +273,7 @@ export async function taskView(container, ctx) {
   }
 
   /* ------------------------------------------------------------------ */
-  /* 渲染                                                                */
+  /* 渲染：操作栏 / 阅读器 / 三态摘要 / 失败                             */
   /* ------------------------------------------------------------------ */
 
   function renderActionBar() {
@@ -233,16 +286,13 @@ export async function taskView(container, ctx) {
     if (task.status === 'succeeded') {
       actions.push(
         { action: 'copy', label: '复制', iconName: 'copy' },
-        { action: 'download', label: '下载', iconName: 'download' },
-        { action: 'share', label: '分享', iconName: 'share' },
-        { action: 'retry', label: '重试', iconName: 'retry' },
-        { action: 'remove', label: '移除', iconName: 'trash', quietDanger: true },
+        { action: 'export', label: '导出', iconName: 'export' },
+        { action: 'more', label: '更多', iconName: 'more' },
       );
     } else if (task.status === 'failed') {
       actions.push(
-        { action: 'retry', label: '重试', iconName: 'retry', primary: true },
-        { action: 'remove', label: '移除', iconName: 'trash', quietDanger: true },
-        { action: 'back', label: '返回', iconName: 'back' },
+        { action: 'regenerate', label: '重新生成', iconName: 'retry', primary: true },
+        { action: 'more', label: '更多', iconName: 'more' },
       );
     }
     if (!actions.length) {
@@ -254,12 +304,24 @@ export async function taskView(container, ctx) {
     actionBar.innerHTML = actions
       .map(
         (item) => `
-        <button type="button" class="action-btn ${item.primary ? 'is-primary' : ''} ${item.quietDanger ? 'is-quiet-danger' : ''}" data-action="${item.action}">
+        <button type="button" class="action-btn ${item.primary ? 'is-primary' : ''}" data-action="${item.action}">
           ${icon(item.iconName, { size: 20 })}
           <span>${escapeHtml(item.label)}</span>
         </button>`,
       )
       .join('');
+  }
+
+  function noteBadgesHtml() {
+    if (!note) return '';
+    const parts = [];
+    if (pinned) parts.push(`<span class="note-badge is-pinned">${icon('pin', { size: 11 })}已固定</span>`);
+    if (noteSaved === true) {
+      parts.push(`<span class="note-badge is-saved">${icon('check', { size: 11 })}已保存到手机</span>`);
+    } else if (noteSaved === false) {
+      parts.push(`<span class="note-badge is-missing">${icon('alert', { size: 11 })}未保存到手机</span>`);
+    }
+    return parts.length ? `<div class="note-badges">${parts.join('')}</div>` : '';
   }
 
   function noteReaderHtml() {
@@ -269,6 +331,14 @@ export async function taskView(container, ctx) {
     const sizeText = markdown ? `约 ${markdown.length} 字` : '';
     const cacheText =
       !isRealtimeOpen() && note ? ' · 本地缓存' : isLegacyMode() ? ' · 兼容模式' : '';
+    const saveWarning =
+      noteSaved === false
+        ? `<div class="banner banner-error note-save-warning" role="alert">
+            ${icon('alert', { size: 16 })}
+            <span>${escapeHtml(noteSaveError || '未保存到手机，可重试')}</span>
+            <button type="button" class="btn btn-ghost btn-xs" data-action="retry-save">重试保存</button>
+          </div>`
+        : '';
     return `
       <article class="note-card card">
         <header class="note-head">
@@ -277,7 +347,9 @@ export async function taskView(container, ctx) {
             <span>${escapeHtml(formatDateTime(completedAt) || '已完成')}</span>
           </div>
           <h1 class="note-title">${escapeHtml(title)}</h1>
-          ${sizeText || cacheText ? `<p class="note-sub">${sizeText}${cacheText}</p>` : ''}
+          <p class="note-sub">${sizeText}${cacheText}</p>
+          ${noteBadgesHtml()}
+          ${saveWarning}
         </header>
         <div class="reader" id="reader">${renderMarkdown(markdown)}</div>
       </article>`;
@@ -306,7 +378,6 @@ export async function taskView(container, ctx) {
         <button type="button" class="btn btn-primary btn-sm" data-action="reload-note">重试获取</button>
       </div>`;
     }
-    // timeout / idle
     return `<div class="card note-state" role="status">
       ${icon('file', { size: 22 })}
       <p class="note-state-title">还没有收到笔记</p>
@@ -325,28 +396,39 @@ export async function taskView(container, ctx) {
     return `<div class="banner banner-warn" role="status">${icon('wifi-off', { size: 16 })}<span>${escapeHtml(stateError)}</span></div>`;
   }
 
-  function progressHtml() {
-    const progress = Math.max(0, Math.min(100, Number(task.progress) || 0));
-    const message = task.message || STAGE_LABELS[task.stage] || '处理中';
-    const elapsed = elapsedBetween(task.created_at);
+  /** v0.3 三态摘要：等待电脑 → 获取内容 → 生成笔记；不展示假百分比。 */
+  function summaryHtml() {
+    const phaseIndex = phaseIndexOf(task);
     const source = sourceUrlOf(task);
+    const phase = TASK_PHASES[phaseIndex] || TASK_PHASES[0];
+    const message =
+      task.message || STAGE_LABELS[task.stage] || (task.status === 'queued' ? '排队中，电脑上线后会自动开始' : '处理中');
+    const elapsed = elapsedBetween(task.created_at);
+    const elapsedText = elapsed < 2500 ? '刚刚开始' : formatElapsed(elapsed);
     const uiAgent = agentUi();
     const presence = presenceOnline();
     return `
       ${connectionBanner()}
       ${stateErrorBanner()}
-      <section class="card status-card">
+      <section class="card status-card task-summary">
         <div class="status-head">
           ${statusChip(task.status)}
-          <span class="status-percent">${progress}%</span>
+          <span class="status-updated">${escapeHtml(formatRelativeTime(task.updated_at || task.created_at))}更新</span>
         </div>
-        <div class="progress progress-lg" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${progress}">
-          <span class="progress-fill" style="width:${progress}%"></span>
-        </div>
+        <ol class="phase-steps" aria-label="生成进度">
+          ${TASK_PHASES.map((item, index) => {
+            const phaseState = index < phaseIndex ? 'done' : index === phaseIndex ? 'current' : 'pending';
+            return `<li class="phase-step is-${phaseState}">
+              <span class="phase-dot" aria-hidden="true">${phaseState === 'done' ? icon('check', { size: 11 }) : ''}</span>
+              <span class="phase-label">${escapeHtml(item.label)}</span>
+            </li>`;
+          }).join('')}
+        </ol>
+        <div class="progress progress-waiting" aria-hidden="true"><span></span></div>
         <p class="status-message">${escapeHtml(message)}</p>
         <div class="status-meta">
-          <span class="status-time">${icon('clock', { size: 14 })}<span>已等待 <span id="elapsed-time">${escapeHtml(formatElapsed(elapsed))}</span></span></span>
-          <span>${escapeHtml(formatRelativeTime(task.updated_at || task.created_at))}更新</span>
+          <span class="status-time">${icon('clock', { size: 14 })}<span>已等待 <span id="elapsed-time">${escapeHtml(elapsedText)}</span></span></span>
+          <span>${escapeHtml(phase.hint)}</span>
         </div>
         ${task.title ? `<p class="status-video-title">${escapeHtml(truncate(task.title, 80))}</p>` : ''}
         ${
@@ -361,7 +443,13 @@ export async function taskView(container, ctx) {
           ? `<div class="banner banner-warn">${icon('cloud-off', { size: 16 })}<span>电脑当前离线，任务会在 Agent 上线后继续，不需要一直开着这个页面。</span></div>`
           : ''
       }
-      ${timelineHtml(task)}`;
+      <details class="card stage-details">
+        <summary>
+          <span>查看详细阶段</span>
+          <span class="stage-details-current">${escapeHtml(STAGE_LABELS[task.stage] || '处理中')}</span>
+        </summary>
+        ${timelineListHtml(task)}
+      </details>`;
   }
 
   function failedHtml() {
@@ -377,14 +465,14 @@ export async function taskView(container, ctx) {
             <p class="fail-sub">${escapeHtml(formatRelativeTime(task.completed_at || task.updated_at))}结束</p>
           </div>
         </div>
-        <p class="fail-message">${escapeHtml(task.error_message || '电脑端没有返回具体原因，可以重试一次。')}</p>
+        <p class="fail-message">${escapeHtml(task.error_message || '电脑端没有返回具体原因，可以重新生成一次。')}</p>
         ${task.error_code ? `<p class="fail-code">错误码：${escapeHtml(task.error_code)}</p>` : ''}
         ${
           source
             ? `<a class="source-link" href="${escapeHtml(source)}" target="_blank" rel="noopener noreferrer">${icon('external', { size: 14 })}<span>${escapeHtml(truncate(source, 64))}</span></a>`
             : ''
         }
-        <p class="fail-hint">可以点下面的「重试」重新生成；如果一直失败，请检查电脑上的 BiliNote 与 Agent 是否正常。</p>
+        <p class="fail-hint">点「重新生成」会创建一个新任务并重新调用模型；如果一直失败，请检查电脑上的 BiliNote 与 Agent 是否正常。</p>
       </section>
       ${agentStatusHtml(agentUi())}`;
   }
@@ -417,7 +505,7 @@ export async function taskView(container, ctx) {
       main.innerHTML = succeededHtml();
       removeDuplicateTitle();
     } else if (task.status === 'failed') main.innerHTML = failedHtml();
-    else main.innerHTML = progressHtml();
+    else main.innerHTML = summaryHtml();
     renderActionBar();
   }
 
@@ -456,7 +544,9 @@ export async function taskView(container, ctx) {
         markdown: data.markdown,
         completed_at: data.completed_at || (task && task.completed_at) || null,
       };
-      await noteCache.put(base, taskId, note);
+      const saved = await noteCache.put(base, taskId, note, { pinned });
+      noteSaved = saved === true;
+      if (!noteSaved) noteSaveError = '未保存到手机，可重试';
       noteState = 'ready';
       noteError = '';
     } catch (error) {
@@ -484,7 +574,6 @@ export async function taskView(container, ctx) {
       noteState = 'waiting-connection';
       noteError = '';
       render();
-      // 连接建立后 hello 事件会再次调用 ensureNote。
       startRealtime();
       return;
     }
@@ -505,6 +594,36 @@ export async function taskView(container, ctx) {
       noteError = '还没有收到笔记，可能是电脑还在发送。';
       render();
     }, REALTIME_NOTE_TIMEOUT_MS);
+  }
+
+  /** 补存到手机（成功后补发 ack persisted:true） */
+  async function retrySaveNote() {
+    if (!note) return;
+    const saved = await noteCache.put(base, taskId, note, { pinned });
+    if (saved) {
+      noteSaved = true;
+      noteSaveError = '';
+      sendAckNote(taskId, true);
+      toast('已保存到手机', { type: 'success' });
+    } else {
+      noteSaved = false;
+      noteSaveError = '仍然无法保存，请检查手机存储空间或浏览器权限';
+      toast(noteSaveError, { type: 'error' });
+    }
+    render();
+  }
+
+  async function togglePin() {
+    if (!note) return;
+    const nextPinned = !pinned;
+    const ok = await noteCache.setPinned(base, taskId, nextPinned);
+    if (!ok) {
+      toast('固定失败，请稍后重试', { type: 'error' });
+      return;
+    }
+    pinned = nextPinned;
+    toast(pinned ? '已固定到手机，不会被自动清理' : '已取消固定');
+    render();
   }
 
   /* ------------------------------------------------------------------ */
@@ -560,8 +679,10 @@ export async function taskView(container, ctx) {
         void ensureNote();
       }
     }),
+    onRealtime('readiness', () => {
+      render();
+    }),
     onRealtime('hello', () => {
-      // 重连成功：先拉一次 REST 快照，再按需请求正文。
       void loadTaskSnapshot();
       if (task && task.status === 'succeeded' && !note) void ensureNote();
     }),
@@ -586,10 +707,14 @@ export async function taskView(container, ctx) {
       };
       noteState = 'ready';
       noteError = '';
-      render();
-      if (payload.cached === false) {
-        toast('笔记已收到，但本地缓存失败；离开页面后需要重新获取', { type: 'error' });
+      noteSaved = payload.cached === true;
+      if (noteSaved) {
+        noteSaveError = '';
+      } else {
+        noteSaveError = '未保存到手机，可重试；离开页面后需要重新从电脑获取';
       }
+      render();
+      if (!noteSaved) toast('笔记已收到，但没保存到手机，可点「重试保存」', { type: 'error' });
     }),
     onRealtime('note_unavailable', (payload) => {
       if (!payload || payload.taskId !== taskId) return;
@@ -611,13 +736,19 @@ export async function taskView(container, ctx) {
   /* ------------------------------------------------------------------ */
 
   async function handleCopy() {
-    if (!note) return;
+    if (!note) {
+      toast('笔记还没准备好，稍后再试');
+      return;
+    }
     const ok = await copyText(note.markdown);
     toast(ok ? '已复制 Markdown 全文' : '复制失败，请长按选择文本', { type: ok ? 'success' : 'error' });
   }
 
   function handleDownload() {
-    if (!note) return;
+    if (!note) {
+      toast('笔记还没准备好，稍后再试');
+      return;
+    }
     const title = note.title || task.title || '链记笔记';
     const filename = `${safeFilename(title, '链记笔记')}.md`;
     const ok = downloadTextFile(filename, note.markdown);
@@ -625,7 +756,10 @@ export async function taskView(container, ctx) {
   }
 
   async function handleShare() {
-    if (!note) return;
+    if (!note) {
+      toast('笔记还没准备好，稍后再试');
+      return;
+    }
     const title = note.title || task.title || '链记笔记';
     const text = note.markdown;
     const canShare = typeof navigator !== 'undefined' && typeof navigator.share === 'function';
@@ -650,11 +784,82 @@ export async function taskView(container, ctx) {
     }
   }
 
+  async function handleExportSheet() {
+    if (!note) {
+      toast('笔记还没准备好，稍后再试');
+      return;
+    }
+    const choice = await openSheet({
+      title: '导出笔记',
+      subtitle: note.title || task.title || '',
+      actions: [
+        { key: 'download', label: '下载 .md 文件', iconName: 'download' },
+        { key: 'share', label: '系统分享', iconName: 'share', hint: '分享给其他 App 或保存到云盘' },
+      ],
+    });
+    if (choice === 'download') handleDownload();
+    else if (choice === 'share') await handleShare();
+  }
+
+  async function handleMoreSheet() {
+    if (!task) return;
+    const actions = [];
+    if (task.status === 'succeeded') {
+      if (note) {
+        actions.push({
+          key: 'pin',
+          label: pinned ? '取消固定' : '固定到手机',
+          iconName: 'pin',
+          hint: pinned ? '固定笔记不参与自动清理' : '固定后不会被自动清理',
+        });
+      }
+      if (note && noteSaved === false) {
+        actions.push({
+          key: 'retry-save',
+          label: '重试保存到手机',
+          iconName: 'download',
+          hint: '上次没有保存成功',
+        });
+      }
+      actions.push({
+        key: 'retry',
+        label: '重新生成',
+        iconName: 'retry',
+        hint: '会重新调用模型，创建一个新任务',
+      });
+      actions.push({ key: 'remove', label: '从列表移除', iconName: 'trash', danger: true });
+    } else if (task.status === 'failed') {
+      actions.push({ key: 'remove', label: '从列表移除', iconName: 'trash', danger: true });
+      actions.push({ key: 'back', label: '返回收件箱', iconName: 'back' });
+    }
+    if (!actions.length) return;
+    const choice = await openSheet({ title: '更多操作', subtitle: task.title || '', actions });
+    switch (choice) {
+      case 'pin':
+        await togglePin();
+        break;
+      case 'retry-save':
+        await retrySaveNote();
+        break;
+      case 'retry':
+        await handleRetry();
+        break;
+      case 'remove':
+        await handleRemove();
+        break;
+      case 'back':
+        navigate('/home');
+        break;
+      default:
+        break;
+    }
+  }
+
   async function handleRetry() {
     if (actionBusy) return;
     const confirmed = await confirmDialog({
       title: '重新生成笔记？',
-      message: '会创建一个新任务，用同一个视频链接重新生成。原来的任务会保留。',
+      message: '会创建一个新任务并重新调用模型生成；原来的任务会保留。',
       confirmText: '重新生成',
     });
     if (!confirmed) return;
@@ -681,7 +886,7 @@ export async function taskView(container, ctx) {
         toast('任务不存在或已被移除', { type: 'error' });
         return;
       }
-      toast(error.message || '重试失败，请稍后再试', { type: 'error' });
+      toast(error.message || '重新生成失败，请稍后再试', { type: 'error' });
     } finally {
       actionBusy = false;
     }
@@ -691,7 +896,9 @@ export async function taskView(container, ctx) {
     if (actionBusy) return;
     const confirmed = await confirmDialog({
       title: '从列表移除任务？',
-      message: '移除后任务不再出现在收件箱里。笔记正文只保存在你本机，移除后本地缓存也会被清理。',
+      message: pinned
+        ? '这是一个固定笔记，移除后会同时删除本机缓存（固定状态也会清除）。'
+        : '移除后任务不再出现在收件箱里。笔记正文只保存在你本机，移除后本地缓存也会被清理。',
       confirmText: '移除',
       danger: true,
     });
@@ -722,13 +929,23 @@ export async function taskView(container, ctx) {
       case 'copy':
         await handleCopy();
         break;
+      case 'export':
+        await handleExportSheet();
+        break;
+      case 'more':
+        await handleMoreSheet();
+        break;
       case 'download':
         handleDownload();
         break;
       case 'share':
         await handleShare();
         break;
+      case 'retry-save':
+        await retrySaveNote();
+        break;
       case 'retry':
+      case 'regenerate':
         await handleRetry();
         break;
       case 'remove':
@@ -793,7 +1010,8 @@ export async function taskView(container, ctx) {
   const elapsedTimer = setInterval(() => {
     const node = document.getElementById('elapsed-time');
     if (!node || !task || isTerminal(task)) return;
-    node.textContent = formatElapsed(elapsedBetween(task.created_at));
+    const elapsed = elapsedBetween(task.created_at);
+    node.textContent = elapsed < 2500 ? '刚刚开始' : formatElapsed(elapsed);
   }, 1000);
 
   signal.addEventListener(
@@ -823,6 +1041,8 @@ export async function taskView(container, ctx) {
       note = cachedNote;
       noteState = 'ready';
       noteError = '';
+      noteSaved = true;
+      pinned = cachedNote.pinned === true;
       render();
     }
   } catch (error) {

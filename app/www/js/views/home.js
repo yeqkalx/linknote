@@ -1,20 +1,23 @@
 /**
  * 链记 LinkNote — 收件箱
  *
- * 实时架构（docs/realtime-protocol.md）：
- * - 任务状态/电脑在线状态由 WebSocket 推送，页面不再 3s/15s 轮询。
- * - 首次进入 / 重连成功后只做一次 REST 快照兜底，避免白屏。
- * - 提交任务仍走 REST（POST /tasks），之后等待 WS 的 task_updated。
+ * v0.3（docs/v0.3-protocol-delta.md）：
+ * - 顶部只有一个实时状态胶囊：在线 · 可生成 / 在线 · 需要处理 N 项（可点开 issues）。
+ * - 任务卡片显示笔记保存徽标（已保存到手机 / 需从电脑取回），批量读缓存索引。
+ * - 最近任务靠前；发链接输入区可折叠；空态提供本地示例笔记。
+ * - 不再轮询，只依赖 WS + 重连后一次 REST 快照。
  */
 import { api, isNetworkError } from '../api.js';
 import {
   LIST_LIMIT,
   MAX_SHARE_TEXT,
   PLATFORM_META,
+  READINESS_ISSUE_LABELS,
   STAGE_LABELS,
   STATUS_META,
   SUPPORTED_PLATFORMS_TEXT,
 } from '../config.js';
+import { renderMarkdown } from '../markdown.js';
 import {
   describeRealtime,
   getRealtimeSnapshot,
@@ -27,15 +30,18 @@ import { navigate } from '../router.js';
 import {
   auth,
   clearDraft,
+  noteCache,
   settings,
   takeDraft,
   taskCache,
+  uiPrefs,
 } from '../store.js';
 import {
-  agentPill,
   icon,
   listSkeleton,
+  openContentSheet,
   platformChip,
+  readinessIssueList,
   setButtonBusy,
   toast,
 } from '../ui.js';
@@ -59,51 +65,43 @@ import {
   retryQueued,
 } from '../queue.js';
 
-function taskItemHtml(task) {
-  const statusMeta = STATUS_META[task.status] || STATUS_META.queued;
-  const platform = PLATFORM_META[task.platform];
-  const isQueued = task.status === 'queued';
-  const isRunning = task.status === 'running';
-  const progress = Math.max(0, Math.min(100, Number(task.progress) || 0));
-  const title = task.title || (task.url ? `${hostOf(task.url) || '视频'} 视频` : '视频任务');
-  const subParts = [];
-  if (platform) subParts.push(platform.label);
-  if (isQueued) subParts.push('等待电脑领取');
-  else if (isRunning) subParts.push(STAGE_LABELS[task.stage] || '处理中');
-  else if (task.status === 'succeeded') subParts.push('笔记已就绪');
-  else if (task.status === 'failed') subParts.push('生成失败');
-  if (task.updated_at || task.created_at) subParts.push(formatRelativeTime(task.updated_at || task.created_at));
+/** 空态示例笔记（完全本地静态内容，不联网、不写缓存） */
+const SAMPLE_NOTE_MARKDOWN = [
+  '# 示例：一份视频笔记长什么样',
+  '',
+  '这是一份**本地示例**，不需要电脑在线，也不会联网。',
+  '',
+  '## 它会怎么工作',
+  '',
+  '- 你把 B 站 / YouTube / 抖音 / 快手 的链接发到电脑',
+  '- 电脑下载视频、转写字幕，用你自己的 AI 模型总结',
+  '- 生成的 Markdown 实时推送到手机，并保存在本机',
+  '',
+  '## 小提示',
+  '',
+  '> 电脑离线时任务会排队；笔记正文只保存在电脑和这台手机上。',
+  '',
+  '1. 复制视频链接（或整段分享文案）',
+  '2. 回到「链记」粘贴发送',
+  '3. 等电脑处理完，点开任务阅读',
+  '',
+  '### 一段代码也可以',
+  '',
+  '```js',
+  "console.log('hello linknote');",
+  '```',
+].join('\n');
 
-  const progressHtml = isRunning
-    ? `<div class="progress"><span class="progress-fill" style="width:${progress}%"></span></div><div class="task-progress-text">${progress}%</div>`
-    : isQueued
-      ? `<div class="progress progress-waiting"><span></span></div>`
-      : '';
-
-  return `
-    <a class="task-item" href="#/task/${encodeURIComponent(task.id)}" data-task-id="${escapeHtml(task.id)}">
-      <div class="task-top">
-        <span class="chip chip-${statusMeta.tone}"><span class="chip-dot" aria-hidden="true"></span>${escapeHtml(statusMeta.label)}</span>
-        <span class="task-arrow" aria-hidden="true">${icon('chevron-right', { size: 16 })}</span>
-      </div>
-      <div class="task-title">${escapeHtml(title)}</div>
-      <div class="task-sub">${subParts.map((part) => escapeHtml(part)).join(' · ')}</div>
-      ${progressHtml}
-      ${task.error_message ? `<p class="task-error">${escapeHtml(truncate(task.error_message, 140))}</p>` : ''}
-    </a>`;
+function isTerminal(task) {
+  return Boolean(task && (task.status === 'succeeded' || task.status === 'failed'));
 }
 
-/** 顶部胶囊：实时在线状态（连接中/重连中/在线/离线） */
-function pillInfo(state) {
-  const rt = getRealtimeSnapshot();
-  if (rt.mode === 'legacy') {
-    // 旧 Relay 无实时连接：退回 REST 快照里的 agent.online。
-    const online = state.agent && typeof state.agent.online === 'boolean' ? state.agent.online : null;
-    if (online === true) return { label: '电脑在线', tone: 'online', detail: '兼容模式：按需刷新电脑状态' };
-    if (online === false) return { label: '电脑离线', tone: 'offline', detail: '兼容模式：按需刷新电脑状态' };
-    return { label: '兼容模式', tone: 'legacy', detail: '当前 Relay 不支持实时推送' };
-  }
-  return describeRealtime(rt);
+function phaseText(task) {
+  if (task.status === 'queued') return '等待电脑领取';
+  if (task.status === 'running') return STAGE_LABELS[task.stage] || '处理中';
+  if (task.status === 'succeeded') return '笔记已就绪';
+  if (task.status === 'failed') return '生成失败';
+  return '';
 }
 
 export async function homeView(container, ctx) {
@@ -131,7 +129,58 @@ export async function homeView(container, ctx) {
     loadingTasks: false,
     loadingMe: false,
     pending: pendingItems(),
+    noteMeta: new Map(),
+    issuesOpen: false,
+    forceComposerOpen: false,
   };
+
+  const issueLabel = (issue) => {
+    if (issue && typeof issue.label === 'string' && issue.label.trim()) return issue.label.trim();
+    const code = issue && typeof issue.code === 'string' ? issue.code : '';
+    return READINESS_ISSUE_LABELS[code] || '需要处理一项设置';
+  };
+
+  function taskItemHtml(task) {
+    const statusMeta = STATUS_META[task.status] || STATUS_META.queued;
+    const platform = PLATFORM_META[task.platform];
+    const isQueued = task.status === 'queued';
+    const isRunning = task.status === 'running';
+    const title = task.title || (task.url ? `${hostOf(task.url) || '视频'} 视频` : '视频任务');
+    const subParts = [];
+    if (platform) subParts.push(platform.label);
+    const phase = phaseText(task);
+    if (phase) subParts.push(phase);
+    if (task.updated_at || task.created_at) subParts.push(formatRelativeTime(task.updated_at || task.created_at));
+
+    // v0.3：不展示不可靠的百分比；进行中只展示“正在做什么”的不确定进度条。
+    const progressHtml =
+      isRunning || isQueued ? '<div class="progress progress-waiting"><span></span></div>' : '';
+    const badges = noteBadgesHtml(task);
+
+    return `
+      <a class="task-item" href="#/task/${encodeURIComponent(task.id)}" data-task-id="${escapeHtml(task.id)}">
+        <div class="task-top">
+          <span class="chip chip-${statusMeta.tone}"><span class="chip-dot" aria-hidden="true"></span>${escapeHtml(statusMeta.label)}</span>
+          <span class="task-arrow" aria-hidden="true">${icon('chevron-right', { size: 16 })}</span>
+        </div>
+        <div class="task-title">${escapeHtml(title)}</div>
+        <div class="task-sub">${subParts.map((part) => escapeHtml(part)).join(' · ')}</div>
+        ${badges}
+        ${progressHtml}
+        ${task.error_message ? `<p class="task-error">${escapeHtml(truncate(task.error_message, 140))}</p>` : ''}
+      </a>`;
+  }
+
+  function noteBadgesHtml(task) {
+    if (task.status !== 'succeeded') return '';
+    const meta = state.noteMeta.get(task.id);
+    if (!meta) {
+      return `<div class="task-badges"><span class="note-badge is-missing">${icon('cloud-off', { size: 11 })}需从电脑取回</span></div>`;
+    }
+    return `<div class="task-badges"><span class="note-badge is-saved">${icon('check', { size: 11 })}已保存到手机</span>${
+      meta.pinned ? `<span class="note-badge is-pinned">${icon('pin', { size: 11 })}固定</span>` : ''
+    }</div>`;
+  }
 
   container.innerHTML = `
     <section class="screen home-screen">
@@ -144,9 +193,9 @@ export async function homeView(container, ctx) {
           </span>
         </div>
         <div class="appbar-actions">
-          <span id="agent-pill" class="status-pill" data-state="unknown" aria-live="polite">
+          <button type="button" id="agent-pill" class="status-pill agent-pill-btn" data-state="unknown" aria-live="polite">
             <span class="status-dot" aria-hidden="true"></span>连接中
-          </span>
+          </button>
           <button type="button" class="icon-btn" id="open-settings" aria-label="打开设置">
             ${icon('settings', { size: 20 })}
           </button>
@@ -156,34 +205,6 @@ export async function homeView(container, ctx) {
       <main class="home-main">
         <div id="offline-banner" class="banner banner-warn" role="status" hidden></div>
 
-        <section class="composer card" aria-labelledby="composer-title">
-          <div class="composer-head">
-            <h2 class="card-title" id="composer-title">发一条链接</h2>
-            <span class="composer-hint">${escapeHtml(SUPPORTED_PLATFORMS_TEXT)}</span>
-          </div>
-          <form id="submit-form" novalidate>
-            <label class="sr-only" for="url-input">视频链接或分享文案</label>
-            <textarea
-              id="url-input"
-              class="textarea composer-input"
-              rows="3"
-              maxlength="${MAX_SHARE_TEXT}"
-              placeholder="粘贴视频链接，或直接粘贴整段分享文案…"
-              autocomplete="off"
-              autocapitalize="off"
-              autocorrect="off"
-              spellcheck="false"
-              enterkeyhint="send"
-            ></textarea>
-            <div id="url-preview" class="url-preview" hidden></div>
-            <p id="composer-error" class="form-error" role="alert" hidden></p>
-            <button type="submit" class="btn btn-primary btn-block" id="submit-btn" data-busy-label="正在发送…">
-              ${icon('send', { size: 18 })}<span>生成笔记</span>
-            </button>
-          </form>
-          <p class="composer-foot">电脑会自动下载视频、转写并生成 Markdown；链接之外的视频内容不会上传。</p>
-        </section>
-
         <section class="pending-section" id="pending-section" hidden aria-labelledby="pending-title">
           <div class="section-head">
             <h2 class="section-title" id="pending-title">待发送 <span id="pending-count" class="section-count"></span></h2>
@@ -191,8 +212,6 @@ export async function homeView(container, ctx) {
           </div>
           <div id="pending-list" class="pending-list"></div>
         </section>
-
-        <section class="agent-card card" id="agent-card" aria-live="polite"></section>
 
         <section class="tasks-section" aria-labelledby="tasks-title">
           <div class="section-head">
@@ -209,7 +228,42 @@ export async function homeView(container, ctx) {
           <button type="button" class="btn btn-ghost btn-block" id="load-more" hidden>加载更多</button>
         </section>
 
-        <p class="home-footnote">笔记生成在你自己电脑上的 BiliNote 完成；状态与笔记正文通过加密连接实时推送到这台手机。</p>
+        <section class="composer card" id="composer" aria-labelledby="composer-title">
+          <button type="button" class="composer-toggle" id="composer-toggle" aria-expanded="true" aria-controls="composer-body">
+            <span class="composer-toggle-main">
+              <span class="card-title" id="composer-title">发一条链接</span>
+              <span class="composer-hint">${escapeHtml(SUPPORTED_PLATFORMS_TEXT)}</span>
+            </span>
+            <span class="composer-toggle-icon" aria-hidden="true">${icon('chevron-down', { size: 18 })}</span>
+          </button>
+          <div class="composer-body" id="composer-body">
+            <form id="submit-form" novalidate>
+              <label class="sr-only" for="url-input">视频链接或分享文案</label>
+              <textarea
+                id="url-input"
+                class="textarea composer-input"
+                rows="3"
+                maxlength="${MAX_SHARE_TEXT}"
+                placeholder="粘贴视频链接，或直接粘贴整段分享文案…"
+                autocomplete="off"
+                autocapitalize="off"
+                autocorrect="off"
+                spellcheck="false"
+                enterkeyhint="send"
+              ></textarea>
+              <div id="url-preview" class="url-preview" hidden></div>
+              <p id="composer-error" class="form-error" role="alert" hidden></p>
+              <button type="submit" class="btn btn-primary btn-block" id="submit-btn" data-busy-label="正在发送…">
+                ${icon('send', { size: 18 })}<span>生成笔记</span>
+              </button>
+            </form>
+            <p class="composer-foot">电脑会自动下载视频、转写并生成 Markdown；链接之外的视频内容不会上传。</p>
+          </div>
+        </section>
+
+        <section class="agent-card card" id="agent-card" aria-live="polite"></section>
+
+        <p class="home-footnote">笔记生成在你自己电脑上的 BiliNote 完成；状态与笔记正文通过实时连接推送到这台手机，并保存在本机。</p>
       </main>
     </section>`;
 
@@ -220,6 +274,10 @@ export async function homeView(container, ctx) {
     urlInput: container.querySelector('#url-input'),
     urlPreview: container.querySelector('#url-preview'),
     composerError: container.querySelector('#composer-error'),
+    composer: container.querySelector('#composer'),
+    composerToggle: container.querySelector('#composer-toggle'),
+    composerBody: container.querySelector('#composer-body'),
+    composerTitle: container.querySelector('#composer-title'),
     submitButton: container.querySelector('#submit-btn'),
     submitForm: container.querySelector('#submit-form'),
     pendingSection: container.querySelector('#pending-section'),
@@ -235,44 +293,107 @@ export async function homeView(container, ctx) {
   };
 
   /* ------------------------------------------------------------------ */
-  /* 渲染                                                                */
+  /* 顶部实时状态胶囊（唯一在线状态入口）                                 */
   /* ------------------------------------------------------------------ */
 
-  function renderPill() {
-    const info = pillInfo(state);
-    const tone = info.tone === 'legacy' ? 'offline' : info.tone;
-    elements.agentPill.setAttribute('data-state', tone);
-    elements.agentPill.innerHTML = `<span class="status-dot" aria-hidden="true"></span>${escapeHtml(info.label)}`;
-    elements.agentPill.title = info.detail ? `${info.label} · ${info.detail}` : info.label;
+  function readinessInfo() {
+    const rt = getRealtimeSnapshot();
+    if (rt.mode !== 'legacy') {
+      return { ready: rt.readiness.ready, issues: Array.isArray(rt.readiness.issues) ? rt.readiness.issues : [] };
+    }
+    // 旧 Relay：/me 里可能带 ready/issues（增量字段），没有就按未知处理。
+    if (state.agent && typeof state.agent.ready === 'boolean') {
+      return {
+        ready: state.agent.ready,
+        issues: Array.isArray(state.agent.issues) ? state.agent.issues : [],
+      };
+    }
+    return { ready: null, issues: [] };
   }
 
-  function currentPresenceOnline() {
+  function presenceOnline() {
     const rt = getRealtimeSnapshot();
     if (typeof rt.presence.online === 'boolean') return rt.presence.online;
     return state.agent ? state.agent.online === true : null;
   }
 
+  function pillInfo() {
+    const rt = getRealtimeSnapshot();
+    if (rt.mode === 'legacy') {
+      const online = state.agent && typeof state.agent.online === 'boolean' ? state.agent.online : null;
+      if (online === false) return { label: '电脑离线', tone: 'offline', detail: '兼容模式：按需刷新电脑状态' };
+      if (online === true) {
+        const info = readinessInfo();
+        if (info.ready === false) {
+          const count = info.issues.length || 1;
+          return { label: `电脑在线 · 需要处理 ${count} 项`, tone: 'attention', issues: info.issues };
+        }
+        if (info.ready === true) return { label: '电脑在线 · 可生成', tone: 'online' };
+        return { label: '电脑在线', tone: 'online', detail: '兼容模式：按需刷新电脑状态' };
+      }
+      return { label: '兼容模式', tone: 'legacy', detail: '当前 Relay 不支持实时推送' };
+    }
+
+    const online = rt.presence.online;
+    if (rt.state === 'open' && online === true) {
+      const info = readinessInfo();
+      if (info.ready === false) {
+        const count = info.issues.length || 1;
+        return {
+          label: `电脑在线 · 需要处理 ${count} 项`,
+          tone: 'attention',
+          detail: readinessIssueList(info.issues).join('、'),
+          issues: info.issues,
+        };
+      }
+      if (info.ready === true) return { label: '电脑在线 · 可生成', tone: 'online', detail: '电脑已准备好接收任务' };
+      return { label: '电脑在线', tone: 'online', detail: '实时连接已建立' };
+    }
+    return describeRealtime(rt);
+  }
+
+  function renderPill() {
+    const info = pillInfo();
+    const tone = info.tone === 'legacy' ? 'offline' : info.tone;
+    elements.agentPill.setAttribute('data-state', tone);
+    elements.agentPill.innerHTML = `<span class="status-dot" aria-hidden="true"></span>${escapeHtml(info.label)}`;
+    const expandable = Boolean(info.issues && info.issues.length);
+    elements.agentPill.classList.toggle('is-expandable', expandable);
+    elements.agentPill.setAttribute('aria-expanded', String(expandable && state.issuesOpen));
+    elements.agentPill.title = info.detail
+      ? `${info.label} · ${info.detail}`
+      : expandable
+        ? `${info.label} · 点开查看需要处理的项目`
+        : info.label;
+  }
+
+  /* ------------------------------------------------------------------ */
+  /* 电脑卡（不再重复显示 pill，只显示详情/issues）                       */
+  /* ------------------------------------------------------------------ */
+
   function renderAgentCard() {
-    const agent = state.agent;
     const rt = getRealtimeSnapshot();
     const rtDown = rt.mode !== 'legacy' && (rt.state === 'connecting' || rt.state === 'reconnecting');
-    const online = currentPresenceOnline();
-    const name = (agent && agent.name) || '我的电脑';
+    const online = presenceOnline();
+    const name = (state.agent && state.agent.name) || '我的电脑';
+    const readiness = readinessInfo();
+    const issues =
+      online === true && !rtDown && readiness.ready === false
+        ? readiness.issues.length
+          ? readiness.issues
+          : [{ code: 'unknown', label: '需要处理一项设置' }]
+        : [];
     const lastSeenValue =
-      rt.presence.lastSeen || (agent && agent.last_seen_at ? agent.last_seen_at : null);
+      rt.presence.lastSeen || (state.agent && state.agent.last_seen_at ? state.agent.last_seen_at : null);
     const lastSeen = lastSeenValue ? formatRelativeTime(lastSeenValue) : '';
 
     let subText;
     if (rtDown) subText = rt.state === 'connecting' ? '正在连接电脑…' : '实时连接中断，正在自动重连…';
-    else if (online === true) subText = '在线，随时可以接收任务';
-    else if (lastSeen) subText = `最近在线：${lastSeen}`;
-    else subText = '还没有连接过';
+    else if (online === false) subText = lastSeen ? `最近在线：${lastSeen}` : '电脑离线，任务会排队';
+    else if (issues.length) subText = `在线，但需要处理 ${issues.length} 项后才能生成`;
+    else subText = '已准备好接收任务';
 
-    const pillHtml = rtDown
-      ? `<span class="status-pill" data-state="${rt.state}"><span class="status-dot" aria-hidden="true"></span>${rt.state === 'connecting' ? '连接中' : '重连中'}</span>`
-      : agentPill({ online: online === true });
-
-    if (state.meError && !agent) {
+    if (state.meError && !state.agent) {
       elements.agentCard.innerHTML = `
         <div class="agent-row">
           <span class="agent-icon" aria-hidden="true">${icon('cloud-off', { size: 20 })}</span>
@@ -282,28 +403,52 @@ export async function homeView(container, ctx) {
           </div>
         </div>
         <button type="button" class="btn btn-ghost btn-sm" id="agent-retry">重试</button>`;
-    } else {
-      elements.agentCard.innerHTML = `
-        <div class="agent-row">
-          <span class="agent-icon ${online && !rtDown ? 'is-online' : ''}" aria-hidden="true">${icon(online && !rtDown ? 'cloud' : 'cloud-off', { size: 20 })}</span>
-          <div class="agent-info">
-            <p class="agent-name">${escapeHtml(name)}</p>
-            <p class="agent-sub">${escapeHtml(subText)}</p>
-          </div>
-          ${pillHtml}
-        </div>
-        ${
-          online && !rtDown
-            ? ''
-            : rtDown
-              ? '<p class="agent-hint">实时连接中断，正在自动重连；任务会继续在电脑上处理，状态恢复后自动同步。</p>'
-              : '<p class="agent-hint">电脑离线时任务会留在队列里，Agent 上线后自动开始生成。你可以在设置里查看配对状态。</p>'
-        }`;
+      return;
     }
-    renderPill();
+
+    elements.agentCard.innerHTML = `
+      <div class="agent-row">
+        <span class="agent-icon ${online === true && !rtDown ? 'is-online' : ''}" aria-hidden="true">${icon(
+          online === true && !rtDown ? 'cloud' : 'cloud-off',
+          { size: 20 },
+        )}</span>
+        <div class="agent-info">
+          <p class="agent-name">${escapeHtml(name)}</p>
+          <p class="agent-sub">${escapeHtml(subText)}</p>
+        </div>
+      </div>
+      ${
+        issues.length
+          ? `<details class="agent-issues" id="agent-issues"${state.issuesOpen ? ' open' : ''}>
+              <summary>需要处理 ${issues.length} 项 <span class="agent-issues-hint">点开查看</span></summary>
+              <ul>${issues.map((issue) => `<li>${escapeHtml(issueLabel(issue))}</li>`).join('')}</ul>
+            </details>`
+          : ''
+      }
+      ${
+        online === true && !rtDown && !issues.length
+          ? ''
+          : rtDown
+            ? '<p class="agent-hint">实时连接中断，正在自动重连；任务会继续在电脑上处理，状态恢复后自动同步。</p>'
+            : online === false
+              ? '<p class="agent-hint">电脑离线时任务会留在队列里，Agent 上线后自动开始生成。</p>'
+              : ''
+      }`;
+
+    const details = elements.agentCard.querySelector('#agent-issues');
+    if (details) {
+      details.addEventListener('toggle', () => {
+        state.issuesOpen = details.open;
+        renderPill();
+      });
+    }
     const retry = elements.agentCard.querySelector('#agent-retry');
     if (retry) retry.addEventListener('click', () => void loadMe(), { signal });
   }
+
+  /* ------------------------------------------------------------------ */
+  /* 其余渲染                                                            */
+  /* ------------------------------------------------------------------ */
 
   function renderOffline() {
     const noNetwork = typeof navigator !== 'undefined' && navigator.onLine === false;
@@ -387,6 +532,8 @@ export async function homeView(container, ctx) {
         if (retry) retry.addEventListener('click', () => void loadTasks(), { signal });
       } else {
         elements.taskList.innerHTML = `<div class="card empty-card">${emptyTasksHtml()}</div>`;
+        const sampleButton = elements.taskList.querySelector('#sample-note-btn');
+        if (sampleButton) sampleButton.addEventListener('click', () => showSampleNote(), { signal });
       }
     } else {
       elements.taskList.innerHTML = tasks.map((task) => taskItemHtml(task)).join('');
@@ -394,6 +541,7 @@ export async function homeView(container, ctx) {
     renderListError();
     renderCacheNote();
     renderOffline();
+    renderComposer();
   }
 
   function emptyTasksHtml() {
@@ -401,9 +549,20 @@ export async function homeView(container, ctx) {
       <div class="empty">
         <div class="empty-mark" aria-hidden="true">${icon('inbox', { size: 28 })}</div>
         <h3 class="empty-title">还没有任务</h3>
-        <p class="empty-text">把视频链接粘贴到上面发送，家里的电脑会自动生成 Markdown 笔记。</p>
+        <p class="empty-text">把视频链接粘贴到下面发送，家里的电脑会自动生成 Markdown 笔记，并保存到这台手机。</p>
+        <div class="empty-actions">
+          <button type="button" class="btn btn-ghost btn-sm" id="sample-note-btn">${icon('book', { size: 16 })}查看示例笔记</button>
+        </div>
         <p class="empty-hint">在别的 App 里分享链接到「链记」也可以直接进来。</p>
       </div>`;
+  }
+
+  function showSampleNote() {
+    void openContentSheet({
+      title: '示例笔记',
+      subtitle: '本地静态示例 · 不联网',
+      html: renderMarkdown(SAMPLE_NOTE_MARKDOWN),
+    });
   }
 
   function renderCacheNote() {
@@ -421,16 +580,46 @@ export async function homeView(container, ctx) {
     }
   }
 
+  /* ------------------------------------------------------------------ */
+  /* 输入区折叠                                                          */
+  /* ------------------------------------------------------------------ */
+
+  function composerCollapsed() {
+    if (state.forceComposerOpen) return false;
+    const pref = uiPrefs.get().composerCollapsed || 'auto';
+    if (pref === 'closed') return true;
+    if (pref === 'open') return false;
+    return state.tasks.length > 0;
+  }
+
+  function renderComposer() {
+    const collapsed = composerCollapsed();
+    elements.composer.classList.toggle('is-collapsed', collapsed);
+    elements.composerBody.hidden = collapsed;
+    elements.composerToggle.setAttribute('aria-expanded', String(!collapsed));
+    elements.composerTitle.textContent = collapsed ? '发送新链接' : '发一条链接';
+  }
+
   function renderAll() {
     renderPill();
     renderAgentCard();
     renderPending();
     renderTasks();
+    renderComposer();
   }
 
   function setRefreshBusy(busy) {
     elements.refreshButton.disabled = busy;
     elements.refreshButton.classList.toggle('is-spinning', busy);
+  }
+
+  async function refreshNoteMeta() {
+    try {
+      state.noteMeta = await noteCache.listMeta(state.base);
+    } catch (error) {
+      state.noteMeta = new Map();
+    }
+    if (!signal.aborted) renderTasks();
   }
 
   /* ------------------------------------------------------------------ */
@@ -440,6 +629,8 @@ export async function homeView(container, ctx) {
   function showComposerError(message) {
     elements.composerError.textContent = message;
     elements.composerError.hidden = false;
+    state.forceComposerOpen = true;
+    renderComposer();
   }
 
   function clearComposerError() {
@@ -484,8 +675,10 @@ export async function homeView(container, ctx) {
     if (!text) return;
     elements.urlInput.value = text.slice(0, MAX_SHARE_TEXT);
     if (queryDraft) clearDraft();
+    state.forceComposerOpen = true;
     updateUrlPreview();
     clearComposerError();
+    renderComposer();
     toast('已填入分享内容，确认链接后发送');
   }
 
@@ -523,7 +716,9 @@ export async function homeView(container, ctx) {
         enqueueUrl(fitted.text, { clientKey });
         elements.urlInput.value = '';
         updateUrlPreview();
+        state.forceComposerOpen = false;
         renderPending();
+        renderComposer();
         toast('已存到本地队列，联网后自动发送', { type: 'error' });
       };
 
@@ -552,6 +747,8 @@ export async function homeView(container, ctx) {
         }
         elements.urlInput.value = '';
         updateUrlPreview();
+        state.forceComposerOpen = false;
+        renderComposer();
         // 不轮询：创建响应先展示 queued，后续进度由 WS task_updated 推送。
         toast('已发送，等待电脑处理');
         if (task) highlightTask(task.id);
@@ -576,6 +773,18 @@ export async function homeView(container, ctx) {
     () => {
       clearComposerError();
       updateUrlPreview();
+    },
+    { signal },
+  );
+
+  elements.composerToggle.addEventListener(
+    'click',
+    () => {
+      const collapsed = elements.composerBody.hidden;
+      state.forceComposerOpen = false;
+      uiPrefs.update({ composerCollapsed: collapsed ? 'open' : 'closed' });
+      renderComposer();
+      if (collapsed) elements.urlInput.focus();
     },
     { signal },
   );
@@ -636,6 +845,8 @@ export async function homeView(container, ctx) {
       state.nextBefore = (data && data.next_before) || null;
       state.listError = '';
       state.offline = false;
+      // 先结束 loading 再渲染：否则空列表会被判定为“加载中”而一直停在骨架屏。
+      state.loadingTasks = false;
       renderTasks();
       renderOffline();
     } catch (error) {
@@ -645,6 +856,7 @@ export async function homeView(container, ctx) {
         state.offline = true;
         renderOffline();
       }
+      state.loadingTasks = false;
       renderTasks();
     } finally {
       state.loadingTasks = false;
@@ -673,13 +885,13 @@ export async function homeView(container, ctx) {
     renderTasks();
     if (update.status === 'succeeded') {
       toast('笔记已生成，点开任务查看', { type: 'success' });
+      void refreshNoteMeta();
     } else if (update.status === 'failed') {
       toast(`任务失败：${update.error_message || '打开任务查看原因'}`, { type: 'error' });
     }
   }
 
   async function snapshotAfterReconnect() {
-    // 重连成功 / 首次 hello 后做一次 REST 快照兜底，然后继续走 WS。
     await Promise.allSettled([loadMe(), loadTasks({ silent: true })]);
   }
 
@@ -700,6 +912,10 @@ export async function homeView(container, ctx) {
       renderPill();
       renderAgentCard();
     }),
+    onRealtime('readiness', () => {
+      renderPill();
+      renderAgentCard();
+    }),
     onRealtime('hello', () => {
       void snapshotAfterReconnect();
     }),
@@ -708,11 +924,14 @@ export async function homeView(container, ctx) {
       renderAgentCard();
       renderOffline();
       renderCacheNote();
-      // 旧 Relay：只用一次 REST 快照，不轮询。
+      void refreshNoteMeta();
       void Promise.allSettled([loadMe(), loadTasks({ silent: true })]);
     }),
     onRealtime('task_updated', ({ task }) => {
       void applyRealtimeTask(task);
+    }),
+    onRealtime('note', (payload) => {
+      if (payload && payload.cached) void refreshNoteMeta();
     }),
     onRealtime('ticket-rejected', () => {
       toast('实时连接暂时不可用，正在自动重试', { type: 'error' });
@@ -723,13 +942,30 @@ export async function homeView(container, ctx) {
   /* 事件绑定                                                            */
   /* ------------------------------------------------------------------ */
 
+  elements.agentPill.addEventListener(
+    'click',
+    () => {
+      const info = pillInfo();
+      const hasIssues = Boolean(info.issues && info.issues.length);
+      if (hasIssues) {
+        state.issuesOpen = !state.issuesOpen;
+        renderAgentCard();
+        renderPill();
+        if (state.issuesOpen) elements.agentCard.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        return;
+      }
+      elements.agentCard.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    },
+    { signal },
+  );
+
   elements.openSettings.addEventListener('click', () => navigate('/settings'), { signal });
 
   elements.refreshButton.addEventListener(
     'click',
     () => {
       probeRealtime();
-      void Promise.allSettled([loadMe(), loadTasks()]);
+      void Promise.allSettled([loadMe(), loadTasks(), refreshNoteMeta()]);
     },
     { signal },
   );
@@ -769,7 +1005,6 @@ export async function homeView(container, ctx) {
     state.offline = false;
     renderOffline();
     renderPending();
-    // WS 会自动重连并在 hello 后做快照；旧 Relay 兼容模式下补一次快照。
     if (isLegacyMode()) void loadTasks({ silent: true });
   };
   const onOffline = () => {
@@ -810,11 +1045,9 @@ export async function homeView(container, ctx) {
   fillDraft();
   updateUrlPreview();
   if (!state.tasks.length) renderTasks();
+  void refreshNoteMeta();
 
-  // 确保实时连接已建立（app.js 启动时可能早于配对完成）。
   startRealtime();
-
-  // 首屏只做一次 REST 快照；此后由 WS 推送更新。
   void Promise.allSettled([loadMe(), loadTasks()]);
 
   return () => {

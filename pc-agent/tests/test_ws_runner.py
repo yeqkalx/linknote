@@ -275,6 +275,132 @@ async def test_note_request_missing_note_does_not_send(make_ws_runner):
     assert ws.typed("task_note") == []
 
 
+# ================================================================ v0.3 ack persisted / readiness
+
+
+async def test_ack_note_persisted_false_keeps_outbox_and_retries_three_times(
+    make_ws_runner,
+):
+    runner, ws = make_ws_runner(note_ack_retry_delays_seconds=[0.01, 0.02, 0.03])
+    ws.connected = True
+    runner.outbox.add_note("task-1", "标题", "# 正文")
+
+    await runner.handle_ws_message(
+        {"type": "ack_note", "task_id": "task-1", "persisted": False}
+    )
+    # 手机没保存成功：outbox 保留
+    assert len(runner.outbox.pending_notes()) == 1
+    assert (runner.outbox.notes_dir / "task-1.md").exists()
+
+    await wait_until(lambda: len(ws.typed("task_note")) >= 3, timeout=3)
+    await asyncio.sleep(0.06)  # 超过 3 次延迟后不应再有第 4 次
+    notes = ws.typed("task_note")
+    assert len(notes) == 3, notes
+    assert all(n["task_id"] == "task-1" for n in notes)
+    assert len(runner.outbox.pending_notes()) == 1  # 仍等 note_request/重启
+
+
+async def test_ack_note_persisted_true_cancels_pending_retry_and_clears_outbox(
+    make_ws_runner,
+):
+    runner, ws = make_ws_runner(note_ack_retry_delays_seconds=[0.05, 0.05, 0.05])
+    ws.connected = True
+    runner.outbox.add_note("task-1", "标题", "# 正文")
+
+    await runner.handle_ws_message(
+        {"type": "ack_note", "task_id": "task-1", "persisted": False}
+    )
+    assert len(runner.outbox.pending_notes()) == 1
+
+    # 手机重试保存成功后再 ack：清 outbox 并取消未执行的重发
+    await runner.handle_ws_message(
+        {"type": "ack_note", "task_id": "task-1", "persisted": True}
+    )
+    assert runner.outbox.pending_notes() == []
+    await asyncio.sleep(0.15)
+    assert ws.typed("task_note") == []
+
+
+async def test_ack_note_without_persisted_defaults_to_true(make_ws_runner):
+    """兼容旧 Relay：ack_note 没有 persisted 字段时按 true 处理（清 outbox）。"""
+    runner, ws = make_ws_runner()
+    ws.connected = True
+    runner.outbox.add_note("task-1", "标题", "# 正文")
+    await runner.handle_ws_message({"type": "ack_note", "task_id": "task-1"})
+    assert runner.outbox.pending_notes() == []
+    assert (runner.outbox.notes_dir / "task-1.md").exists()
+
+
+async def test_agent_ready_sent_after_hello(make_ws_runner):
+    runner, ws = make_ws_runner()
+    ws.connected = True
+    await runner.handle_ws_message(
+        {"type": "hello", "agent_id": "a1", "server_time": "2026-10-24T00:00:00Z"}
+    )
+    ready = ws.typed("agent_ready")
+    assert len(ready) == 1
+    assert ready[0]["ready"] is True
+    assert ready[0]["issues"] == []
+
+
+async def test_agent_ready_model_not_configured(make_ws_runner):
+    runner, ws = make_ws_runner(provider_id="", model_name="")
+    ws.connected = True
+    await runner.handle_ws_message({"type": "hello", "agent_id": "a1"})
+    ready = ws.typed("agent_ready")
+    assert ready and ready[0]["ready"] is False
+    codes = [issue["code"] for issue in ready[0]["issues"]]
+    assert "model_not_configured" in codes
+    assert all(issue.get("label") for issue in ready[0]["issues"])
+
+
+async def test_agent_ready_engine_unreachable(make_ws_runner, fake_bilinote):
+    fake_bilinote.health_ok = False
+    runner, ws = make_ws_runner()
+    ws.connected = True
+    await runner.handle_ws_message({"type": "hello", "agent_id": "a1"})
+    ready = ws.typed("agent_ready")
+    assert ready and ready[0]["ready"] is False
+    codes = [issue["code"] for issue in ready[0]["issues"]]
+    assert "engine_unreachable" in codes
+    assert fake_bilinote.health_calls >= 1
+
+
+async def test_agent_ready_health_probe_cached(make_ws_runner, fake_bilinote):
+    runner, ws = make_ws_runner(readiness_health_cache_seconds=30.0)
+    ws.connected = True
+    await runner.handle_ws_message({"type": "hello", "agent_id": "a1"})
+    first_calls = fake_bilinote.health_calls
+    assert first_calls >= 1
+
+    # 强制再发一次（模拟重连 hello）：30s 缓存内不重复探测引擎
+    await runner.report_readiness(force=True)
+    assert fake_bilinote.health_calls == first_calls
+    assert len(ws.typed("agent_ready")) == 2
+
+
+async def test_agent_ready_resent_only_when_readiness_changes(
+    make_ws_runner, fake_bilinote
+):
+    runner, ws = make_ws_runner(readiness_health_cache_seconds=0.0)
+    ws.connected = True
+    await runner.handle_ws_message({"type": "hello", "agent_id": "a1"})
+    assert len(ws.typed("agent_ready")) == 1
+
+    # 引擎挂了：服务端 probe/ping 触发的 readiness 刷新应重发一次 ready=false
+    fake_bilinote.health_ok = False
+    await runner.handle_ws_message({"type": "_server_probe", "ts": 1})
+    ready = ws.typed("agent_ready")
+    assert len(ready) == 2
+    assert ready[1]["ready"] is False
+    codes = [issue["code"] for issue in ready[1]["issues"]]
+    assert "engine_unreachable" in codes
+
+    # 状态没有变化（再 probe 一次）不重复上报
+    await runner.handle_ws_message({"type": "_server_ping", "ts": 2})
+    assert len(ws.typed("agent_ready")) == 2
+
+
 async def test_reconnect_ready_resends_pending_notes_and_active_update(make_ws_runner):
     runner, ws = make_ws_runner()
     ws.connected = True

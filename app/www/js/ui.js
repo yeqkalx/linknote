@@ -4,6 +4,7 @@
  */
 import {
   PLATFORM_META,
+  READINESS_ISSUE_LABELS,
   STAGE_LABELS,
   STATUS_META,
   SUPPORTED_PLATFORMS_TEXT,
@@ -61,6 +62,11 @@ const ICONS = {
     '<path d="M12 3.8v10.8"/><path d="m7.6 10.3 4.4 4.4 4.4-4.4"/><path d="M5 16.2v2.6A1.8 1.8 0 0 0 6.8 20.6h10.4a1.8 1.8 0 0 0 1.8-1.8v-2.6"/>',
   'arrow-right': '<path d="M5 12h14"/><path d="m13.5 6.5 5.5 5.5-5.5 5.5"/>',
   'chevron-right': '<path d="m9.5 5.5 6.5 6.5-6.5 6.5"/>',
+  'chevron-down': '<path d="m6 9 6 6 6-6"/>',
+  more: '<circle cx="5" cy="12" r="1.5"/><circle cx="12" cy="12" r="1.5"/><circle cx="19" cy="12" r="1.5"/>',
+  pin: '<path d="M9.2 4.2h5.6l-.9 4.6 3 3.1H7.1l3-3.1-.9-4.6Z"/><path d="M12 11.9v7.9"/>',
+  export:
+    '<path d="M12 3.8v10.9"/><path d="m8 7.7 4-4 4 4"/><path d="M5 14.2v2.6A1.8 1.8 0 0 0 6.8 18.6h10.4a1.8 1.8 0 0 0 1.8-1.8v-2.6"/>',
   file:
     '<path d="M13.5 3.5H7.2a1.8 1.8 0 0 0-1.8 1.8v13.4a1.8 1.8 0 0 0 1.8 1.8h9.6a1.8 1.8 0 0 0 1.8-1.8V8.5L13.5 3.5Z"/><path d="M13.5 3.5v5h5.1"/>',
 };
@@ -163,6 +169,119 @@ export function confirmDialog({
 }
 
 /* ------------------------------------------------------------------ */
+/* 底部动作面板 / 内容面板                                             */
+/* ------------------------------------------------------------------ */
+
+/**
+ * 底部动作面板（阅读器“导出/更多”、列表操作等）。
+ * @param {{ title?: string, subtitle?: string, actions?: Array<{key: string, label: string, iconName?: string, danger?: boolean, hint?: string}> }} options
+ * @returns {Promise<string|null>} 选中的 action key；取消/关闭为 null
+ */
+export function openSheet({ title = '', subtitle = '', actions = [] } = {}) {
+  return new Promise((resolve) => {
+    if (!Array.isArray(actions) || !actions.length) {
+      resolve(null);
+      return;
+    }
+    const root =
+      (typeof document !== 'undefined' && document.getElementById('dialog-root')) || document.body;
+    const overlay = document.createElement('div');
+    overlay.className = 'sheet-overlay';
+    overlay.innerHTML = `
+      <div class="sheet-card" role="dialog" aria-modal="true" aria-label="${escapeHtml(title || '操作')}">
+        ${title ? `<h2 class="sheet-title">${escapeHtml(title)}</h2>` : ''}
+        ${subtitle ? `<p class="sheet-subtitle">${escapeHtml(subtitle)}</p>` : ''}
+        <div class="sheet-actions"></div>
+        <button type="button" class="sheet-cancel" data-sheet-cancel>取消</button>
+      </div>`;
+    const list = overlay.querySelector('.sheet-actions');
+    actions.forEach((action) => {
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.className = `sheet-action${action.danger ? ' is-danger' : ''}`;
+      button.dataset.sheetAction = action.key;
+      const hint = action.hint ? `<span class="sheet-action-hint">${escapeHtml(action.hint)}</span>` : '';
+      button.innerHTML = `${icon(action.iconName || 'chevron-right', { size: 20 })}<span class="sheet-action-label">${escapeHtml(action.label)}${hint}</span>`;
+      list.appendChild(button);
+    });
+
+    let settled = false;
+    const close = (value) => {
+      if (settled) return;
+      settled = true;
+      document.removeEventListener('keydown', onKey);
+      overlay.remove();
+      resolve(value);
+    };
+    const onKey = (event) => {
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        close(null);
+      }
+    };
+    overlay.addEventListener('click', (event) => {
+      if (event.target === overlay) close(null);
+    });
+    overlay.querySelector('[data-sheet-cancel]').addEventListener('click', () => close(null));
+    list.addEventListener('click', (event) => {
+      const button = event.target instanceof Element ? event.target.closest('[data-sheet-action]') : null;
+      if (button) close(button.dataset.sheetAction || null);
+    });
+    document.addEventListener('keydown', onKey);
+    root.appendChild(overlay);
+    requestAnimationFrame(() => {
+      const first = overlay.querySelector('.sheet-action');
+      if (first) first.focus();
+    });
+  });
+}
+
+/**
+ * 内容面板（示例笔记、说明），只渲染本地传入的 HTML，不发网络请求。
+ * @returns {Promise<void>}
+ */
+export function openContentSheet({ title = '', subtitle = '', html = '' } = {}) {
+  return new Promise((resolve) => {
+    const root =
+      (typeof document !== 'undefined' && document.getElementById('dialog-root')) || document.body;
+    const overlay = document.createElement('div');
+    overlay.className = 'sheet-overlay';
+    overlay.innerHTML = `
+      <div class="sheet-card sheet-card--content" role="dialog" aria-modal="true" aria-label="${escapeHtml(title || '内容')}">
+        <div class="sheet-content-head">
+          <div>
+            <h2 class="sheet-title">${escapeHtml(title)}</h2>
+            ${subtitle ? `<p class="sheet-subtitle">${escapeHtml(subtitle)}</p>` : ''}
+          </div>
+          <button type="button" class="icon-btn" data-content-close aria-label="关闭">${icon('close', { size: 20 })}</button>
+        </div>
+        <div class="sheet-content-body reader">${html}</div>
+      </div>`;
+
+    let settled = false;
+    const close = () => {
+      if (settled) return;
+      settled = true;
+      document.removeEventListener('keydown', onKey);
+      overlay.remove();
+      resolve();
+    };
+    const onKey = (event) => {
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        close();
+      }
+    };
+    overlay.addEventListener('click', (event) => {
+      if (event.target === overlay) close();
+    });
+    overlay.querySelector('[data-content-close]').addEventListener('click', close);
+    document.addEventListener('keydown', onKey);
+    root.appendChild(overlay);
+  });
+}
+
+/* ------------------------------------------------------------------ */
 /* 按钮 loading 状态                                                   */
 /* ------------------------------------------------------------------ */
 
@@ -237,4 +356,20 @@ export function agentPill(agent) {
   return `<span class="status-pill" data-state="${online ? 'online' : 'offline'}">
     <span class="status-dot" aria-hidden="true"></span>${online ? '电脑在线' : '电脑离线'}
   </span>`;
+}
+
+/* ------------------------------------------------------------------ */
+/* readiness（电脑在线 ≠ 可生成）                                      */
+/* ------------------------------------------------------------------ */
+
+/** 单条 readiness issue → 中文文案（优先用 Relay 给的 label） */
+export function readinessIssueLabel(issue) {
+  if (issue && typeof issue.label === 'string' && issue.label.trim()) return issue.label.trim();
+  const code = issue && typeof issue.code === 'string' ? issue.code : '';
+  return READINESS_ISSUE_LABELS[code] || '需要处理一项设置';
+}
+
+/** issue 列表 → 中文 label 列表 */
+export function readinessIssueList(issues) {
+  return (Array.isArray(issues) ? issues : []).map(readinessIssueLabel).filter(Boolean);
 }

@@ -21,7 +21,7 @@
 
 .PARAMETER Version
   Version string for the installer filename / payload metadata. Defaults to the version
-  in desktop\pyproject.toml (currently 0.2.1).
+  in desktop\pyproject.toml (currently 0.3.0 at release time).
 
 .PARAMETER SkipApp
   Reuse an existing dist-desktop\LinkNote instead of rebuilding it.
@@ -76,7 +76,7 @@ if (-not $Version) {
         $m = Select-String -Path $pyproject -Pattern '^version\s*=\s*"([0-9]+\.[0-9]+\.[0-9]+)"' | Select-Object -First 1
         if ($m) { $Version = $m.Matches[0].Groups[1].Value }
     }
-    if (-not $Version) { $Version = '0.2.1' }
+    if (-not $Version) { $Version = '0.3.0' }
     Write-Host "  version:    $Version (from desktop\pyproject.toml)"
 }
 
@@ -767,6 +767,8 @@ if ($appOk -and $setupOk) {
 }
 Write-Host 'BUILD INCOMPLETE' -ForegroundColor Red
 exit 1
+
+
 
 
 

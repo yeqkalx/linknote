@@ -1,4 +1,4 @@
-LinkNote / 链记
+﻿LinkNote / 链记
 Copyright (c) 2026 LinkNote contributors
 
 This project is licensed under the MIT License (see LICENSE).
@@ -8,11 +8,30 @@ Third-party notices
 
 BiliNote (https://github.com/JefferyHcool/BiliNote)
   - License: MIT
-  - This project does NOT include or modify BiliNote source code. The PC Agent
-    invokes a locally installed BiliNote backend over HTTP. The prototype logic
-    under the user's `wecom_bot/` directory (also MIT) was used as reference.
-  - "BiliNote" is the upstream project's name/brand; LinkNote is an independent
-    project and is not affiliated with or endorsed by BiliNote.
+  - LinkNote does NOT modify BiliNote source code. However, the Windows
+    desktop installer (LinkNote-Setup-*.msi / *.exe) **does bundle** a
+    compiled BiliNote backend engine (BiliNoteBackend.exe + runtime) under
+    <install dir>\engine\, copied unmodified from a local BiliNote build.
+    The engine is started as a separate local process and driven over HTTP
+    (127.0.0.1:8483). Build with -SkipEngine to omit it (the app can then
+    use any locally installed BiliNote engine).
+  - "BiliNote" is the upstream project's name/brand; LinkNote is an
+    independent project and is not affiliated with or endorsed by BiliNote.
+
+PySide6 / Qt (https://pyside.org)
+  - License: LGPLv3 (Qt is LGPLv3 / GPLv3 / commercial)
+  - Bundled into the desktop app by PyInstaller from desktop/.venv.
+    PySide6 and the Qt libraries are used unmodified and dynamically loaded.
+    LGPL obligations (e.g. the ability to relink / obtain library source)
+    are the distributor's responsibility; see Qt's LGPL terms.
+
+Python 3.11 runtime
+  - License: PSF License Agreement for Python
+  - Bundled by PyInstaller into the desktop app.
+
+PyInstaller (https://pyinstaller.org)
+  - License: GPLv2 with a special linking exception permitting distribution
+    of the bundled application.
 
 marked (https://github.com/markedjs/marked)
   - License: MIT
@@ -26,5 +45,38 @@ Capacitor (https://capacitorjs.com)
   - License: MIT
   - Used only for the optional Android wrapper.
 
+FFmpeg (https://ffmpeg.org)
+  - License: LGPL for the build LinkNote downloads by default (BtbN
+    FFmpeg-Builds "lgpl" variant). FFmpeg itself is LGPLv2.1+ by default; the
+    exact license of the downloaded binary is the build's bundled LICENSE.txt,
+    which LinkNote keeps next to ffmpeg.exe as FFMPEG-LICENSE.txt.
+  - NOT bundled in the installer. On first run the desktop app downloads a
+    prebuilt **LGPL shared** Windows build from BtbN FFmpeg-Builds:
+      https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/
+      ffmpeg-master-latest-win64-lgpl-shared.zip
+    into `%LOCALAPPDATA%\LinkNote\ffmpeg` (ffmpeg.exe + the same DLL set).
+    The "shared" layout keeps FFmpeg dynamically linked, consistent with the
+    LGPL; the build's own LICENSE is saved next to it as FFMPEG-LICENSE.txt.
+  - Full license texts are installed in `<install dir>\licenses\`:
+    GPL-3.0.txt and LGPL-3.0.txt (LGPL-3.0 builds on the GPL-3.0 terms).
+  - LinkNote no longer downloads a GPL build by default (gyan.dev "essentials"
+    was GPLv3 and is no longer used). If a user manually points LinkNote at a
+    locally installed GPL build, that build and its GPL obligations are the
+    user's own responsibility; LinkNote merely executes it as a separate
+    process.
+
+faster-whisper / Whisper models
+  - License: MIT (faster-whisper) and model-specific licenses
+  - NOT bundled. Downloaded on demand into the user's data directory.
+
 Cloudflare Workers / D1 / Wrangler
   - Tooling; no source code included.
+
+Note on licensing scope
+-----------------------
+This repository's code is MIT, but that does not automatically cover the
+licenses of bundled dependencies. Any distributor of the Windows installer,
+the APK, or an embedded engine build must verify and honor the obligations
+of each bundled component listed above.
+
+

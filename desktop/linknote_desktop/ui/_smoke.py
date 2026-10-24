@@ -12,7 +12,7 @@
 脚本会：
 1. 用临时 LOCALAPPDATA 实例化 DesktopController（不碰用户真实配置）；
 2. 写入模拟的 Agent 日志 / 本地笔记 / outbox，驱动「当前任务」「历史笔记」；
-3. 实例化 MainWindow + 8 个页面 + TrayIcon，跑 500ms 事件循环并截图；
+3. 实例化 MainWindow（4 一级导航 + 4 二级页面）+ TrayIcon，跑事件循环并截图；
 4. 用伪造的状态/供应商/转写数据驱动页面渲染（不访问真实引擎与 Relay）；
 5. 实例化 OnboardingWizard，依次验证 ffmpeg / AI / 配对 / 完成步骤；
 6. 验证 AI 模型自动刷新、勾选保存、配对成功常驻、历史/任务页数据；
@@ -382,13 +382,18 @@ def _save(widget, path: Path) -> bool:
 
 
 def _grab_main_window(window, path: Path) -> bool:
-    """QMainWindow 在 offscreen 下的 grab 会偶发子控件不重绘，改用侧栏+页面合成。"""
+    """QMainWindow 在 offscreen 下的 grab 会偶发子控件不重绘，改用组件合成。
+
+    主窗口布局 = 左侧栏 + 右侧（顶部就绪横幅 + 页面栈），按真实几何位置拼接，
+    保证截图里既能看到横幅，也能看到页面内容。
+    """
     from PySide6.QtGui import QColor, QPainter, QPixmap
 
     from linknote_desktop.ui import style as ui_style
 
     sidebar = getattr(window, "_sidebar", None)
     stack = getattr(window, "_stack", None)
+    banner = getattr(window, "_ready_banner", None)
     page = stack.currentWidget() if stack is not None else None
     if sidebar is None or page is None:
         return _save(window, path)
@@ -397,7 +402,15 @@ def _grab_main_window(window, path: Path) -> bool:
     painter = QPainter(canvas)
     try:
         painter.drawPixmap(0, 0, sidebar.grab())
-        painter.drawPixmap(sidebar.width(), 0, page.grab())
+        content_left = sidebar.width() + 18
+        top = 14
+        if banner is not None:
+            banner_pix = banner.grab()
+            painter.drawPixmap(content_left, top, banner_pix)
+            page_top = top + banner_pix.height() + 10
+        else:
+            page_top = top
+        painter.drawPixmap(content_left, page_top, page.grab())
     finally:
         painter.end()
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -476,12 +489,18 @@ def main() -> int:
     _pump(app, 500)
 
     check("MainWindow 尺寸 1000x720", window.width() == 1000 and window.height() == 720)
-    check("8 个页面已创建", len(window.page_keys()) == 8)
-    check("默认页为状态页", window.current_page_key() == "status")
-    window.show_page("ai")
-    _pump(app, 80)
-    window.show_page("status")
-    _pump(app, 80)
+    check("8 个页面已创建（4 一级 + 4 二级）", len(window.page_keys()) == 8)
+    check("默认页为笔记库", window.current_page_key() == "history")
+    check(
+        "一级导航只有 4 项",
+        window.primary_page_keys() == ["history", "tasks", "devices", "settings"],
+    )
+    check(
+        "二级页面不在侧栏",
+        all(key not in window._nav_buttons for key in ("ai", "transcription", "engine", "logs")),
+    )
+    check("版本号为 0.3.0", ui_utils.APP_VERSION == "0.3.0")
+    check("就绪横幅-已准备好接收视频", "已准备好接收视频" in window._ready_banner._title.text())
 
     tray = None
     try:
@@ -509,6 +528,49 @@ def main() -> int:
     except Exception as exc:  # noqa: BLE001 - offscreen 下托盘可能不可用
         print(f"[warn] TrayIcon 在 offscreen 下不可用：{exc}")
         check("TrayIcon 创建（offscreen 允许失败）", True)
+
+    # ---- 就绪横幅需要处理态 + 跳转；设置页二级入口 + 返回
+    unready = _fake_status()
+    unready["engine"]["state"] = "stopped"
+    unready["engine"]["message"] = "引擎未运行"
+    unready["agent"]["paired"] = False
+    unready["agent"]["running"] = False
+    unready["ffmpeg"]["available"] = False
+    controller._on_status(unready)  # noqa: SLF001
+    _pump(app, 200)
+    check("就绪横幅-需要处理", "需要处理" in window._ready_banner._title.text())
+    check("就绪横幅跳转目标为设备页", window._ready_banner.target_key == "devices")
+    window._ready_banner.clicked.emit()
+    _pump(app, 200)
+    check("点击横幅跳到设备页", window.current_page_key() == "devices")
+    check("设备页有配对面板", hasattr(window._pages["devices"], "_pairing_panel"))
+    check(
+        "设备页有连接状态卡",
+        all(hasattr(window._pages["devices"], name) for name in ("_relay_card", "_agent_card", "_engine_card")),
+    )
+
+    window.show_page("settings")
+    _pump(app, 220)
+    settings_page = window._pages["settings"]
+    check(
+        "设置页有高级功能入口",
+        all(hasattr(settings_page, name) for name in ("_archive_switch", "_archive_export_button")),
+    )
+    settings_page.goto("ai")
+    _pump(app, 320)
+    check("设置入口跳到 AI 模型页", window.current_page_key() == "ai")
+    ai_page = window._pages["ai"]
+    check(
+        "二级页面显示返回设置",
+        ai_page._back_button is not None and ai_page._back_button.isVisible(),
+    )
+    ai_page._back_button.click()
+    _pump(app, 220)
+    check("二级页面可返回设置", window.current_page_key() == "settings")
+
+    controller._on_status(_fake_status())  # noqa: SLF001 - 恢复正常状态
+    _pump(app, 200)
+    check("就绪横幅恢复已准备好", "已准备好接收视频" in window._ready_banner._title.text())
 
     # ---- 数据加载验证（走真实的 controller.run_async 回调链路）
     window.show_page("ai")
@@ -572,22 +634,84 @@ def main() -> int:
     check("当前任务页显示队列", int((snapshot.get("queue") or {}).get("queued") or 0) >= 1)
     check("当前任务页当前任务卡片可见", not tasks_page._current_empty.isVisible())
 
-    # ---- 历史笔记页
+    # ---- 笔记库（含搜索过滤、预览）
     window.show_page("history")
     _pump(app, 800)
     history_page = window._pages["history"]
-    check("历史笔记页读取本地笔记", len(history_page._items) >= 2)
-    check("历史笔记页统计字数", int(history_page._counts.get("words") or 0) > 0)
+    check("笔记库读取本地笔记", len(history_page._items) >= 2)
+    check("笔记库统计字数", int(history_page._counts.get("words") or 0) > 0)
     _pump(app, 250)
-    check(
-        "历史笔记页 Markdown 预览",
-        bool(history_page._preview_view.markdown_text().strip()),
-    )
+    check("笔记库 Markdown 预览", bool(history_page._preview_view.markdown_text().strip()))
+    history_page._search_edit.setText("会议")
+    _pump(app, 220)
+    check("笔记库搜索按标题过滤", len(history_page._items) == 1)
+    history_page._search_edit.setText("bilibili")
+    _pump(app, 220)
+    check("笔记库搜索按平台过滤", len(history_page._items) == 0)
+    history_page._search_edit.clear()
+    _pump(app, 220)
+    check("笔记库搜索清空恢复列表", len(history_page._items) >= 2)
 
-    # ---- 配对成功态（状态页 PairingPanel）
+    # ---- 自动归档（Obsidian/本地目录）
+    archive_dir = Path(temp_root) / "ObsidianVault"
+    archive_dir.mkdir(parents=True, exist_ok=True)
+    controller.config.archive_enabled = True
+    controller.config.archive_dir = str(archive_dir)
+    controller.save_config()
+    _pump(app, 150)
+    archive_result = controller.archive_notes()
+    check("归档导出本地笔记", int(archive_result.get("exported") or 0) == 2)
+    exported_files = sorted(archive_dir.glob("*.md"))
+    check("归档生成 Markdown 文件", len(exported_files) == 2)
+    if exported_files:
+        archive_text = exported_files[0].read_text(encoding="utf-8")
+        check(
+            "归档 frontmatter 字段完整",
+            all(
+                field in archive_text
+                for field in (
+                    "title:",
+                    "source_url:",
+                    "platform:",
+                    "created_at:",
+                    "model:",
+                    "app_version:",
+                )
+            ),
+        )
+        check("归档 frontmatter 版本 0.3.0", 'app_version: "0.3.0"' in archive_text)
+    else:
+        check("归档 frontmatter 字段完整", False)
+        check("归档 frontmatter 版本 0.3.0", False)
+    second_archive = controller.archive_notes()
+    check(
+        "归档幂等（重复导出 0 篇）",
+        int(second_archive.get("exported") or 0) == 0
+        and int(second_archive.get("skipped") or 0) == 2,
+    )
+    controller.config.archive_dir = str(Path(temp_root) / "NoSuchVault")
+    controller.save_config()
+    missing_result = controller.archive_notes()
+    check("归档目录不存在报错", "不存在" in str(missing_result.get("error") or ""))
+    controller.config.archive_dir = "C:\\bad<>dir"
+    controller.save_config()
+    invalid_result = controller.archive_notes()
+    check("归档非法路径报错", "非法字符" in str(invalid_result.get("error") or ""))
+    controller.config.archive_dir = str(archive_dir)
+    controller.save_config()
+    window.show_page("settings")
+    _pump(app, 350)
+    settings_page = window._pages["settings"]
+    check("设置页归档目录已回填", str(settings_page._archive_dir_edit.text()) == str(archive_dir))
+    settings_page._export_now()
+    _pump(app, 600)
+    archive_msg = settings_page._archive_msg._label.text()
+    check("设置页立即导出有结果提示", ("跳过" in archive_msg) or ("导出" in archive_msg))
+
+    # ---- 配对成功态（设备页 PairingPanel）
     controller.pairingChanged.emit(_fake_claimed_pairing())
     _pump(app, 250)
-    panel = window._pages["status"]._pairing_panel
+    panel = window._pages["devices"]._pairing_panel
     check("配对成功后设备列表常驻", panel._devices_layout.count() >= 2)
     check("配对成功文案", "配对成功" in panel._state_badge.text())
     check("配对成功后设备区仍然可见", not panel._devices_container.isHidden())
@@ -596,8 +720,8 @@ def main() -> int:
     _pump(app, 200)
     check("配对等待态显示二维码", bool(panel._qr_label.pixmap()))
 
-    window.show_page("status")
-    _pump(app, 200)
+    window.show_page("history")
+    _pump(app, 250)
 
     assets = REPO_ROOT / "assets"
     screenshots: list[tuple[Path, bool]] = []
@@ -618,7 +742,18 @@ def main() -> int:
     for path, ok in screenshots:
         check(f"截图 {path.name}", ok)
 
-    window.show_page("status")
+    # 额外产出「笔记库」命名（与页面 key 的 history 同图）
+    try:
+        import shutil
+
+        shutil.copyfile(
+            assets / "desktop-ui-history.png", assets / "desktop-ui-library.png"
+        )
+        check("截图 desktop-ui-library.png", True)
+    except OSError as exc:  # noqa: BLE001
+        check(f"截图 desktop-ui-library.png: {exc}", False)
+
+    window.show_page("history")
     _pump(app, 120)
 
     # ---- 首次配置向导：ffmpeg / AI / 配对 / 完成 步骤

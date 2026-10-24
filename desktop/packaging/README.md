@@ -9,9 +9,9 @@ per-user（免管理员）安装包。所有中间产物和大文件都在 `desk
 
 | 产物 | 路径 | 说明 |
 |---|---|---|
-| 桌面端主程序 | `dist-desktop/LinkNote/LinkNote.exe` | PyInstaller onedir，windowed（无控制台），当前 0.2.2 |
-| 安装包（MSI，推荐） | `dist-desktop/LinkNote-Setup-0.2.2.msi` | WiX 3.14 / Windows Installer，per-user 免管理员；含内置引擎 |
-| 安装包（EXE） | `dist-desktop/LinkNote-Setup-0.2.2.exe` | Inno Setup 6，per-user 安装；部分安全软件会拦 Temp 解压 |
+| 桌面端主程序 | `dist-desktop/LinkNote/LinkNote.exe` | PyInstaller onedir，windowed（无控制台），当前 0.3.0 |
+| 安装包（MSI，推荐） | `dist-desktop/LinkNote-Setup-0.3.0.msi` | WiX 3.14 / Windows Installer，per-user 免管理员；含内置引擎 |
+| 安装包（EXE） | `dist-desktop/LinkNote-Setup-0.3.0.exe` | Inno Setup 6，per-user 安装；部分安全软件会拦 Temp 解压 |
 | 内置引擎（默认包含） | `desktop/build/engine/` | BiliNoteBackend.exe + `_internal/`，约 300 MB / 1903 文件 |
 | 引擎 staging 清单 | `desktop/build/engine-manifest.json` | 来源、文件数、SHA256 |
 | 构建报告 | `desktop/build/build-report.json` | 各步骤结果、大小、SHA256、安装/卸载验证 |
@@ -19,7 +19,7 @@ per-user（免管理员）安装包。所有中间产物和大文件都在 `desk
 | 工具链 probe | `desktop/build/probe/` | 最小 PySide6 windowed exe 的构建+启动证据 |
 
 版本号由 `desktop/pyproject.toml` 自动读取（`build-desktop.ps1` / `build-msi.ps1`），
-当前 **0.2.2**；0.2.2 最终构建结果见第 8 节。版本资源由构建脚本按 `pyproject.toml` 自动生成（`LINKNOTE_VERSION_FILE`），不会再出现 exe 版本滞后的情况。
+当前 **0.3.0**；0.3.0 最终构建结果见第 8 节。版本资源由构建脚本按 `pyproject.toml` 自动生成（`LINKNOTE_VERSION_FILE`），不会再出现 exe 版本滞后的情况。
 
 ### MSI 安装器（推荐）
 
@@ -41,19 +41,23 @@ powershell -ExecutionPolicy Bypass -File desktop\packaging\msi\verify-msi-ui.ps1
 - 依赖 WiX 3.14（`tools/wix314`），与 Inno Setup 互不依赖
 - 安装到 `{LocalAppData}\Programs\LinkNote`；数据目录 `%LOCALAPPDATA%\LinkNote` 由安装服务创建
 - 内置引擎装到 `{app}\engine`，装完只需下载 ffmpeg / 填 LLM Key / 下载 Whisper
+- 安装目录含 `LICENSE`、`NOTICE`、`licenses\GPL-3.0.txt`、`licenses\LGPL-3.0.txt`；
+  FFmpeg **不随包**，首次运行由 app 下载 BtbN **LGPL shared** 构建（约 82 MB zip）
+  到 `%LOCALAPPDATA%\LinkNote\ffmpeg`，不再下载 GPL 构建
 - 桌面 + 开始菜单快捷方式默认创建；**卸载保留 `%LOCALAPPDATA%\LinkNote` 用户数据**
 - Finish 对话框「Launch LinkNote」复选框默认勾选，点 Finish 会启动安装后的 app
   （`LaunchLinkNote` type-34 CA + `ExitDialog/Finish` DoAction；异步启动，失败不影响安装）
+- `check-frozen-package.py` 直接读取构建出的 exe 内 PYZ，校验 ffmpeg 模块含 BtbN LGPL URL（无 gyan.dev）且 websockets/relay_ws 已冻结
 - `build-msi.ps1` 编译后自动做 9 项静态检查（ALLUSERS/MSIINSTALLPERUSER、checkbox 属性、
   CustomAction、ControlEvent、Autostart Registry/Component/Feature），防止回归
 - 升级：`MajorUpgrade` + 固定 UpgradeCode；0.2.0 → 0.2.1 已验证覆盖升级（旧产品自动卸载、
   数据保留、单 ARP 项）
 
-### 当前 MSI 产物（2026-10-24 17:0x +08:00，0.2.2）
+### 当前 MSI 产物（2026-10-24 19:0x +08:00，0.3.0）
 
-- 路径：`dist-desktop/LinkNote-Setup-0.2.2.msi`
-- 大小：151,403,617 字节（144.1 MB）
-- SHA256：`27224790573F455885B66D61B2921D44CD42AF3A9401540FE360614079135D72`
+- 路径：`dist-desktop/LinkNote-Setup-0.3.0.msi`
+- 大小：151,453,069 字节（144.4 MB）
+- SHA256：`AF17C876C30DB6D2BA6623A41EEEC8C148CEEE761D3DD2F457A800B64D4A18DC`
 - 验收：`verify-msi.ps1` 安装/卸载全 PASS；`verify-msi-ui.ps1` 真实点击 Finish 后
   LinkNote.exe 成功启动（PASS）。
 
@@ -221,7 +225,45 @@ BiliNoteBackend.exe + _internal/ + static/
 4. 汇总写入 `desktop/build/build-report.json` 与
    `desktop/build/installer-verify.json`。
 
-## 8. 0.2.2 构建结果（最终，2026-10-24）
+## 8. 0.3.0 构建结果（最终，2026-10-24）
+
+- 版本：**0.3.0**（`desktop/pyproject.toml`；task-16 Desktop v0.3 + task-17 FFmpeg LGPL/许可完成后构建）
+- 构建时间（+08:00）：EXE 19:04、MSI 19:05、Inno Setup 19:06
+- 构建命令：`build-desktop.ps1 -SkipProbe -SkipInstaller` → `build-msi.ps1` → `build-desktop.ps1 -SkipApp -SkipProbe -SkipVerify`
+
+| 产物 | 路径 | 字节 | 大小 | SHA256 |
+|---|---|---|---|---|
+| 桌面端 EXE | `dist-desktop/LinkNote/LinkNote.exe`（0.3.0.0） | 6,684,039 | 6.37 MB | `BC353B5CD0A42DD2AFA145CA582E513F6D6D710BD8DF29D2E192F37DC6D54E73` |
+| 桌面包目录 | `dist-desktop/LinkNote/`（195 文件） | — | 132.8 MB | — |
+| 安装包（MSI，主） | `dist-desktop/LinkNote-Setup-0.3.0.msi` | 151,453,069 | 144.4 MB | `AF17C876C30DB6D2BA6623A41EEEC8C148CEEE761D3DD2F457A800B64D4A18DC` |
+| 安装包（Inno EXE，备用） | `dist-desktop/LinkNote-Setup-0.3.0.exe` | 133,550,198 | 127.4 MB | `A7407EA4B7AAE95E3A600EE503748D405A946B8F157E21C2D05056C9B6F62CF9` |
+| 内置引擎（默认包含） | `desktop/build/engine/`（1903 文件） | — | 300.4 MB | `BiliNoteBackend.exe` = `59689B1C…6E8C608` |
+
+验收清单（证据：`desktop/build/final-030/*.log|json`、`desktop/build/msi/msi-verify.json`、
+`desktop/build/msi/msi-ui-verify.json`、`desktop/build/ws-verify/app-profile/LinkNote/logs/`）：
+
+- [x] **冻结包内容检查**（`check-frozen-package.py` 读 exe 内 PYZ）：ffmpeg 模块含
+      `https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-lgpl-shared.zip`，
+      无 gyan.dev；`websockets` 47 个模块 + `linknote_agent.relay_ws` 已冻结 → PASS
+- [x] **安装/升级**：0.2.2 装好后升级 0.3.0（静默、无管理员）→ 旧产品自动卸载、单 ARP 项 0.3.0、
+      exe 0.3.0.0、引擎/桌面快捷方式存在、`%LOCALAPPDATA%\LinkNote` 数据保留
+- [x] **安装内容**：`LICENSE`、`NOTICE`、`licenses\GPL-3.0.txt`、`licenses\LGPL-3.0.txt`、
+      `engine\BiliNoteBackend.exe`（SHA 与 staging 一致）全部存在
+- [x] **安装后 Agent WS**：真实启动安装版 app（隔离 profile、已配对）→ `agent.log`:
+      `开始连接 Relay WebSocket：wss://relay.xykong.xyz/api/v1/agent/ws` →
+      `收到 WebSocket hello（agent_id=…）` → `实时连接已建立`，随后持续 ping/pong；
+      `agent-worker.log` 无 `No module named` 报错
+- [x] **MSI 静默安装/卸载验收**（`verify-msi.ps1`）：数据目录创建、桌面/开始菜单快捷方式、
+      LICENSE/NOTICE/licenses 文本、引擎 SHA、安装后启动 app、`--agent-worker --version`、
+      卸载移除程序/快捷方式/ARP/自启值、保留用户数据 → PASS
+- [x] **UI Finish 真实点击**（`verify-msi-ui.ps1`）：「Launch LinkNote」默认勾选 → 点 Finish →
+      安装目录 LinkNote.exe 实际启动 → PASS
+- [x] 自启 HKCU Run 写入正确（日志确认）；本机仍被联想电脑管家删除（第三方行为，见第 1 节）
+- [ ] **Inno EXE 安装**：本机 `/VERYSILENT` 仍 exit 5（日志 `User canceled the installation process`，
+      与 0.2.0/0.2.1/0.2.2 同样的安全软件拦截；MSI 不受影响，发布以 MSI 为主）
+- 说明：FFmpeg 默认下载已改为 BtbN LGPL shared（task-17），首次运行下载约 82 MB zip；
+  `licenses\` 随安装目录提供 GPL/LGPL 全文
+### 8.2 0.2.2 历史构建结果（2026-10-24）
 
 - 版本：**0.2.2**（修复 0.2.1 冻结包缺 `websockets` 导致 Agent WS 连不上的回归）
 - 关键修复：`pyproject.toml` 增加 `websockets>=13,<16`（.venv 15.0.1），
@@ -256,7 +298,7 @@ BiliNoteBackend.exe + _internal/ + static/
 - [ ] Inno EXE 安装：本机仍受第三方安全软件拦截（`/VERYSILENT` exit 5，0.2.0/0.2.1 同样）；
       EXE 产物已构建并校验版本/哈希，发布以 MSI 为准
 - 说明：本测试机联想电脑管家会删除 HKCU Run 自启项（见第 1 节），与安装包无关
-### 8.1 0.2.1 历史构建结果（2026-10-24）
+### 8.3 0.2.1 历史构建结果（2026-10-24）
 
 - 版本：**0.2.1**（`desktop/pyproject.toml`；UI 冻结 / task-7 完成后重打；用户已装 0.2.0，因此必须升版本才能触发 MajorUpgrade/Inno 升级）
 - 构建时间（+08:00）：EXE 16:29、MSI 16:31、Inno Setup EXE 16:37
@@ -289,7 +331,7 @@ BiliNoteBackend.exe + _internal/ + static/
 - [ ] **Inno EXE 安装**：本机 `LinkNote-Setup-0.2.1.exe /VERYSILENT` 返回 exit 5（0.2.0 同样问题；
       此前已记录联想/火绒拦截 Inno 自解压），故 MSI 为推荐发布路径；EXE 产物本身已构建并通过
       版本/哈希检查
-### 8.2 0.2.0 历史构建结果（2026-10-24 14:33）
+### 8.4 0.2.0 历史构建结果（2026-10-24 14:33）
 
 - 构建时间：2026-10-24 14:33–14:35（+08:00，UI 冻结后重建）
 - 最终验收复跑：2026-10-24 14:4x，`verify-installer.ps1` → **INSTALLER VERIFY PASS**
@@ -338,6 +380,11 @@ BiliNoteBackend.exe + _internal/ + static/
   指向 `%LOCALAPPDATA%\LinkNote\engine`。
 - **ffmpeg 不随包**：应用内「下载 ffmpeg」或使用系统/已有 BiliNote 的 ffmpeg；
   内置引擎也不会自带 ffmpeg（BiliNote 本身要求系统 ffmpeg 或 `FFMPEG_BIN_PATH`）。
+- **FFmpeg 默认下载 LGPL 构建**（BtbN win64 LGPL shared，zip 约 82MB/解压约 177MB），
+  解压后 `%LOCALAPPDATA%\LinkNote\ffmpeg\bin` 保留 ffmpeg.exe + 同目录 DLL；不再默认下载
+  gyan.dev GPLv3 essentials。安装目录 `licenses\` 附带 GPL-3.0/LGPL-3.0 全文。
+  默认 URL 是 BtbN `master-latest`（会随上游更新）；如需可复现可设置环境变量
+  `LINKNOTE_FFMPEG_URL` 指向固定日期的 BtbN autobuild 资产。
 - **安装包未代码签名**：SmartScreen 可能提示「未知发布者」，签名方法见第 10 节。
 - **安装包体积**：126.9 MB（0.2.0，内置引擎为固定组件，安装后约 432 MB）。
 - **首次启动**：内置引擎已随包安装；用户只需在向导/设置里下载 ffmpeg、填 LLM Key、
@@ -390,6 +437,10 @@ BiliNoteBackend.exe + _internal/ + static/
 - 根 `.gitignore` 已覆盖 `build/`、`tools/`；`dist-desktop/` 由构建脚本写入
   `.gitignore`（`*` + `!.gitignore`），如仓库策略不同请让 lead 在根 `.gitignore`
   增加 `/dist-desktop/`。
+
+
+
+
 
 
 

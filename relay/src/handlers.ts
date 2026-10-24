@@ -38,7 +38,7 @@ import type {
   TaskSummary,
 } from './types';
 
-export const RELAY_VERSION = '0.2.0';
+export const RELAY_VERSION = '0.3.0';
 
 const AGENT_PLATFORMS = ['windows', 'macos', 'linux'] as const;
 const DEVICE_PLATFORMS = ['android', 'ios', 'web'] as const;
@@ -137,15 +137,6 @@ function taskNotFound(): never {
 /** Agent 在线状态以 DO 实时 socket 为准；DO 不可用/从未用过实时通道时退回 D1 last_seen。 */
 async function presenceOf(env: Env, agent: AgentRow): Promise<AgentPresence> {
   return getAgentPresence(env, agent.id, agent.last_seen_at);
-}
-
-async function agentPublicWithPresence(env: Env, agent: AgentRow): Promise<AgentPublic> {
-  const presence = await presenceOf(env, agent);
-  return {
-    ...toAgentPublic(agent),
-    online: presence.online,
-    last_seen_at: presence.last_seen_at,
-  };
 }
 
 function toAgentPushTask(task: TaskSummary): AgentPushTask {
@@ -357,8 +348,16 @@ export async function agentMe(req: Request, env: Env): Promise<Response> {
     if (c.status === 'running') queue.running = Number(c.n) || 0;
   }
 
+  const presence = await presenceOf(env, agent);
   return ok({
-    agent: await agentPublicWithPresence(env, agent),
+    agent: {
+      ...toAgentPublic(agent),
+      online: presence.online,
+      last_seen_at: presence.last_seen_at,
+    },
+    // v0.3 readiness：在线 ≠ 可生成（旧 Agent 不上报时为 null）。
+    ready: presence.ready,
+    issues: presence.issues,
     devices: (devices.results || []).map((d) =>
       toDevicePublic({
         id: d.id as string,

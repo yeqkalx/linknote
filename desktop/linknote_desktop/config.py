@@ -14,7 +14,7 @@ from typing import Any, Iterable
 
 APP_NAME = "LinkNote"
 APP_NAME_CN = "链记"
-APP_VERSION = "0.2.2"
+APP_VERSION = "0.3.0"
 DEFAULT_RELAY_URL = "https://relay.xykong.xyz"
 DEFAULT_BACKEND_URL = "http://127.0.0.1:8483/api"
 DEFAULT_PROVIDER = "deepseek"
@@ -122,6 +122,10 @@ class DesktopConfig:
     start_minimized: bool = False
     close_to_tray: bool = True
     theme: str = "system"  # system / light / dark
+    # 笔记自动归档（Obsidian / 本地目录）
+    archive_enabled: bool = False
+    archive_dir: str = ""          # 目标目录（Obsidian vault 或普通目录）
+    archive_template: str = ""     # 文件名模板；留空 = 沿用 notes/ 里的文件名
     # 日志
     log_retention_days: int = 14
     # 首次引导

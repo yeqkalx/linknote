@@ -264,8 +264,9 @@ class OnboardingWizard(QDialog):
         privacy = Card()
         privacy.add_header(
             "隐私与数据",
-            "视频文件、音频、API Key 和转写内容只保存在这台电脑上。"
-            "Relay 只中转链接、任务状态和最终 Markdown（Markdown 会保存在 Relay 数据库中）以便手机读取。",
+            "视频文件、音频和转写内容在这台电脑上处理，生成的笔记文件属于你。"
+            "链记中继只中转链接、任务状态和最终 Markdown，不持久保存笔记正文；正文只在手机本地缓存。"
+            "使用在线 AI 时，必要的文本会发送给你选择的模型服务商；API Key 由你直连模型商鉴权，不经链记中继。",
         )
         layout.addWidget(privacy)
         layout.addStretch(1)
@@ -363,7 +364,7 @@ class OnboardingWizard(QDialog):
         layout.addWidget(
             self._page_title(
                 "配置 AI 模型",
-                "生成笔记需要一个大模型。推荐 DeepSeek，API Key 只保存在本机 BiliNote 引擎。",
+                "生成笔记需要一个大模型。推荐 DeepSeek。API Key 保存在本机引擎数据库，用于你直连模型服务商鉴权。",
             )
         )
         card = Card()

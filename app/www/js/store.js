@@ -11,7 +11,8 @@ import {
   MAX_CACHED_NOTES,
   MAX_CACHED_TASKS,
   NATIVE_DEFAULT_RELAY,
-  NOTE_CACHE_BUDGET,
+  NOTE_CACHE_BUDGET_BYTES,
+  NOTE_LEGACY_BUDGET_BYTES,
   STORAGE_KEYS,
 } from './config.js';
 import { isNativePlatform, normalizeApiBase, safeJsonParse } from './util.js';
@@ -344,9 +345,65 @@ const NOTE_DB_NAME = 'linknote-notes';
 const NOTE_DB_VERSION = 1;
 const NOTE_STORE = 'notes';
 let noteDbPromise = null;
+let notePersistPromise = null;
 
 function noteDbKey(base, taskId) {
   return `${base}::${taskId}`;
+}
+
+/** UTF-8 字节数：缓存预算按字节计算（Markdown 多为中文，不能按字符数） */
+function textByteLength(value) {
+  const text = typeof value === 'string' ? value : String(value ?? '');
+  try {
+    if (typeof TextEncoder === 'function') return new TextEncoder().encode(text).length;
+  } catch (error) {
+    // 退回手算
+  }
+  let bytes = 0;
+  for (let index = 0; index < text.length; index += 1) {
+    const code = text.codePointAt(index) || 0;
+    if (code <= 0x7f) bytes += 1;
+    else if (code <= 0x7ff) bytes += 2;
+    else if (code <= 0xffff) bytes += 3;
+    else {
+      bytes += 4;
+      index += 1;
+    }
+  }
+  return bytes;
+}
+
+/** 统一笔记条目字段（兼容旧缓存：补 pinned/bytes） */
+function normalizeNoteEntry(entry) {
+  if (!entry || typeof entry.markdown !== 'string') return null;
+  return {
+    ...entry,
+    title: typeof entry.title === 'string' ? entry.title : '',
+    pinned: entry.pinned === true,
+    bytes: Number(entry.bytes) > 0 ? Number(entry.bytes) : textByteLength(entry.markdown),
+  };
+}
+
+/**
+ * 请求一次持久化存储（best-effort，仅请求一次）。
+ * 只有 noteCache.put 成功后才调用；失败不影响保存结果。
+ */
+export async function ensureStoragePersisted() {
+  if (notePersistPromise) return notePersistPromise;
+  notePersistPromise = (async () => {
+    try {
+      const storage = typeof navigator !== 'undefined' ? navigator.storage : null;
+      if (!storage || typeof storage.persist !== 'function') return false;
+      if (typeof storage.persisted === 'function') {
+        const already = await storage.persisted();
+        if (already) return true;
+      }
+      return Boolean(await storage.persist());
+    } catch (error) {
+      return false;
+    }
+  })();
+  return notePersistPromise;
 }
 
 function openNoteDb() {
@@ -443,32 +500,49 @@ async function idbListNotes(base) {
   }
 }
 
-async function idbClearBaseNotes(base) {
+async function idbClearBaseNotes(base, { keepPinned = false } = {}) {
   const db = await openNoteDb();
-  if (!db) return;
+  if (!db) return { removed: 0, kept: 0 };
   try {
     const tx = db.transaction(NOTE_STORE, 'readonly');
-    const keys = await idbResult(tx.objectStore(NOTE_STORE).index('base').getAllKeys(base));
-    await idbDeleteKeys(keys || []);
+    const entries = (await idbResult(tx.objectStore(NOTE_STORE).index('base').getAll(base))) || [];
+    const drop = [];
+    let kept = 0;
+    entries.forEach((entry) => {
+      if (keepPinned && entry && entry.pinned === true) {
+        kept += 1;
+        return;
+      }
+      if (entry && entry.key) drop.push(entry.key);
+    });
+    await idbDeleteKeys(drop);
+    return { removed: drop.length, kept };
   } catch (error) {
-    // 忽略
+    return { removed: 0, kept: 0 };
   }
 }
 
-/** 按数量与字符预算淘汰最旧的笔记（IndexedDB 侧） */
+/** 淘汰未固定的旧笔记：数量上限 + 字节预算；固定/收藏笔记永不自动淘汰。 */
 async function pruneNoteDb(base) {
-  const entries = (await idbListNotes(base)).sort(
-    (a, b) => (Number(b && b.cachedAt) || 0) - (Number(a && a.cachedAt) || 0),
-  );
-  let total = 0;
+  const entries = (await idbListNotes(base))
+    .map(normalizeNoteEntry)
+    .filter(Boolean)
+    .sort((a, b) => (Number(b.cachedAt) || 0) - (Number(a.cachedAt) || 0));
+  let count = 0;
+  let bytes = 0;
   const drop = [];
-  entries.forEach((entry, index) => {
-    const length = entry && typeof entry.markdown === 'string' ? entry.markdown.length : 0;
-    if (index >= MAX_CACHED_NOTES || total + length > NOTE_CACHE_BUDGET) {
-      if (entry && entry.key) drop.push(entry.key);
+  entries.forEach((entry) => {
+    if (entry.pinned) {
+      count += 1;
+      bytes += entry.bytes;
       return;
     }
-    total += length;
+    if (count >= MAX_CACHED_NOTES || bytes + entry.bytes > NOTE_CACHE_BUDGET_BYTES) {
+      if (entry.key) drop.push(entry.key);
+      return;
+    }
+    count += 1;
+    bytes += entry.bytes;
   });
   await idbDeleteKeys(drop);
 }
@@ -484,75 +558,116 @@ function readNoteMap(base) {
 function readLegacyNote(base, taskId) {
   if (!base || !taskId) return null;
   const entry = readNoteMap(base)[taskId];
-  if (!entry || typeof entry.markdown !== 'string') return null;
-  return entry;
+  return normalizeNoteEntry(entry);
 }
 
-function writeLegacyNote(base, taskId, note) {
+function writeLegacyNote(base, taskId, note, { pinned = false } = {}) {
   if (!base || !taskId || !note || typeof note.markdown !== 'string') return false;
-  if (note.markdown.length > NOTE_CACHE_BUDGET) return false;
+  const bytes = textByteLength(note.markdown);
+  if (bytes > NOTE_CACHE_BUDGET_BYTES) return false;
 
   const map = readNoteMap(base);
+  const previous = map[taskId];
   map[taskId] = {
     title: typeof note.title === 'string' ? note.title : '',
     markdown: note.markdown,
     completed_at: note.completed_at || null,
     cachedAt: Date.now(),
+    pinned: pinIfRequested(pinned, previous),
+    bytes,
   };
 
   const entries = Object.entries(map).sort(
     (a, b) => (Number(b[1] && b[1].cachedAt) || 0) - (Number(a[1] && a[1].cachedAt) || 0),
   );
 
+  let count = 0;
   let total = 0;
   const kept = {};
-  for (const [id, entry] of entries.slice(0, MAX_CACHED_NOTES)) {
-    const length = typeof entry.markdown === 'string' ? entry.markdown.length : 0;
-    if (total + length > NOTE_CACHE_BUDGET) break;
-    total += length;
-    kept[id] = entry;
+  for (const [id, entry] of entries) {
+    const normalized = normalizeNoteEntry(entry);
+    if (!normalized) continue;
+    if (normalized.pinned) {
+      kept[id] = normalized;
+      count += 1;
+      total += normalized.bytes;
+      continue;
+    }
+    if (count >= MAX_CACHED_NOTES || total + normalized.bytes > NOTE_LEGACY_BUDGET_BYTES) continue;
+    kept[id] = normalized;
+    count += 1;
+    total += normalized.bytes;
   }
 
-  return writeJson(bucketKeys.notes(base), kept);
+  const ok = writeJson(bucketKeys.notes(base), kept);
+  if (ok) return true;
+  // localStorage 配额不足：只保留固定笔记与当前这篇
+  const fallback = {};
+  Object.entries(kept).forEach(([id, entry]) => {
+    if (entry.pinned || id === taskId) fallback[id] = entry;
+  });
+  return writeJson(bucketKeys.notes(base), fallback);
 }
 
-function removeLegacyNote(base, taskId) {
+function pinIfRequested(pinned, previous) {
+  if (pinned === true) return true;
+  return Boolean(previous && previous.pinned === true);
+}
+
+function clearLegacyNotes(base, { keepPinned = false } = {}) {
+  if (!keepPinned) {
+    const map = readNoteMap(base);
+    removeRaw(bucketKeys.notes(base));
+    return { removed: Object.keys(map).length, kept: 0 };
+  }
   const map = readNoteMap(base);
-  if (!(taskId in map)) return;
-  delete map[taskId];
-  writeJson(bucketKeys.notes(base), map);
-}
-
-function clearLegacyNotes(base) {
-  removeRaw(bucketKeys.notes(base));
+  const kept = {};
+  let removed = 0;
+  let keptCount = 0;
+  Object.entries(map).forEach(([id, entry]) => {
+    if (entry && entry.pinned === true) {
+      kept[id] = entry;
+      keptCount += 1;
+    } else {
+      removed += 1;
+    }
+  });
+  writeJson(bucketKeys.notes(base), kept);
+  return { removed, kept: keptCount };
 }
 
 /** 读取本地笔记（IndexedDB → 迁移 localStorage 旧缓存） */
 export async function getNoteCache(base, taskId) {
   if (!base || !taskId) return null;
-  const entry = await idbGetNote(base, taskId);
-  if (entry && typeof entry.markdown === 'string') return entry;
+  const entry = normalizeNoteEntry(await idbGetNote(base, taskId));
+  if (entry) return entry;
 
   const legacy = readLegacyNote(base, taskId);
   if (!legacy) return null;
   const migrated = await idbPutNote({
+    ...legacy,
     key: noteDbKey(base, taskId),
     base,
     taskId,
-    title: legacy.title || '',
-    markdown: legacy.markdown,
-    completed_at: legacy.completed_at || null,
-    cachedAt: Number(legacy.cachedAt) || Date.now(),
+    pinned: legacy.pinned === true,
+    bytes: legacy.bytes || textByteLength(legacy.markdown),
   });
   if (migrated) removeLegacyNote(base, taskId);
   return legacy;
 }
 
-/** 写入本地笔记（IndexedDB 优先，失败退回 localStorage） */
-export async function putNoteCache(base, taskId, note) {
+/**
+ * 写入本地笔记（IndexedDB 优先，失败退回 localStorage）。
+ * @param {{ pinned?: boolean }} options 不传 pinned 时沿用已有固定状态
+ * @returns {Promise<boolean>} 只有真正落盘成功才返回 true（决定 ack persisted）
+ */
+export async function putNoteCache(base, taskId, note, { pinned } = {}) {
   if (!base || !taskId || !note || typeof note.markdown !== 'string') return false;
-  if (note.markdown.length > NOTE_CACHE_BUDGET) return false;
+  const bytes = textByteLength(note.markdown);
+  if (bytes > NOTE_CACHE_BUDGET_BYTES) return false;
 
+  const existing = normalizeNoteEntry(await idbGetNote(base, taskId)) || readLegacyNote(base, taskId);
+  const nextPinned = typeof pinned === 'boolean' ? pinned : Boolean(existing && existing.pinned);
   const entry = {
     key: noteDbKey(base, taskId),
     base,
@@ -561,12 +676,64 @@ export async function putNoteCache(base, taskId, note) {
     markdown: note.markdown,
     completed_at: note.completed_at || null,
     cachedAt: Date.now(),
+    pinned: nextPinned,
+    bytes,
   };
+
   if (await idbPutNote(entry)) {
     await pruneNoteDb(base);
+    void ensureStoragePersisted();
     return true;
   }
-  return writeLegacyNote(base, taskId, note);
+  const ok = writeLegacyNote(base, taskId, note, { pinned: nextPinned });
+  if (ok) void ensureStoragePersisted();
+  return ok;
+}
+
+/** 固定/取消固定（固定笔记不参与自动淘汰） */
+export async function setNotePinned(base, taskId, pinned) {
+  if (!base || !taskId) return false;
+  const existing = await getNoteCache(base, taskId);
+  if (!existing) return false;
+  const nextPinned = pinned === true;
+  const entry = {
+    ...existing,
+    key: noteDbKey(base, taskId),
+    base,
+    taskId,
+    pinned: nextPinned,
+    bytes: existing.bytes || textByteLength(existing.markdown),
+  };
+  if (await idbPutNote(entry)) return true;
+  return writeLegacyNote(base, taskId, existing, { pinned: nextPinned });
+}
+
+/** 批量缓存索引（任务列表徽标/固定状态；一次 IO，不逐条查询） */
+export async function listNoteMeta(base) {
+  const map = new Map();
+  if (!base) return map;
+  (await idbListNotes(base)).forEach((entry) => {
+    const normalized = normalizeNoteEntry(entry);
+    if (normalized && typeof normalized.taskId === 'string') {
+      map.set(normalized.taskId, {
+        pinned: normalized.pinned,
+        bytes: normalized.bytes,
+        cachedAt: Number(normalized.cachedAt) || 0,
+      });
+    }
+  });
+  Object.entries(readNoteMap(base)).forEach(([taskId, entry]) => {
+    if (map.has(taskId)) return;
+    const normalized = normalizeNoteEntry(entry);
+    if (normalized) {
+      map.set(taskId, {
+        pinned: normalized.pinned,
+        bytes: normalized.bytes,
+        cachedAt: Number(normalized.cachedAt) || 0,
+      });
+    }
+  });
+  return map;
 }
 
 export async function removeNoteCache(base, taskId) {
@@ -576,39 +743,40 @@ export async function removeNoteCache(base, taskId) {
 }
 
 export async function noteCacheStats(base) {
-  if (!base) return { count: 0, chars: 0 };
-  const lengths = new Map();
-  const entries = await idbListNotes(base);
-  entries.forEach((entry) => {
-    if (entry && typeof entry.taskId === 'string' && typeof entry.markdown === 'string') {
-      lengths.set(entry.taskId, entry.markdown.length);
+  const meta = await listNoteMeta(base);
+  let bytes = 0;
+  let pinnedCount = 0;
+  let pinnedBytes = 0;
+  meta.forEach((entry) => {
+    bytes += entry.bytes || 0;
+    if (entry.pinned) {
+      pinnedCount += 1;
+      pinnedBytes += entry.bytes || 0;
     }
   });
-  const legacy = readNoteMap(base);
-  Object.entries(legacy).forEach(([taskId, entry]) => {
-    if (!lengths.has(taskId) && entry && typeof entry.markdown === 'string') {
-      lengths.set(taskId, entry.markdown.length);
-    }
-  });
-  let chars = 0;
-  lengths.forEach((length) => {
-    chars += length;
-  });
-  return { count: lengths.size, chars };
+  return { count: meta.size, bytes, pinnedCount, pinnedBytes, chars: bytes };
 }
 
-export async function clearNoteCache(base) {
-  if (!base) return;
-  await idbClearBaseNotes(base);
-  clearLegacyNotes(base);
+/** 清除缓存；默认保留固定/收藏笔记（设置页会二次确认） */
+export async function clearNoteCache(base, { keepPinned = false } = {}) {
+  if (!base) return { removed: 0, kept: 0 };
+  const idbResultCount = await idbClearBaseNotes(base, { keepPinned });
+  const legacyResult = clearLegacyNotes(base, { keepPinned });
+  return {
+    removed: (idbResultCount.removed || 0) + (legacyResult.removed || 0),
+    kept: Math.max(idbResultCount.kept || 0, legacyResult.kept || 0),
+  };
 }
 
 export const noteCache = {
   get: getNoteCache,
   put: putNoteCache,
   remove: removeNoteCache,
+  setPinned: setNotePinned,
+  listMeta: listNoteMeta,
   stats: noteCacheStats,
   clear: clearNoteCache,
+  ensurePersist: ensureStoragePersisted,
 };
 
 /* ------------------------------------------------------------------ */
@@ -764,13 +932,15 @@ export async function cacheSummary(base) {
   return {
     taskCount: tasks.items.length,
     noteCount: notes.count,
-    noteChars: notes.chars,
+    noteBytes: notes.bytes,
+    pinnedCount: notes.pinnedCount,
+    noteChars: notes.bytes,
     fetchedAt: tasks.fetchedAt,
   };
 }
 
-/** 只清任务与笔记缓存；配对信息、设置、待发送队列不受影响。 */
-export async function clearCaches(base) {
+/** 只清任务与笔记缓存；配对信息、设置、待发送队列不受影响。默认保留固定笔记。 */
+export async function clearCaches(base, { keepPinned = true } = {}) {
   clearTaskCache(base);
-  await clearNoteCache(base);
+  return clearNoteCache(base, { keepPinned });
 }

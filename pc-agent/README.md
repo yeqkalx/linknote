@@ -82,10 +82,16 @@ uv pip install --python .venv\Scripts\python.exe -e ".[dev]"
 
 - 用 `agent_token`（Header `Authorization: Bearer ...`）连 `wss://<relay>/api/v1/agent/ws`，
   收到 `hello` 后开始工作；服务端推 `task` 才处理（同一时刻只跑一个任务，BiliNote 后端本身串行）；
-- 每 25 秒发应用层 `ping`，对端回 `pong`；超过 60 秒没有任何消息判定断线并重连；
+- **心跳走 WebSocket 协议层 ping**（`ping_interval=25s` / `ping_timeout=20s`，Cloudflare 边缘
+  自动应答，不唤醒 DO、不计请求）；**不再发应用层 JSON ping**。仍保留对服务端 JSON
+  `{"type":"ping"}` 回 `pong`、对 `{"type":"probe"}` 回 `probe_ack`（旧 Relay 兼容）；
+- 收到 `hello` 后立即上报一次 `agent_ready`（`ready` + `issues`），readiness 变化时重发：
+  - `model_not_configured`：`provider_id` / `model_name` 为空；
+  - `engine_unreachable`：BiliNote `/api/health` 失败/超时（≤2s，老版本自动回退 provider 探针）；
+  - BiliNote 健康探测结果缓存 30s，服务端 ping/probe 触发的刷新不会每次都探测；
 - 断线按 `1/2/4/8/15/30 秒 + 抖动` 永久重连；网络类错误时每秒探测 Relay 主机，
   网络一恢复立即重连；
-- 重连成功后重新 `hello`，补发当前任务状态和所有未 ack 的笔记；服务端也会重推
+- 重连成功后重新 `hello`，补发当前任务状态、readiness 和所有未 ack 的笔记；服务端也会重推
   `queued/running` 任务（契约 §11.3：每次最多 50 条，其余由 Agent 用 REST 补领一次）；
 - **WS 断开期间**用 REST `GET /api/v1/agent/tasks/next` 兜底领任务，WS 恢复后立即停用；
   不做空闲轮询（hello 后的一次性补领 + 断开兜底，两处都用任务 id 去重，避免重复处理）；
@@ -96,7 +102,10 @@ uv pip install --python .venv\Scripts\python.exe -e ".[dev]"
 - 提交 `/generate_note`，每 3 秒轮询 `/task_status/{id}`，状态变化时通过 WS
   `task_update` 回传 `status/progress/stage/message`；
 - 成功后把 Markdown **先保存到本机**（`notes/` + `outbox/`），再发 `task_note`；
-  手机收到后发 `ack_note`，Agent 收到才清理 outbox（`notes/` 永久保留）；
+  手机收到后发 `ack_note`：
+  - `persisted!==false`（含旧 Relay 缺省）→ 清理 outbox、保留 `notes/`；
+  - `persisted:false`（手机写本地缓存失败）→ **保留 outbox**，按 `30s / 2min / 10min`
+    最多重发 3 次 `task_note`；之后等 `note_request` 或重启/重连补发；
 - 手机请求未缓存的笔记（`note_request`）时，从本地 outbox/notes 重发 `task_note`；
 - 失败把常见错误翻成中文，通过 WS `task_update status=failed error=... error_code=...` 回传。
 
@@ -112,8 +121,9 @@ uv pip install --python .venv\Scripts\python.exe -e ".[dev]"
 ### 笔记与 outbox 的关系（实时模式）
 
 - 笔记正文**只在本机**：`~/.linknote/notes/<task_id>.md` 永久保留；
-- `~/.linknote/outbox/note-<task_id>.json` 是「待手机 ack」队列（含正文副本）：
-  断线/重启后会重发 `task_note`；收到 `ack_note` 后该 JSON 删除，Markdown 文件保留；
+- `~/.linknote/outbox/note-<task_id>.json` 是「待手机确认保存」队列（含正文副本）：
+  断线/重启后会重发 `task_note`；收到 `ack_note persisted!==false` 后该 JSON 删除，
+  Markdown 文件保留；`ack_note persisted:false` 时保留并按 30s/2min/10min 重发最多 3 次；
 - 超过 `note_retention_days`（默认 7 天）仍未 ack 的 outbox 记录会被清理（本地 md 不删）；
 - 手机端 `note_request` 即使 outbox 已清理，也会从 `notes/*.md` 读取并重发。
 
@@ -184,14 +194,18 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\packaging\install_autostar
 | `max_status_errors` | `20` | 连续查询 BiliNote 状态失败多少次判定后端失联 |
 | `use_websocket` | `true` | 是否走 WS 推送；false 等价 `run --poll` |
 | `ws_url` | `""` | 留空由 `relay_base_url` 推导；本地联调可填 `ws://127.0.0.1:8798/api/v1/agent/ws` |
-| `ws_ping_interval_seconds` | `25.0` | 应用层 ping 间隔（实时协议 25 秒） |
-| `ws_dead_timeout_seconds` | `60.0` | 多久没收到任何消息判定断线（协议建议 30–60 秒） |
+| `ws_ping_interval_seconds` | `25.0` | **WebSocket 协议层 ping 间隔**（v0.3 起不再发应用层 JSON ping） |
+| `ws_ping_timeout_seconds` | `20.0` | 协议层 ping 未回 pong 的超时（websockets 据此判定断线并重连） |
+| `ws_dead_timeout_seconds` | `60.0` | **已废弃**（v0.3 起改用协议 ping 判活）；保留字段仅为兼容旧配置 |
 | `ws_hello_timeout_seconds` | `10.0` | 连接后等待 hello 的超时 |
 | `ws_reconnect_delays` | `[1,2,4,8,15,30]` | 断线退避基数（秒），可写成 `"1,2,4,8,15,30"` |
 | `ws_jitter_ratio` | `0.2` | 每次退避附加 0–20% 抖动，总上限 30 秒 |
 | `rest_fallback` | `true` | WS 断开期间是否用 REST `/agent/tasks/next` 兜底 |
 | `rest_heartbeat_enabled` | `true` | WS 模式是否同时发 REST 心跳（兼容旧 REST 在线状态） |
 | `note_retention_days` | `7.0` | 未 ack 笔记在 outbox 的保留天数（`notes/` 永久保留） |
+| `readiness_health_cache_seconds` | `30.0` | BiliNote 引擎健康探测缓存（agent_ready 用） |
+| `readiness_health_timeout_seconds` | `2.0` | BiliNote `/api/health` 探测超时 |
+| `note_ack_retry_delays_seconds` | `[30,120,600]` | `ack_note persisted=false` 时最多 3 次重发延迟（秒） |
 | `outbox_dir` / `notes_dir` / `log_dir` | `""`（用 `~/.linknote/` 下默认子目录） | 可自定义 |
 | `verbose` | `false` | 是否输出 DEBUG 日志 |
 
@@ -268,37 +282,66 @@ Agent 会把 BiliNote 的原始报错翻译成中文再回传 fail（手机端�
 .venv\Scripts\python.exe -m pytest -q
 ```
 
-当前 **206 passed**。测试**不依赖真实 Relay / BiliNote**：REST 用 `httpx.MockTransport`
+当前 **222 passed**。测试**不依赖真实 Relay / BiliNote**：REST 用 `httpx.MockTransport`
 在进程内模拟（`tests/conftest.py` 的 `FakeRelay` / `FakeBiliNote`）；WS 用注入的 fake
 connection + 本机 `websockets` fake server（真实握手，随机端口）验证。覆盖：
 
-- 配置读写/原子写/环境变量/损坏容错（含所有 WS 字段与列表类型转换）；
+- 配置读写/原子写/环境变量/损坏容错（含所有 WS/readiness/ack 重试字段与列表类型转换）；
 - 配对流程（创建、保存 token、打印配对码、claimed / expired / 超时 / Relay 断开）；
 - 任务生命周期（领任务 → 启动后端 → 提交 → 进度 → complete），进度映射与 10 秒节流；
 - 失败路径与中文错误翻译、租约/Agent 心跳、REST outbox 落盘与重启补传、本地留档；
-- **实时通道**：WS URL 推导、退避序列 `1/2/4/8/15/30+jitter`、真实本地 WS 握手
-  （路径 + `Authorization: Bearer` + hello + 收发）、401 分类、ping/pong、
-  死连接超时重连、网络探测提前重连、事件分发、任务更新、`task_note` 只落本地、
-  `note_request` 重发、`ack_note` 清理、重连补发、REST 兜底、旧 outbox 迁移；
-- BiliNote 请求体字段（与 `wecom_bot` 完全一致）、ResponseWrapper 解包；
+- **实时通道（v0.3）**：WS URL 推导、退避序列 `1/2/4/8/15/30+jitter`、真实本地 WS 握手
+  （路径 + `Authorization: Bearer` + hello + 收发）、401 分类；
+  **协议层 ping 参数（无应用层 JSON ping）**、服务端 JSON ping→`pong`、`probe`→`probe_ack`、
+  空闲不因 dead_timeout 掉线、网络探测提前重连、事件分发、任务更新、`task_note` 只落本地、
+  `note_request` 重发、**`ack_note persisted` 语义与 3 次重试（30s/2min/10min）**、
+  **`agent_ready` 首次上报/变化重发/健康探测 30s 缓存/引擎探测回退**、
+  重连补发、REST 兜底、旧 outbox 迁移；
+- BiliNote 请求体字段（与 `wecom_bot` 完全一致）、ResponseWrapper 解包、engine_health 探测；
 - CLI（`--help`、未配对拦截、`status --json`、`unpair`、`install-autostart` 命令拼装、
   `run --once`、`run --poll`、默认 WS 模式）。
 
 真实链路验证（2026-10-24，fake BiliNote + fake phone，节选）：
 
-**生产 relay `wss://relay.xykong.xyz`（relay v0.2.0）**
-- `pair --relay https://relay.xykong.xyz` → 手机 REST claim → Agent WSS 握手 **HTTP 101**
-  （Header `Authorization: Bearer agt_…`），首帧 `{"type":"hello","agent_id":"..."}`；
-  从启动到连上 1.22s；
-- 手机建任务 → **1.3s 后手机收到 `note`**；`task_updated` 序列 `parsing 1 → parsing 2 →
-  downloading 20 → transcribing 45 → summarizing 70 → succeeded 100`；
-- `ack_note` 后 Agent outbox 清空、`notes/<task_id>.md` 保留；`GET /tasks/:id` 无 `markdown`
-  字段、`GET /tasks/:id/note` 返回 **410 `note_not_stored`**；
-- 手机离线时生成 → 手机上线发 `note_request` → Agent 从本地重发 `task_note` → ack 清理；
-- 同 token 第二条连接顶替：旧连接收到服务端 **close 4001**，Agent 日志提示「可能重复启动
-  Agent」并自动重连成功（契约 §11.1 关闭码处理）。
+**v0.3（本机 relay 8796 = relay v0.3 工作树快照 + 默认 30s 探测/退避配置）**
+- Agent 连上后收到 hello 立即上报 `agent_ready ready=true issues=[]`，手机 hello/presence
+  都带 `ready:true`（在线 ≠ 可生成的字段打通）；
+- 静置 17s 后手机才连接：Relay 发 `probe`+`ping` 探活，Agent 回 `probe_ack`+`pong`，
+  presence 保持 `online:true`（probe→probe_ack 链路）；
+- 手机建任务 → `task_updated` → `note`；手机先 `ack_note persisted=false`（模拟写缓存失败）：
+  Agent **保留 outbox** 并按配置延迟重发 `task_note` **3 次**，手机收到 3 次重发；
+  随后 `ack persisted=true` → Agent 清 outbox、`notes/<task_id>.md` 保留；
+- `GET /tasks/:id` 无 markdown 字段、`/tasks/:id/note` **410 `note_not_stored`**；
+- Agent 全程无应用层 JSON ping（协议层 ping 保活）；
+- relay 修复 `intVar` 缺省值 bug 后复测 alarm 频率：**只有 Agent（无手机）35s 内 0 次服务端
+  JSON ping**；手机连接后 65s 仅 **30.1s / 60.1s 两次 ping**（30s 口径），Agent/手机均保持连接。
+  该 bug 会让缺省 alarm/ping 变成 1s（v0.2 线上曾中招），v0.3 修复后符合降本目标。
 
-**本机 relay 8797（同一套脚本）**：上述全流程同样通过；Agent 连接 0.62s、任务到 note 1.12s。
+**生产 relay v0.3.0（`wss://relay.xykong.xyz`，worker `c312b769…`）**
+- health `version: 0.3.0`；Agent WSS 握手 101 → `agent_ready` → `/agent/me` 顶层
+  `ready:true`、手机 hello/presence `ready:true, issues:[]`；
+- 静置 17s 后手机连接触发 `probe`/`ping`，Agent 回 `probe_ack`/`pong`，presence 保持 online；
+- 手机建任务 → `note`；`ack persisted=false` → Agent 保留 outbox 并重发 `task_note` 3 次 →
+  手机 `persisted=true` → outbox 清空、`notes/` 保留；D1 无 markdown、`/note` 410；
+- alarm 频率：无手机 35s **0 次 ping**；手机在线 65s **2 次 ping（29.9s / 59.8s）**，
+  Agent 与手机全程在线（手机按契约回 pong）；
+- 部署后边缘传播期偶发 SSL EOF/401：Agent 的重连退避会自动恢复（本次 E2E 脚本对边缘请求
+  也做了退避重试，生产最终链路零人工干预跑通）。
+
+**新 Agent + 旧 Relay 兼容（生产 `wss://relay.xykong.xyz`，relay v0.2.0）**
+- 完整任务链路（pair/claim → hello → task → task_update → task_note → note → ack → 清理）通过，
+  Agent 的 `agent_ready` 被旧 Relay 忽略但**不断连**；
+- 旧 Relay 每 ~1s 发 JSON `ping`，新 Agent 回 `pong`，持续 70s **零断线**
+  （旧 Relay 的 JSON 心跳仍可用，新 Agent 不再主动发 JSON ping）。
+
+**生产 relay v0.2.0 任务链路**：Agent WSS 握手 **HTTP 101**（`Authorization: Bearer agt_…`）、
+首帧 hello；手机建任务 1.3s 收到 note；`task_updated` 序列 `parsing→downloading→transcribing→
+summarizing→succeeded 100`；ack 后 outbox 清空、`notes/` 保留；`/note` 410。
+同 token 第二条连接顶替：旧连接收 **close 4001**，Agent 日志提示「可能重复启动」并自动重连成功。
+
+> 注意：Relay v0.3 会按 `phone_stale` 关闭「长时间没有任何消息」的手机 socket（close 4002），
+> 手机端必须响应服务端 JSON `ping`（回 `pong`）并/或每 25s 发 `ping`，否则会被判 stale
+> （本 E2E 的 fake phone 一开始没回 pong 就复现了 4002；PWA 需保证该行为）。
 
 ## 与契约相关的重要说明（实现选择）
 
@@ -336,6 +379,16 @@ connection + 本机 `websockets` fake server（真实握手，随机端口）验
     （不让手机端无限重试一个必然被拒的正文）。
 14. **REST 心跳保留**：WS 模式下仍每 30 秒发 `POST /agent/heartbeat`，仅用于兼容旧 REST
     在线状态/`GET /agent/me`；手机 presence 以 DO 实时通道为准。
+15. **心跳（v0.3）**：删除 25s 应用层 JSON ping，改用 WebSocket 协议层 ping
+    （`ping_interval=25s` / `ping_timeout=20s`，Cloudflare 边缘自动应答、不唤醒 DO）；
+    仍保留对服务端 JSON `ping` 回 `pong`、对 `probe` 回 `probe_ack`，旧 Relay 心跳仍可用。
+16. **readiness（v0.3）**：收到 `hello` 后立即上报一次 `agent_ready`，readiness 变化时重发；
+    `model_not_configured`（provider/model 为空）、`engine_unreachable`（BiliNote `/api/health`
+    失败/超时 ≤2s，老版本无该路由时自动回退 `/get_all_providers` 探针）；
+    BiliNote 健康探测缓存 30s，服务端 ping/probe 触发的刷新不会每次探测。
+17. **ack persisted（v0.3）**：`ack_note.persisted!==false` 才清 outbox（旧 Relay 缺省 true）；
+    `persisted:false` 时保留 outbox，按 `30s/2min/10min` 最多重发 3 次 `task_note`（后台任务，
+    不阻塞主循环），之后等 `note_request` 或重启/重连补发；手机再次 ack true 会取消重发并清理。
 
 ## 已知风险
 

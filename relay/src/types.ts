@@ -18,6 +18,10 @@ export interface Env {
   WS_ALARM_SECONDS?: string;
   WS_AGENT_STALE_SECONDS?: string;
   WS_PHONE_STALE_SECONDS?: string;
+  /** 手机连接时，agent 上次活动超过该秒数就触发 ping 探活（默认 15s）。 */
+  WS_PROBE_STALE_SECONDS?: string;
+  /** 探活超时秒数（默认 3s，最小 1s；测试可调小）。 */
+  WS_PROBE_TIMEOUT_SECONDS?: string;
 }
 
 export type Platform = 'bilibili' | 'youtube' | 'douyin' | 'kuaishou';
@@ -165,6 +169,15 @@ export interface AgentPresence {
   last_seen_at: string | null;
   /** true 表示该 agent 用过实时通道，online 以 DO socket 为准。 */
   realtime: boolean;
+  /** false=在线但不可生成；null=未知（旧 Agent 不上报 readiness）。 */
+  ready: boolean | null;
+  issues: AgentIssue[] | null;
+}
+
+/** v0.3 readiness 问题项（docs/v0.3-protocol-delta.md §3）。 */
+export interface AgentIssue {
+  code: string;
+  label: string;
 }
 
 export interface RealtimeTicket {

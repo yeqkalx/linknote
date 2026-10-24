@@ -1,11 +1,13 @@
-"""LinkNote Realtime Protocol v1 的 Agent WebSocket 客户端。
+"""LinkNote Realtime Protocol（v0.3）的 Agent WebSocket 客户端。
 
-协议：``docs/realtime-protocol.md``（已冻结）。
+协议：``docs/realtime-protocol.md`` + ``docs/v0.3-protocol-delta.md``。
 
 - 连接：``ws(s)://<relay>/api/v1/agent/ws``，Header ``Authorization: Bearer <agent_token>``；
 - 连上后等服务端 ``hello``，之后把消息放进 ``events`` 队列，由 Runner 消费；
-- 应用层心跳：每 25s 发 ``{"type":"ping","ts":...}``，对端回 ``pong``；
-  超过 ``dead_timeout``（默认 60s）没有任何消息就判定断线；
+- **心跳走 WebSocket 协议层 ping**（``ping_interval=25s / ping_timeout=20s``，Cloudflare 边缘
+  自动应答，不唤醒 DO）；**不再发应用层 JSON ping**；
+- 仍保留对服务端 JSON ``{"type":"ping"}`` 回 ``pong``、对 ``{"type":"probe"}`` 回 ``probe_ack``
+  （旧 Relay 的 JSON 心跳/在线探测仍可用）；
 - 断线指数退避 ``1/2/4/8/15/30s`` + 抖动，永久重连；网络类错误时用轻量 TCP 探测
   在网络恢复后立即重连（不必等满退避）。
 
@@ -27,9 +29,13 @@ logger = get_logger("ws")
 
 WS_PATH = "/api/v1/agent/ws"
 
-#: 协议 §3：两端每 25s 发 ping。
-DEFAULT_PING_INTERVAL = 25.0
-#: 协议 §3：Agent last_seen > 60s 服务端会关连接；客户端同样用它判定死连接。
+#: v0.3：协议层 ping 间隔（websockets ping_interval）。
+DEFAULT_PROTOCOL_PING_INTERVAL = 25.0
+#: v0.3：协议层 ping 未回 pong 的超时（websockets ping_timeout）。
+DEFAULT_PROTOCOL_PING_TIMEOUT = 20.0
+#: 兼容旧配置/调用方；v0.3 起不再使用应用层 JSON ping。
+DEFAULT_PING_INTERVAL = DEFAULT_PROTOCOL_PING_INTERVAL
+#: 已废弃：v0.3 起不按「无消息超时」判死连接（协议 ping 负责），保留字段兼容旧调用方。
 DEFAULT_DEAD_TIMEOUT = 60.0
 #: 连接后等 hello 的时间（DO 正常是立即发）。
 DEFAULT_HELLO_TIMEOUT = 10.0
@@ -45,6 +51,9 @@ EVENT_CONNECTED = "_connected"
 EVENT_DISCONNECTED = "_disconnected"
 EVENT_AUTH_ERROR = "_auth_error"
 EVENT_RECONNECT_SCHEDULED = "_reconnect_scheduled"
+#: 服务端发了 JSON ping/probe（Agent 已回 pong/probe_ack）；Runner 可借此刷新 readiness。
+EVENT_SERVER_PING = "_server_ping"
+EVENT_SERVER_PROBE = "_server_probe"
 
 ConnectFunc = Callable[[str, dict[str, str]], Awaitable[Any]]
 SleepFunc = Callable[[float], Awaitable[Any]]
@@ -214,8 +223,19 @@ async def default_network_probe(url: str) -> bool:
 # ---------------------------------------------------------------- 连接实现
 
 
-async def connect_websocket(url: str, headers: dict[str, str], *, timeout: float = 10.0) -> Any:
-    """真实连接（包装 websockets.asyncio.client.connect，便于测试注入）。"""
+async def connect_websocket(
+    url: str,
+    headers: dict[str, str],
+    *,
+    timeout: float = 10.0,
+    ping_interval: float = DEFAULT_PROTOCOL_PING_INTERVAL,
+    ping_timeout: float = DEFAULT_PROTOCOL_PING_TIMEOUT,
+) -> Any:
+    """真实连接（包装 websockets.asyncio.client.connect，便于测试注入）。
+
+    v0.3 起心跳使用 WebSocket 协议层 ping（``ping_interval``/``ping_timeout``），
+    Cloudflare 边缘自动应答，不唤醒 Durable Object、不计请求。
+    """
     from websockets.asyncio.client import connect as ws_connect
 
     return await ws_connect(
@@ -223,7 +243,8 @@ async def connect_websocket(url: str, headers: dict[str, str], *, timeout: float
         additional_headers=headers,
         open_timeout=timeout,
         close_timeout=5.0,
-        ping_interval=None,  # 用协议里的应用层 ping，不用 WS 控制帧 ping
+        ping_interval=max(0.1, float(ping_interval)),
+        ping_timeout=max(0.1, float(ping_timeout)),
         max_size=None,  # task_note 可能较大（≤1.5MiB）
     )
 
@@ -249,12 +270,13 @@ class RealtimeClient:
         random_fn: RandomFunc = random.random,
         clock: ClockFunc = time.monotonic,
         network_probe: Optional[ProbeFunc] = None,
-        ping_interval: float = DEFAULT_PING_INTERVAL,
+        ping_interval: float = DEFAULT_PROTOCOL_PING_INTERVAL,
+        ping_timeout: float = DEFAULT_PROTOCOL_PING_TIMEOUT,
         dead_timeout: float = DEFAULT_DEAD_TIMEOUT,
         hello_timeout: float = DEFAULT_HELLO_TIMEOUT,
         reconnect_delays: tuple[float, ...] | list[float] = DEFAULT_RECONNECT_DELAYS,
         jitter_ratio: float = DEFAULT_JITTER_RATIO,
-        user_agent: str = "LinkNote-Agent/0.1",
+        user_agent: str = "LinkNote-Agent/0.3",
     ):
         self.url = build_ws_url(relay_base_url, ws_url=ws_url)
         self.agent_token = agent_token
@@ -263,18 +285,35 @@ class RealtimeClient:
         self.agent_id = ""
         self.server_time = ""
         self.last_message_at = 0.0
+        #: v0.3：WebSocket 协议层 ping 参数（供 status/测试观察；真正的 ping 由 websockets 驱动）
+        self.protocol_ping_interval = max(0.1, float(ping_interval))
+        self.protocol_ping_timeout = max(0.1, float(ping_timeout))
 
-        self._connect = connect or connect_websocket
         self._sleep = sleep
         self._random = random_fn
         self._clock = clock
         self._probe = network_probe
-        self._ping_interval = max(0.1, float(ping_interval))
-        self._dead_timeout = max(0.1, float(dead_timeout))
         self._hello_timeout = max(0.1, float(hello_timeout))
         self._reconnect_delays = tuple(float(d) for d in reconnect_delays) or DEFAULT_RECONNECT_DELAYS
         self._jitter_ratio = float(jitter_ratio)
         self._user_agent = user_agent
+        #: 已废弃：v0.3 起用协议 ping 判活，不再按「多久没消息」判死连接；保留参数兼容旧调用方。
+        self._dead_timeout = max(0.1, float(dead_timeout))
+
+        if connect is None:
+
+            async def _default_connect(url: str, headers: dict[str, str]) -> Any:
+                return await connect_websocket(
+                    url,
+                    headers,
+                    timeout=self._hello_timeout,
+                    ping_interval=self.protocol_ping_interval,
+                    ping_timeout=self.protocol_ping_timeout,
+                )
+
+            self._connect: ConnectFunc = _default_connect
+        else:
+            self._connect = connect
 
         self._ws: Any = None
         self._stop = asyncio.Event()
@@ -412,40 +451,21 @@ class RealtimeClient:
         await self._recv_loop(ws)
 
     async def _recv_loop(self, ws: Any) -> None:
-        ping_task = asyncio.create_task(self._ping_loop(ws), name="ws-ping")
-        try:
-            while not self._stop.is_set():
-                try:
-                    raw = await asyncio.wait_for(ws.recv(), timeout=self._dead_timeout)
-                except asyncio.TimeoutError as exc:
-                    raise WSError(
-                        f"超过 {self._dead_timeout:.0f} 秒没有收到任何消息（心跳超时）",
-                        kind="network",
-                    ) from exc
-                except asyncio.CancelledError:
-                    raise
-                except Exception as exc:  # noqa: BLE001 - 正常/异常关闭都按断线处理
-                    raise classify_connect_error(exc) from exc
+        """接收循环。
 
-                self.last_message_at = self._clock()
-                await self._handle_incoming(raw)
-        finally:
-            ping_task.cancel()
+        v0.3：不再用「无消息超时」判死连接——websockets 的协议层 ping/pong
+        （``ping_interval=25s / ping_timeout=20s``）负责探测死连接；这里只负责收消息。
+        """
+        while not self._stop.is_set():
             try:
-                await ping_task
-            except (asyncio.CancelledError, Exception):  # noqa: BLE001
-                pass
+                raw = await ws.recv()
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:  # noqa: BLE001 - 正常/异常关闭都按断线处理
+                raise classify_connect_error(exc) from exc
 
-    async def _ping_loop(self, ws: Any) -> None:
-        while not self._stop.is_set() and self.connected:
-            await self._sleep(self._ping_interval)
-            if self._stop.is_set() or not self.connected:
-                return
-            ok = await self._send_on(ws, {"type": "ping", "ts": int(self._clock() * 1000)})
-            if not ok:
-                logger.warning("WebSocket ping 发送失败，关闭连接触发重连")
-                await self._close_socket()
-                return
+            self.last_message_at = self._clock()
+            await self._handle_incoming(raw)
 
     # ---------------------------------------------------------------- 消息
 
@@ -456,7 +476,20 @@ class RealtimeClient:
             return
         msg_type = message["type"]
         if msg_type == "ping":
-            await self._send_on(self._ws, {"type": "pong", "ts": message.get("ts")})
+            # 旧 Relay 的 JSON 心跳/在线探测：照常回 pong（v0.3 Relay 不再依赖它）。
+            ok = await self._send_on(self._ws, {"type": "pong", "ts": message.get("ts")})
+            self.events.put_nowait(
+                {"type": EVENT_SERVER_PING, "ts": message.get("ts"), "replied": ok}
+            )
+            return
+        if msg_type == "probe":
+            # v0.3：Relay 主动探测（手机连接时确认 agent 存活），要求回 probe_ack。
+            ok = await self._send_on(
+                self._ws, {"type": "probe_ack", "ts": message.get("ts")}
+            )
+            self.events.put_nowait(
+                {"type": EVENT_SERVER_PROBE, "ts": message.get("ts"), "replied": ok}
+            )
             return
         if msg_type == "pong":
             return
@@ -541,11 +574,15 @@ __all__ = [
     "DEFAULT_DEAD_TIMEOUT",
     "DEFAULT_HELLO_TIMEOUT",
     "DEFAULT_PING_INTERVAL",
+    "DEFAULT_PROTOCOL_PING_INTERVAL",
+    "DEFAULT_PROTOCOL_PING_TIMEOUT",
     "DEFAULT_RECONNECT_DELAYS",
     "EVENT_AUTH_ERROR",
     "EVENT_CONNECTED",
     "EVENT_DISCONNECTED",
     "EVENT_RECONNECT_SCHEDULED",
+    "EVENT_SERVER_PING",
+    "EVENT_SERVER_PROBE",
     "RealtimeClient",
     "WSError",
     "build_ws_url",

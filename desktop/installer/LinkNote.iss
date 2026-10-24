@@ -1,9 +1,9 @@
 ﻿; ---------------------------------------------------------------------------
-; LinkNote 0.2.0 — Inno Setup 6 script (per-user, no admin required)
+; LinkNote 0.3.0 — Inno Setup 6 script (per-user, no admin required)
 ;
 ; Built by desktop\packaging\build-desktop.ps1, which passes
 ;   /DNoEngine=1            omit the optional bundled BiliNote engine payload
-;   /DMyAppVersion=0.2.0    version string (default below)
+;   /DMyAppVersion=0.3.0    version string (default below)
 ;
 ; Expected inputs (all produced by the build script):
 ;   ..\..\dist-desktop\LinkNote\*   PyInstaller onedir output (LinkNote.exe + _internal)
@@ -17,10 +17,10 @@
 ; ---------------------------------------------------------------------------
 
 #ifndef MyAppVersion
-  #define MyAppVersion "0.2.1"
+  #define MyAppVersion "0.3.0"
 #endif
 #ifndef MyVersionInfoVersion
-  #define MyVersionInfoVersion "0.2.1.0"
+  #define MyVersionInfoVersion "0.3.0.0"
 #endif
 ; The optional bundled BiliNote engine component is included unless the build
 ; passes /DNoEngine=1 (desktop\packaging\build-desktop.ps1 -SkipEngine /
@@ -100,6 +100,8 @@ Name: "engine"; Description: "内置 BiliNote 引擎（约 300 MB，离线开箱
 Source: "..\..\dist-desktop\LinkNote\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "..\..\LICENSE"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\..\NOTICE"; DestDir: "{app}"; Flags: ignoreversion
+; GPL-3.0 / LGPL-3.0 full texts (FFmpeg LGPL shared build download + Qt LGPL notice)
+Source: "licenses\*"; DestDir: "{app}\licenses"; Flags: ignoreversion recursesubdirs createallsubdirs
 #if IncludeEngine
 Source: "..\build\engine\*"; DestDir: "{app}\engine"; Flags: ignoreversion recursesubdirs createallsubdirs; Components: engine
 Source: "THIRD-PARTY-NOTICES.txt"; DestDir: "{app}\engine"; Flags: ignoreversion; Components: engine
@@ -134,4 +136,6 @@ function InitializeSetup(): Boolean;
 begin
   Result := True;
 end;
+
+
 

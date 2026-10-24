@@ -20,7 +20,7 @@ import {
   REALTIME_TICKET_TIMEOUT_MS,
 } from './config.js';
 import { api, isAuthError } from './api.js';
-import { auth, noteCache, settings, taskCache } from './store.js';
+import { auth, ensureStoragePersisted, noteCache, settings, taskCache } from './store.js';
 
 export const REALTIME_STATES = {
   IDLE: 'idle',
@@ -45,6 +45,9 @@ let lastMessageAt = 0;
 let presenceOnline = null;
 let presenceLastSeen = null;
 let presenceUpdatedAt = 0;
+/** v0.3 readiness：电脑在线 ≠ 可生成 */
+let presenceReady = null;
+let presenceIssues = [];
 let agentId = null;
 let lastLegacyProbeAt = 0;
 let globalListenersInstalled = false;
@@ -86,6 +89,10 @@ export function getRealtimeSnapshot() {
       lastSeen: presenceLastSeen,
       updatedAt: presenceUpdatedAt,
     },
+    readiness: {
+      ready: presenceReady,
+      issues: presenceIssues,
+    },
   };
 }
 
@@ -123,6 +130,26 @@ export function describeRealtime(snapshot = getRealtimeSnapshot()) {
   }
 }
 
+/**
+ * readiness 文案（供顶部胶囊/电脑卡使用）。
+ * ready=null 时返回 null（未知，按“在线”显示）；离线优先返回离线。
+ */
+export function describeReadiness(snapshot = getRealtimeSnapshot()) {
+  if (snapshot.presence.online !== true) return null;
+  const { ready, issues } = snapshot.readiness;
+  if (ready === true) return { label: '可生成', tone: 'online', issues: [] };
+  if (ready === false) {
+    const list = Array.isArray(issues) ? issues : [];
+    const count = list.length || 1;
+    return {
+      label: `需要处理 ${count} 项`,
+      tone: 'attention',
+      issues: list,
+    };
+  }
+  return null;
+}
+
 /* ------------------------------------------------------------------ */
 /* 内部：状态 / 工具                                                    */
 /* ------------------------------------------------------------------ */
@@ -132,14 +159,47 @@ function setState(next) {
   emit('state', getRealtimeSnapshot());
 }
 
-function setPresence(online, lastSeen) {
+function sameIssues(left, right) {
+  const a = Array.isArray(left) ? left : [];
+  const b = Array.isArray(right) ? right : [];
+  if (a.length !== b.length) return false;
+  return a.every((item, index) => {
+    const other = b[index];
+    if (!item || !other) return item === other;
+    return item.code === other.code && item.label === other.label;
+  });
+}
+
+/**
+ * @param {boolean|null} online
+ * @param {string|null} lastSeen
+ * @param {{ready?: boolean, issues?: any[]}|undefined} readiness 传 undefined 表示本次消息未带 readiness
+ */
+function setPresence(online, lastSeen, readiness) {
   const nextOnline = typeof online === 'boolean' ? online : presenceOnline;
   const nextSeen = lastSeen || presenceLastSeen;
+  let readinessChanged = false;
+  if (readiness !== undefined) {
+    const nextReady =
+      readiness && typeof readiness.ready === 'boolean' ? readiness.ready : null;
+    const nextIssues = readiness && Array.isArray(readiness.issues) ? readiness.issues : [];
+    if (nextReady !== presenceReady || !sameIssues(presenceIssues, nextIssues)) {
+      presenceReady = nextReady;
+      presenceIssues = nextIssues;
+      readinessChanged = true;
+    }
+  } else if (nextOnline === false) {
+    // 离线时清空 readiness，避免显示过期的“可生成”
+    presenceReady = null;
+    presenceIssues = [];
+    readinessChanged = true;
+  }
   const changed = nextOnline !== presenceOnline || nextSeen !== presenceLastSeen;
   presenceOnline = nextOnline;
   presenceLastSeen = nextSeen;
   presenceUpdatedAt = Date.now();
   emit('presence', { online: presenceOnline, lastSeen: presenceLastSeen, changed });
+  if (readinessChanged) emit('readiness', getRealtimeSnapshot().readiness);
   if (changed) emit('state', getRealtimeSnapshot());
 }
 
@@ -313,8 +373,17 @@ async function connect() {
     return;
   }
   if (data.agent_id) agentId = data.agent_id;
-  // relay-dev 的增量字段：首屏在 hello 之前就能画出真实在线态。
-  if (typeof data.agent_online === 'boolean') setPresence(data.agent_online, null);
+  // relay 的增量字段：首屏在 hello 之前就能画出真实在线态 / readiness。
+  if (typeof data.agent_online === 'boolean') {
+    const hasReadiness =
+      Object.prototype.hasOwnProperty.call(data, 'ready') ||
+      Object.prototype.hasOwnProperty.call(data, 'issues');
+    setPresence(
+      data.agent_online,
+      null,
+      hasReadiness ? { ready: data.ready, issues: data.issues } : undefined,
+    );
+  }
   openSocket(session.base, ticket);
 }
 
@@ -356,16 +425,25 @@ function handleMessage(raw) {
       if (typeof message.agent_id === 'string' && message.agent_id) agentId = message.agent_id;
       const online = typeof message.online === 'boolean' ? message.online : true;
       setState(REALTIME_STATES.OPEN);
-      setPresence(online, null);
+      setPresence(online, null, { ready: message.ready, issues: message.issues });
       emit('hello', {
         agentId,
         online,
+        ready: typeof message.ready === 'boolean' ? message.ready : null,
+        issues: Array.isArray(message.issues) ? message.issues : [],
         serverTime: message.server_time || null,
       });
       break;
     }
     case 'presence': {
-      setPresence(message.online, message.last_seen || null);
+      const hasReadiness =
+        Object.prototype.hasOwnProperty.call(message, 'ready') ||
+        Object.prototype.hasOwnProperty.call(message, 'issues');
+      setPresence(
+        message.online,
+        message.last_seen || null,
+        hasReadiness ? { ready: message.ready, issues: message.issues } : undefined,
+      );
       break;
     }
     case 'task_updated': {
@@ -419,7 +497,11 @@ function normalizeRealtimeTask(task) {
   return next;
 }
 
-/** 收到正文：先写本地缓存，再 ack，最后通知页面渲染（协议 §2.2/§2.3） */
+/**
+ * 收到正文：先写本地缓存，再按保存结果 ack，最后通知页面渲染。
+ * v0.3（docs/v0.3-protocol-delta.md §2）：只有真正落盘成功才 ack persisted:true；
+ * 失败 ack persisted:false，Agent 会保留 outbox 并重试。
+ */
 async function handleNote(message) {
   const base = settings.getApiBase();
   let cached = false;
@@ -436,9 +518,15 @@ async function handleNote(message) {
     markdown: message.markdown,
     title: typeof message.title === 'string' ? message.title : '',
     cached,
+    saveFailed: !cached,
   });
-  // 无论缓存是否成功都 ack，避免 Agent 无限重发；cached=false 时页面会提示本地缓存失败。
-  send({ type: 'ack_note', task_id: message.task_id });
+  send({ type: 'ack_note', task_id: message.task_id, persisted: cached === true });
+}
+
+/** 手动补发 ack（阅读器“重试保存到手机”成功后调用） */
+export function sendAckNote(taskId, persisted = true) {
+  if (!taskId) return false;
+  return send({ type: 'ack_note', task_id: taskId, persisted: persisted !== false });
 }
 
 /* ------------------------------------------------------------------ */
@@ -527,6 +615,8 @@ export function stopRealtime() {
   presenceOnline = null;
   presenceLastSeen = null;
   presenceUpdatedAt = 0;
+  presenceReady = null;
+  presenceIssues = [];
   setState(REALTIME_STATES.IDLE);
 }
 

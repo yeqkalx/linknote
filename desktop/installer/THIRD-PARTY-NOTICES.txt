@@ -1,4 +1,4 @@
-LinkNote / 链记 — bundled third-party component notices
+﻿LinkNote / 链记 — bundled third-party component notices
 ========================================================
 
 This installer may install an optional copy of the BiliNote backend engine
@@ -28,4 +28,14 @@ Other bundled components
 * PyInstaller bootloader is GPLv2 with a special exception permitting
   distribution of bundled applications.
 
+FFmpeg (not bundled)
+--------------------
+* LinkNote does not bundle FFmpeg. The first-run wizard can download the
+  prebuilt BtbN FFmpeg-Builds win64 **LGPL shared** build
+  (ffmpeg-master-latest-win64-lgpl-shared.zip) into %LOCALAPPDATA%\LinkNote\ffmpeg.
+  The build's own license is kept as FFMPEG-LICENSE.txt next to ffmpeg.exe.
+* Full GPL-3.0 and LGPL-3.0 texts are installed under <install dir>\licenses\.
+* Using a manually installed GPL FFmpeg build is the user's responsibility.
+
 LinkNote itself is MIT licensed — see LICENSE in the install directory.
+

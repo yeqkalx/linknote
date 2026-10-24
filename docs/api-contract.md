@@ -174,6 +174,8 @@
       "version": "0.1.0", "online": true,
       "last_seen_at": "...", "created_at": "..."
     },
+    "ready": false,
+    "issues": [{"code": "model_not_configured", "label": "未配置 AI 模型"}],
     "devices": [
       { "id": "uuid", "name": "我的手机", "platform": "android", "paired_at": "...", "last_seen_at": "..." }
     ],
@@ -186,6 +188,9 @@
 `online`：该 agent 是否有一条活着的实时（WebSocket）连接；以 Durable Object 的实时状态为准，
 DO 不可用或该 agent 从未用过实时通道时退回 `last_seen_at` 60 秒判定（兼容旧 REST 轮询 Agent）。
 手机端实时 presence 以 WS `presence` 推送为准（见第 11 节）。
+
+`ready` / `issues`（v0.3.0 增量）：Agent 通过 WS `agent_ready` 上报的“能否立刻生成”状态；`ready=true` 可生成，
+`ready=false` 时 `issues` 给出阻塞原因（最多 20 项，`code` ≤64、`label` ≤200）。旧 Agent 不上报时为 `null`。
 
 ### 4.2 心跳
 
@@ -555,8 +560,9 @@ App 文案建议：
 {"type":"task_update","task_id":"...","status":"completed","progress":100,"title":"视频标题"}
 {"type":"task_update","task_id":"...","status":"failed","error":"模型余额不足","error_code":"billing"}
 {"type":"task_note","task_id":"...","markdown":"# ...","title":"视频标题"}
-{"type":"ping","ts":123}
+{"type":"agent_ready","ready":false,"issues":[{"code":"model_not_configured","label":"未配置 AI 模型"}]}
 {"type":"pong","ts":123}
+{"type":"probe_ack","ts":123}
 ```
 
 - `task_update` 的 `status` 取值 `running` / `completed` / `failed`（也容忍 `succeeded`）；
@@ -567,7 +573,11 @@ App 文案建议：
 - `task_note`：**正文绝不写 D1 / DO SQLite**。有手机在线→广播 `note`；无手机在线→DO 只记录
   “该 task_id 的正文已收到但未送达”（不存正文），等手机 `note_request` 时再向 Agent 要。
   重复/乱序 `task_note` 幂等，不报错、不断连。若该 task 不属于本 agent 才回 `{"type":"error","code":"task_not_found"}`。
-- 任何消息都刷新 Agent `last_seen`；Agent 每 25s 发 `ping`，Relay 回 `pong`。
+- 任何消息刷新内存 `last_seen`；**v0.3.0 起 Agent 不再发送应用层 `ping`**，改用 WebSocket 协议 ping
+  （Cloudflare 自动应答、不唤醒 DO、不计请求）。`pong` 仅用于回应服务端在有手机在线时发的 `ping`；
+  `probe_ack` 用于回应 `probe`，可附带 `ready`/`issues`。
+- `agent_ready`：Agent 收到 `hello` 后发送一次，readiness 变化时重发；Relay 写入内存并在变化时持久化，
+  随后透传到手机 `hello`/`presence` 与 REST `/agent/me` 的 `ready`/`issues`（旧 Agent 不上报则为 `null`）。
 
 ### 11.3 Server → Agent（Relay → Agent）
 
@@ -575,15 +585,17 @@ App 文案建议：
 {"type":"hello","agent_id":"...","server_time":"..."}
 {"type":"task","task":{"id":"...","url":"...","platform":"bilibili","status":"queued","stage":"pending","progress":0,"title":null,"created_at":"..."}}
 {"type":"note_request","task_id":"..."}
-{"type":"ack_note","task_id":"..."}
+{"type":"ack_note","task_id":"...","persisted":true}
 {"type":"phone_online","online":true}
 {"type":"ping","ts":123}
-{"type":"pong","ts":123}
+{"type":"probe","ts":123}
 {"type":"error","code":"task_not_found","message":"任务不存在"}
 ```
 
 - **增量**：
-  - `ack_note`：手机的 `ack_note` 会转发给 Agent，Agent 收到后可清理本地 outbox（保留本机 notes）。
+  - `ack_note`：手机 `ack_note` 转发给 Agent；`persisted=false` 时 Agent **不得**清理 outbox，应择机重发；缺省 true 兼容旧 Relay。
+  - `probe`：手机连上时的探活；Agent 3s 内回 `probe_ack`，可带 `ready`/`issues`。
+  - `ping`：仅在有手机在线时由 Relay 发出（30s）；Agent 回 `pong` 即可，不再主动发应用层 ping。
   - `task.task` 含 `stage`/`progress`，便于 Agent 恢复“正在处理”的任务状态（可选使用）。
   - `error`：排障用增量消息（不影响连接），当前可能出现 `bad_request` / `task_not_found` / `invalid_state` / `note_too_large`。
 - Agent 离线时任务保留 D1 `queued`，重连 hello 后补发（最多 50 条/次，其余用 REST 兜底）。
@@ -592,8 +604,8 @@ App 文案建议：
 ### 11.4 Server → Phone（Relay → 手机）
 
 ```json
-{"type":"hello","agent_id":"...","online":true,"server_time":"..."}
-{"type":"presence","online":true,"last_seen":"...","server_time":"..."}
+{"type":"hello","agent_id":"...","online":true,"ready":true,"issues":[],"server_time":"..."}
+{"type":"presence","online":true,"last_seen":"...","ready":false,"issues":[{"code":"engine_unreachable","label":"BiliNote 引擎不可用"}],"server_time":"..."}
 {"type":"task_updated","task":{"id":"...","status":"running","stage":"transcribing","progress":30,"message":"正在转写","title":"...","error_code":null,"error_message":null,"has_note":false,"created_at":"...","updated_at":"...","completed_at":null},"server_time":"..."}
 {"type":"note","task_id":"...","markdown":"# ...","title":"...","server_time":"..."}
 {"type":"note_unavailable","task_id":"...","reason":"agent_offline"}
@@ -602,8 +614,10 @@ App 文案建议：
 {"type":"error","code":"task_not_found","message":"任务不存在"}
 ```
 
-- `presence`：连接建立/Agent 上线即 true；Agent 正常 close 秒级 false；网络突断 ≤60s false。
-  手机自己断开不影响该值。`last_seen` 是 Agent 最后一次活动时间。
+- `presence`：Agent socket 存在即 true；正常 close 秒级 false；网络突断由“有手机在线期间的 30s alarm”兜底，
+  最坏约 60–93s。手机自己断开不影响该值。`last_seen` 是 Agent 最后一次活动时间。
+- `ready` / `issues`（v0.3.0 增量）：`true` 表示可生成；`false` 表示在线但有阻塞问题；`null`/缺失表示未知（旧 Agent）。
+  手机用它们显示“在线 · 可生成 / 在线 · 需要处理 N 项”。
 - `task_updated.task` 是完整任务摘要（同 REST `GET /tasks/{id}.task`，含 `stage`/`message`/`has_note`/`updated_at` 等增量字段）。
   手机收到后直接更新列表/详情，不轮询。
 - `note`：正文只在此消息/手机本地缓存中出现，手机应写入 IndexedDB（localStorage 兜底）后回 `ack_note`。
@@ -614,13 +628,14 @@ App 文案建议：
 
 ```json
 {"type":"note_request","task_id":"..."}
-{"type":"ack_note","task_id":"..."}
+{"type":"ack_note","task_id":"...","persisted":true}
+{"type":"ack_note","task_id":"...","persisted":false}
 {"type":"ping","ts":123}
 {"type":"pong","ts":123}
 ```
 
 - `note_request`：Relay 校验 task 属于该 ticket 的 agent_id；Agent 在线→转发 `note_request`，离线→回 `note_unavailable`。
-- `ack_note`：Relay 删除“未送达”标记并转发 `ack_note` 给 Agent。
+- `ack_note`：`persisted !== false` 才删除“未送达”标记并转发 `ack_note {persisted:true}`；`false` 时保留标记并转发 `{persisted:false}`。
 - 手机消息会刷新该 socket 的 last_seen；>90s 无消息由 DO alarm 断开。
 
 ### 11.6 多租户隔离（硬约束）
@@ -637,7 +652,7 @@ cd relay
 npm install
 npm run db:local                    # 本地 D1 migrations（默认 .wrangler/state）
 npm run dev                         # http://127.0.0.1:8787，已带 dev INTERNAL_SECRET/TICKET_SECRET
-npm test                            # 46 项 REST + WS 契约/实时测试（独立 8799 端口与 state）
+npm test                            # 50 项 REST + WS 契约/实时测试（独立 8799 端口与 state）
 ```
 
 - Node 客户端示例（Agent）：

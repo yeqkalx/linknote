@@ -1,4 +1,4 @@
-﻿# PyInstaller Windows version resource for LinkNote.exe (v0.2.2).
+﻿# PyInstaller Windows version resource for LinkNote.exe (v0.3.0).
 # Layout matches PyInstaller's `--version-file` format (VSVersionInfo).
 VSVersionInfo(
   ffi=FixedFileInfo(
@@ -19,12 +19,12 @@ VSVersionInfo(
           [
             StringStruct(u'CompanyName', u'LinkNote'),
             StringStruct(u'FileDescription', u'LinkNote 链记 桌面端'),
-            StringStruct(u'FileVersion', u'0.2.2.0'),
+            StringStruct(u'FileVersion', u'0.3.0.0'),
             StringStruct(u'InternalName', u'LinkNote'),
             StringStruct(u'LegalCopyright', u'Copyright (c) 2026 LinkNote contributors. MIT License.'),
             StringStruct(u'OriginalFilename', u'LinkNote.exe'),
             StringStruct(u'ProductName', u'LinkNote'),
-            StringStruct(u'ProductVersion', u'0.2.2.0')
+            StringStruct(u'ProductVersion', u'0.3.0.0')
           ]
         )
       ]
@@ -32,5 +32,6 @@ VSVersionInfo(
     VarFileInfo([VarStruct(u'Translation', [2052, 1200])])
   ]
 )
+
 
 

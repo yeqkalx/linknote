@@ -15,7 +15,14 @@ from PySide6.QtCore import QObject, QRunnable, QThreadPool, QTimer, Signal
 from linknote_agent.stage_map import format_elapsed as _format_elapsed
 from linknote_agent.stage_map import map_status as _map_status
 
-from .config import DesktopConfig, agent_config_path, ensure_agent_config, log_dir, user_data_dir
+from .config import (
+    APP_VERSION,
+    DesktopConfig,
+    agent_config_path,
+    ensure_agent_config,
+    log_dir,
+    user_data_dir,
+)
 from .services.agent_process import AgentProcess
 from .services.autostart import is_enabled as autostart_is_enabled, set_enabled as autostart_set_enabled
 from .services.bilinote_api import EngineAPI, friendly_error
@@ -69,6 +76,7 @@ class DesktopController(QObject):
     # 新增：当前任务 / 历史笔记快照（后台线程采集后通过信号送到 GUI）
     tasksChanged = Signal(dict)
     historyChanged = Signal(dict)
+    archiveChanged = Signal(dict)  # 自动/手动归档结果
 
     def __init__(self, config: Optional[DesktopConfig] = None):
         super().__init__()
@@ -94,6 +102,7 @@ class DesktopController(QObject):
         self._last_status: dict[str, Any] = {}
         self._last_tasks: dict[str, Any] = {}
         self._active_workers: set[_Worker] = set()
+        self._archive_inflight = False
         self._started = False
 
     # ------------------------------------------------------------------ 生命周期
@@ -109,6 +118,7 @@ class DesktopController(QObject):
                 self.start_engine_async(silent=True)
             if self.agent.is_paired:
                 self.start_agent()
+        self._maybe_auto_archive()
 
     def complete_onboarding(self) -> None:
         """首次配置向导完成后调用：落盘并启动引擎/Agent。"""
@@ -119,6 +129,7 @@ class DesktopController(QObject):
         if self.agent.is_paired:
             self.start_agent()
         self.refresh_status_async()
+        self._maybe_auto_archive()
 
     def ffmpeg_ready(self) -> bool:
         return find_ffmpeg(self.config).available
@@ -431,6 +442,7 @@ class DesktopController(QObject):
         self.logAppended.emit(line)
         if "任务完成并已回传" in line:
             self.notification.emit("LinkNote", "笔记生成完成，手机端已可查看", "success")
+            self._maybe_auto_archive()
         elif "任务失败已回传" in line:
             self.notification.emit("LinkNote", "笔记生成失败，请在手机端查看原因", "warning")
         elif "配对已失效" in line:
@@ -453,6 +465,103 @@ class DesktopController(QObject):
             "notes": str(notes_dir),
             "outbox": str(outbox_dir),
         }
+
+    # ================================================================== 笔记自动归档
+    def archive_status(self) -> dict[str, Any]:
+        """设置页展示用：归档开关 / 目录是否可用（不写文件）。"""
+        directory = str(getattr(self.config, "archive_dir", "") or "")
+        enabled = bool(getattr(self.config, "archive_enabled", False))
+        result: dict[str, Any] = {
+            "enabled": enabled,
+            "dir": directory,
+            "configured": bool(directory),
+            "exists": False,
+            "error": "",
+        }
+        if not directory:
+            result["error"] = "还没有选择归档目录"
+            return result
+        try:
+            path = Path(directory).expanduser()
+            result["absolute"] = path.is_absolute()
+            result["exists"] = path.is_dir()
+            if not path.is_absolute():
+                result["error"] = "归档目录必须是绝对路径"
+            elif not path.exists():
+                result["error"] = f"归档目录不存在：{path}"
+            elif not path.is_dir():
+                result["error"] = f"归档路径不是文件夹：{path}"
+        except OSError as exc:
+            result["error"] = f"归档目录不可用：{exc}"
+        return result
+
+    def archive_notes(self) -> dict[str, Any]:
+        """扫描本机 notes/*.md，把新笔记复制到 Obsidian/本地归档目录。
+
+        在后台线程执行；返回 exported/skipped/errors 等结构化结果。
+        """
+        notes_dir, outbox_dir = self.history_dirs()
+        try:
+            events = parse_agent_task_events(self.agent.log_tail(300))
+        except Exception:  # noqa: BLE001
+            events = []
+        model = "/".join(
+            part
+            for part in [
+                str(self.config.provider_id or ""),
+                str(self.config.model_name or ""),
+            ]
+            if part
+        )
+        result = archive_notes_to_dir(
+            notes_dir,
+            outbox_dir,
+            str(getattr(self.config, "archive_dir", "") or ""),
+            model=model,
+            app_version=APP_VERSION,
+            template=str(getattr(self.config, "archive_template", "") or ""),
+            task_events=events,
+        )
+        result["enabled"] = bool(getattr(self.config, "archive_enabled", False))
+        result["dir"] = str(getattr(self.config, "archive_dir", "") or "")
+        return result
+
+    def archive_notes_async(self, on_result=None, on_error=None) -> None:
+        self.run_async(
+            self.archive_notes,
+            on_result=on_result,
+            on_error=on_error or self.error.emit,
+        )
+
+    def _maybe_auto_archive(self) -> None:
+        """任务完成/应用启动时自动归档（开启归档且目录有效才执行）。"""
+        if not bool(getattr(self.config, "archive_enabled", False)):
+            return
+        if not str(getattr(self.config, "archive_dir", "") or "").strip():
+            return
+        if self._archive_inflight:
+            return
+        self._archive_inflight = True
+
+        def done(result: dict[str, Any]) -> None:
+            self._archive_inflight = False
+            data = result if isinstance(result, dict) else {}
+            self.archiveChanged.emit(data)
+            exported = int(data.get("exported") or 0)
+            if exported:
+                self.notification.emit(
+                    "LinkNote", f"已自动归档 {exported} 篇笔记", "success"
+                )
+            elif data.get("error"):
+                self.notification.emit(
+                    "LinkNote", f"自动归档失败：{data.get('error')}", "warning"
+                )
+
+        def failed(message: str) -> None:
+            self._archive_inflight = False
+            self.notification.emit("LinkNote", f"自动归档失败：{message}", "warning")
+
+        self.archive_notes_async(on_result=done, on_error=failed)
 
     # ================================================================== 当前任务
     def collect_task_snapshot(self) -> dict[str, Any]:
@@ -1063,6 +1172,231 @@ def scan_history_entries(
         "outbox_dir": str(outbox_path),
         "error": "",
     }
+
+
+# ====================================================================== 自动归档
+# 归档目标 = Obsidian vault 或任意本地目录；把 notes/*.md 复制过去并补 YAML frontmatter。
+# 已存在的同名文件不覆盖（幂等，避免每次任务完成都重复导出）。
+
+_ARCHIVE_INVALID_CHARS = set('<>"|?*')
+
+
+def _yaml_scalar(value: Any) -> str:
+    """把任意值渲染成安全的双引号 YAML 字符串。"""
+    text = "" if value is None else str(value)
+    text = text.replace("\\", "\\\\").replace('"', '\\"')
+    text = re.sub(r"\s+", " ", text).strip()
+    return text
+
+
+def build_archive_frontmatter(meta: dict[str, Any]) -> str:
+    """生成 Obsidian 兼容的 YAML frontmatter（字段固定、缺失留空）。"""
+    lines = ["---"]
+    for key in (
+        "title",
+        "source_url",
+        "platform",
+        "created_at",
+        "model",
+        "app_version",
+    ):
+        lines.append(f'{key}: "{_yaml_scalar(meta.get(key))}"')
+    lines.append("---")
+    return "\n".join(lines) + "\n"
+
+
+def build_archived_note(markdown: str, meta: dict[str, Any]) -> str:
+    """给 Markdown 正文补 frontmatter；正文本身已有 frontmatter 时原样保留。"""
+    body = str(markdown or "").strip()
+    if not body:
+        return ""
+    if body.startswith("---") and re.match(r"^---\s*\n.*?\n---\s*(\n|$)", body, re.DOTALL):
+        return body + ("\n" if not body.endswith("\n") else "")
+    return build_archive_frontmatter(meta) + "\n" + body + "\n"
+
+
+def _archive_meta_index(
+    outbox_dir: Path,
+    task_events: Optional[list[dict[str, Any]]] = None,
+) -> dict[str, dict[str, Any]]:
+    """按 task_id 汇总 outbox / Agent 日志里能拿到的笔记元数据。"""
+    index: dict[str, dict[str, Any]] = {}
+    for event in task_events or []:
+        if not isinstance(event, dict):
+            continue
+        task_id = str(event.get("task_id") or "").strip()
+        if not task_id:
+            continue
+        item = index.setdefault(task_id, {})
+        kind = str(event.get("kind") or "")
+        if kind == "start":
+            if event.get("url"):
+                item["source_url"] = str(event["url"])
+            if event.get("platform"):
+                item["platform"] = str(event["platform"]).strip()
+        elif kind == "submitted":
+            if event.get("platform"):
+                item["platform"] = str(event["platform"]).strip()
+            if event.get("ts") and not item.get("created_at"):
+                item["created_at"] = str(event["ts"])
+        elif kind == "completed":
+            if event.get("title"):
+                item["title"] = str(event["title"]).strip()
+            if event.get("ts"):
+                item["created_at"] = str(event["ts"])
+    if outbox_dir.is_dir():
+        for path in outbox_dir.glob("*.json"):
+            try:
+                data = json.loads(path.read_text(encoding="utf-8-sig"))
+            except (OSError, ValueError):
+                continue
+            if not isinstance(data, dict) or str(data.get("kind") or "") != "complete":
+                continue
+            task_id = str(data.get("task_id") or path.stem)
+            payload = data.get("payload") if isinstance(data.get("payload"), dict) else {}
+            meta = payload.get("meta") if isinstance(payload.get("meta"), dict) else {}
+            item = index.setdefault(task_id, {})
+            if payload.get("title"):
+                item["title"] = str(payload["title"]).strip()
+            if meta.get("url"):
+                item["source_url"] = str(meta["url"])
+            if meta.get("platform"):
+                item["platform"] = str(meta["platform"])
+            if data.get("created_at"):
+                item["created_at"] = str(data["created_at"])
+    return index
+
+
+def _safe_archive_filename(name: str, fallback: str = "note") -> str:
+    raw = str(name or "")
+    if raw.lower().endswith(".md"):
+        raw = raw[:-3]
+    text = re.sub(r"[^\w\u4e00-\u9fff .-]+", "-", raw).strip(" .-")
+    text = re.sub(r"\s+", " ", text)
+    if not text:
+        text = fallback
+    return f"{text[:80]}.md"
+
+
+def archive_notes_to_dir(
+    notes_dir: Path | str,
+    outbox_dir: Path | str,
+    archive_dir: Path | str,
+    *,
+    model: str = "",
+    app_version: str = "",
+    template: str = "",
+    task_events: Optional[list[dict[str, Any]]] = None,
+    limit: int = 500,
+) -> dict[str, Any]:
+    """把 notes/*.md 复制到归档目录并补 frontmatter（纯文件操作，可单测）。"""
+    result: dict[str, Any] = {
+        "exported": 0,
+        "skipped": 0,
+        "failed": 0,
+        "total": 0,
+        "errors": [],
+        "dir": str(archive_dir or ""),
+        "error": "",
+    }
+    raw_dir = str(archive_dir or "").strip()
+    if not raw_dir:
+        result["error"] = "还没有选择归档目录"
+        return result
+    invalid = sorted(ch for ch in raw_dir if ch in _ARCHIVE_INVALID_CHARS)
+    if invalid:
+        result["error"] = f"归档目录包含非法字符：{' '.join(invalid)}"
+        return result
+    target_dir = Path(raw_dir).expanduser()
+    try:
+        if not target_dir.is_absolute():
+            result["error"] = "归档目录必须是绝对路径"
+            return result
+        target_dir = target_dir.resolve()
+    except OSError as exc:
+        result["error"] = f"归档目录不可用：{exc}"
+        return result
+    if not target_dir.exists():
+        result["error"] = f"归档目录不存在：{target_dir}"
+        return result
+    if not target_dir.is_dir():
+        result["error"] = f"归档路径不是文件夹：{target_dir}"
+        return result
+
+    notes_path = Path(notes_dir)
+    outbox_path = Path(outbox_dir)
+    meta_index = _archive_meta_index(outbox_path, task_events)
+    files: list[tuple[float, Path]] = []
+    if notes_path.is_dir():
+        for path in notes_path.glob("*.md"):
+            try:
+                files.append((path.stat().st_mtime, path))
+            except OSError:
+                continue
+    files.sort(key=lambda pair: pair[0])
+    result["total"] = len(files[:limit])
+    for mtime, source in files[:limit]:
+        try:
+            markdown = source.read_text(encoding="utf-8", errors="replace")
+        except OSError as exc:
+            result["failed"] += 1
+            result["errors"].append(f"{source.name}: {exc}")
+            continue
+        task_id = source.stem
+        meta = dict(meta_index.get(task_id) or {})
+        heading_match = _HEADING_RE.search(markdown or "")
+        title = (
+            str(meta.get("title") or "").strip()
+            or (heading_match.group("title").strip() if heading_match else "")
+            or source.stem
+        )
+        created_at = str(meta.get("created_at") or "").strip()
+        if not created_at:
+            created_at = _iso_from_timestamp(mtime)
+        front_meta = {
+            "title": title,
+            "source_url": str(meta.get("source_url") or ""),
+            "platform": str(meta.get("platform") or ""),
+            "created_at": created_at,
+            "model": str(model or ""),
+            "app_version": str(app_version or ""),
+        }
+        if template:
+            try:
+                date_label = str(created_at)[:10]
+                rendered = template.format(
+                    title=title,
+                    task_id=task_id,
+                    platform=front_meta["platform"] or "unknown",
+                    date=date_label,
+                    created_at=created_at,
+                )
+                filename = _safe_archive_filename(rendered, task_id)
+            except (KeyError, IndexError, ValueError):
+                filename = _safe_archive_filename(source.name, task_id)
+        else:
+            filename = _safe_archive_filename(source.name, task_id)
+        target = target_dir / filename
+        if target.exists():
+            result["skipped"] += 1
+            continue
+        content = build_archived_note(markdown, front_meta)
+        if not content:
+            result["skipped"] += 1
+            continue
+        tmp = target.with_name(target.name + ".tmp")
+        try:
+            tmp.write_text(content, encoding="utf-8")
+            tmp.replace(target)
+            result["exported"] += 1
+        except OSError as exc:
+            result["failed"] += 1
+            result["errors"].append(f"{filename}: {exc}")
+            try:
+                tmp.unlink(missing_ok=True)
+            except OSError:
+                pass
+    return result
 
 
 

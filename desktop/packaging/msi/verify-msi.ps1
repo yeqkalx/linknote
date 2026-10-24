@@ -1,4 +1,4 @@
-# LinkNote MSI acceptance test (no rebuild).
+﻿# LinkNote MSI acceptance test (no rebuild).
 #
 # Verifies the MSI end-to-end on a clean state:
 #   1. static: per-user properties, ExitDialog launch checkbox/action, autostart row
@@ -169,6 +169,8 @@ Check $c 'uninstall_entry_single' (($arpHkcu -or $arpHklm) -and -not ($arpHkcu -
 Check $c 'license_installed' (Test-Path -LiteralPath (Join-Path $InstallDir 'LICENSE'))
 Check $c 'notice_installed' (Test-Path -LiteralPath (Join-Path $InstallDir 'NOTICE'))
 Check $c 'engine_notice_installed' (Test-Path -LiteralPath (Join-Path $InstallDir 'engine\THIRD-PARTY-NOTICES.txt'))
+Check $c 'license_gpl_text' (Test-Path -LiteralPath (Join-Path $InstallDir 'licenses\GPL-3.0.txt'))
+Check $c 'license_lgpl_text' (Test-Path -LiteralPath (Join-Path $InstallDir 'licenses\LGPL-3.0.txt'))
 $runValue = Read-RunValue
 $c.autostart_value = $runValue
 $expectedRun = '"' + $appExe + '" --minimized'
@@ -257,7 +259,7 @@ $hardChecks = @(
     'pre_state_clean', 'install_exit_ok', 'exe_installed', 'internal_dir', 'engine_installed',
     'engine_sha_match', 'data_dir_created', 'desktop_shortcut', 'startmenu_shortcut',
     'uninstall_entry_present', 'uninstall_entry_single', 'autostart_written',
-    'license_installed', 'notice_installed', 'engine_notice_installed',
+    'license_installed', 'notice_installed', 'engine_notice_installed', 'license_gpl_text', 'license_lgpl_text',
     'no_auto_launch_on_install', 'installed_app_launch_ok', 'agent_worker_ok',
     'uninstall_exit_ok', 'program_removed', 'desktop_shortcut_removed', 'startmenu_removed',
     'uninstall_entry_removed', 'autostart_removed', 'userdata_preserved'
@@ -275,4 +277,5 @@ if ($result.verified) {
 }
 Write-Host ("MSI VERIFY FAIL: {0}" -f ($failed -join ', ')) -ForegroundColor Red
 exit 1
+
 

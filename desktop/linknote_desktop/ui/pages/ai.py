@@ -36,8 +36,8 @@ class AiPage(BasePage):
     PAGE_KEY = "ai"
     PAGE_TITLE = "AI 模型"
     PAGE_SUBTITLE = (
-        "选择生成笔记用的大模型。API Key 只保存在本机 BiliNote 引擎的数据库，"
-        "不会上传到 Relay。"
+        "选择生成笔记用的大模型。API Key 只保存在本机引擎数据库，不经链记中继；"
+        "但生成笔记时，必要的转写文本会发送给你选择的模型服务商。"
     )
     NEEDS_ENGINE = True
 

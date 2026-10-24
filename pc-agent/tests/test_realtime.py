@@ -1,4 +1,4 @@
-"""Realtime protocol v1 的单测：WS URL/退避/真实本地握手/消息分发/重连/心跳。
+"""Realtime protocol 单测：WS URL/退避/真实本地握手/消息分发/重连/心跳（v0.3 协议 ping）。
 
 不依赖真实 Relay：本地用 `websockets.asyncio.server` 起一个假 Relay 验证握手与 header，
 其余用注入的 fake connection / fake 时钟验证重连逻辑。
@@ -17,6 +17,8 @@ from linknote_agent.relay_ws import (
     EVENT_CONNECTED,
     EVENT_DISCONNECTED,
     EVENT_RECONNECT_SCHEDULED,
+    EVENT_SERVER_PING,
+    EVENT_SERVER_PROBE,
     RealtimeClient,
     WSError,
     build_ws_url,
@@ -263,11 +265,12 @@ async def test_real_websocket_handshake_with_local_fake_relay():
             )
         )
         try:
+            # v0.3：服务端在线探测用 JSON ping/probe，Agent 必须回 pong/probe_ack。
+            await ws.send(json.dumps({"type": "ping", "ts": 111}))
+            await ws.send(json.dumps({"type": "probe", "ts": 222}))
             async for raw in ws:
                 message = json.loads(raw)
                 received.append(message)
-                if message.get("type") == "ping":
-                    await ws.send(json.dumps({"type": "pong", "ts": message.get("ts")}))
         except Exception:  # pragma: no cover - 客户端断开
             pass
 
@@ -277,8 +280,8 @@ async def test_real_websocket_handshake_with_local_fake_relay():
         client = RealtimeClient(
             f"ws://127.0.0.1:{port}",
             "agt_real_handshake_token",
-            ping_interval=0.2,
-            dead_timeout=3.0,
+            ping_interval=0.2,  # 协议层 ping（websockets 内部处理，不产生业务 JSON）
+            ping_timeout=0.2,
             hello_timeout=2.0,
         )
         assert client.url == f"ws://127.0.0.1:{port}/api/v1/agent/ws"
@@ -291,8 +294,11 @@ async def test_real_websocket_handshake_with_local_fake_relay():
 
         assert await client.send({"type": "task_update", "task_id": "t1", "status": "running"})
         await wait_until(lambda: any(m.get("type") == "task_update" for m in received))
-        # 心跳：客户端 25s 协议的缩短版，验证 ping 后服务端收到并回 pong
-        await wait_until(lambda: any(m.get("type") == "ping" for m in received))
+        # 对服务端 JSON ping/probe 的响应
+        await wait_until(lambda: any(m.get("type") == "pong" for m in received))
+        await wait_until(lambda: any(m.get("type") == "probe_ack" for m in received))
+        # v0.3：Agent 不再发应用层 JSON ping（心跳走 WebSocket 协议 ping）
+        assert not any(m.get("type") == "ping" for m in received)
         assert client.connected is True
     finally:
         await client.stop()
@@ -451,10 +457,12 @@ async def test_auth_error_event_and_keeps_retrying():
 # ---------------------------------------------------------------- 心跳 / 收发
 
 
-async def test_app_ping_pong_and_disconnect_event():
+async def test_server_json_ping_probe_and_no_app_level_ping():
+    """v0.3：Agent 不再发 25s 应用层 JSON ping；但服务端 JSON ping/probe 仍要回 pong/probe_ack。"""
     clock = FakeClock()
     hello = {"type": "hello", "agent_id": "a1", "server_time": "t"}
     conn = FakeConnection(hello=hello)
+    sent_types: list[str] = []
 
     async def fake_connect(url: str, headers: dict[str, str]):
         return conn
@@ -466,21 +474,29 @@ async def test_app_ping_pong_and_disconnect_event():
         sleep=asyncio.sleep,
         clock=lambda: 0.0,
         random_fn=clock.random,
-        ping_interval=0.05,
-        dead_timeout=5.0,
+        ping_interval=0.05,  # 协议层 ping 参数（fake connection 下无实际心跳帧）
+        ping_timeout=0.05,
         reconnect_delays=[0.05],
     )
     run_task = asyncio.create_task(client.run())
     await wait_for_event(client, EVENT_CONNECTED)
-    await asyncio.sleep(0.12)
-    pings = [json.loads(raw) for raw in conn.sent if json.loads(raw).get("type") == "ping"]
-    assert pings, "应主动发应用层 ping"
+    await asyncio.sleep(0.15)
+    sent_types = [json.loads(raw).get("type") for raw in conn.sent]
+    assert "ping" not in sent_types, "不应再有应用层 JSON ping 循环"
 
-    # 服务端发 ping，客户端应回 pong
+    # 服务端发 JSON ping → 回 pong，并给 Runner 一个刷新 readiness 的事件
     conn.push({"type": "ping", "ts": 123})
+    await wait_until(lambda: any(json.loads(raw).get("type") == "pong" for raw in conn.sent))
+    ping_event = await wait_for_event(client, EVENT_SERVER_PING)
+    assert ping_event["ts"] == 123
+
+    # 服务端发 probe → 回 probe_ack
+    conn.push({"type": "probe", "ts": 456})
     await wait_until(
-        lambda: any(json.loads(raw).get("type") == "pong" for raw in conn.sent)
+        lambda: any(json.loads(raw).get("type") == "probe_ack" for raw in conn.sent)
     )
+    probe_event = await wait_for_event(client, EVENT_SERVER_PROBE)
+    assert probe_event["ts"] == 456
 
     # 服务端关闭 → 客户端产生 _disconnected 并重连
     await conn.close()
@@ -497,13 +513,35 @@ async def test_send_when_disconnected_returns_false():
     assert await client.send({"type": "ping"}) is False
 
 
-async def test_dead_timeout_triggers_reconnect():
+async def test_default_connect_uses_protocol_ping_params(monkeypatch):
+    """默认 connect 必须把 ping_interval=25 / ping_timeout=20 传给 websockets。"""
+    import linknote_agent.relay_ws as relay_ws
+
+    captured: dict = {}
+
+    async def fake_connect_ws(url, headers, **kwargs):
+        captured["url"] = url
+        captured.update(kwargs)
+        return FakeConnection(hello={"type": "hello", "agent_id": "a1", "server_time": "t"})
+
+    monkeypatch.setattr(relay_ws, "connect_websocket", fake_connect_ws)
+    client = RealtimeClient("ws://relay.test", "agt", ping_interval=7.0, ping_timeout=3.0)
+    run_task = asyncio.create_task(client.run())
+    await wait_for_event(client, EVENT_CONNECTED)
+    assert captured["ping_interval"] == 7.0
+    assert captured["ping_timeout"] == 3.0
+    assert client.protocol_ping_interval == 7.0
+    assert client.protocol_ping_timeout == 3.0
+    await client.stop()
+    await asyncio.wait_for(run_task, timeout=3)
+
+
+async def test_no_recv_idle_timeout_keeps_connection():
+    """v0.3：不再按「多久没收到消息」判死连接（协议 ping/pong 负责），空闲连接保持。"""
     hello = {"type": "hello", "agent_id": "a1", "server_time": "t"}
     conn = FakeConnection(hello=hello)
-    connects = {"n": 0}
 
     async def fake_connect(url: str, headers: dict[str, str]):
-        connects["n"] += 1
         return conn
 
     client = RealtimeClient(
@@ -514,13 +552,13 @@ async def test_dead_timeout_triggers_reconnect():
         clock=lambda: 0.0,
         random_fn=lambda: 0.0,
         ping_interval=10.0,
-        dead_timeout=0.1,
+        ping_timeout=10.0,
+        dead_timeout=0.05,  # 已废弃参数：不应再影响连接
         reconnect_delays=[0.05],
     )
     run_task = asyncio.create_task(client.run())
     await wait_for_event(client, EVENT_CONNECTED)
-    # 服务端一直不说话（也不回 pong），超过 dead_timeout 应判定断线
-    message = await wait_for_event(client, EVENT_RECONNECT_SCHEDULED, timeout=3)
-    assert message["delay"] >= 0.0
+    await asyncio.sleep(0.2)
+    assert client.connected is True, "空闲期间不应因 dead_timeout 断开"
     await client.stop()
     await asyncio.wait_for(run_task, timeout=3)

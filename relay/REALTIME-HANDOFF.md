@@ -1,7 +1,8 @@
 # LinkNote Relay 实时通道交接（agent-dev / app-dev）
 
-> 状态（2026-10-24）：Relay v0.2.0 已实现 Durable Objects（SQLite 后端）+ WebSocket Hibernation，
-> REST 全部保留兼容；本地契约/实时测试 46/46 通过。协议基础以 `docs/realtime-protocol.md` 为准，
+> 状态（2026-10-24）：Relay v0.3.0 已在本地实现并通过契约/实时测试 **51/51**（v0.3 增量见第 7 节；
+> 生产尚未部署，由 Lead 统一部署）。Durable Objects（SQLite 后端）+ WebSocket Hibernation + REST 兼容。
+> 协议基础以 `docs/realtime-protocol.md` / `docs/v0.3-protocol-delta.md` 为准，
 > 接口细节与增量字段见 `docs/api-contract.md` 第 11 节。本文件给 PC Agent / PWA 的具体接入信息。
 
 ## 1. URL
@@ -39,16 +40,23 @@
    {"type":"task_note","task_id":"...","markdown":"# ...","title":"视频标题"}
    ```
    重复/乱序发送幂等；无手机在线时 Relay 只记录 task_id（不存正文），手机 `note_request` 时再向 Agent 要。
-6. Relay → Agent 增量消息：
-   - `{"type":"ack_note","task_id":"..."}`：手机已把正文写入本地缓存，可清理本地 outbox（本机 `notes/` 保留）。
+6. Relay → Agent 增量消息（v0.3 有更新）：
+   - `{"type":"ack_note","task_id":"...","persisted":true|false}`：手机侧缓存结果。
+     `persisted=true` 可清理 outbox（本机 `notes/` 保留）；`persisted=false` **保留 outbox**，按 30s/2min/10min 重发。
    - `{"type":"note_request","task_id":"..."}`：手机要正文，从 outbox/notes 重发 `task_note`。
+   - `{"type":"ping","ts":...}` / `{"type":"probe","ts":...}`：Relay 心跳/探活，回 `pong` / `probe_ack`。
    - `{"type":"phone_online","online":true|false}`：可选优化，可据此决定是否立即推送。
    - `{"type":"error","code":"...","message":"..."}`：仅排障（如 `task_not_found`），不影響连接。
-7. 心跳：每 25s 发 `{"type":"ping","ts":...}`，收到 `{"type":"pong"}`；任何消息都刷新在线状态。
-   Relay alarm 30s 检查，`last_seen > 60s` 判离线并关 socket（服务端关闭码 4002）。
-8. 重连：1/2/4/8/15/30s + jitter；重连后重新 hello + 拉 pending。
+7. 心跳（v0.3）：**新 Agent 请改用 WebSocket 协议 ping**（如 `websockets.connect(..., ping_interval=25, ping_timeout=20)`），
+   不要再发 25s 应用层 JSON ping（Relay 仍兼容旧 JSON ping→pong，但不再依赖它）。
+   - 收到服务端 JSON `ping` 回 `pong`；收到 `probe` 回 `probe_ack`（可附带 `ready`/`issues`）。
+   - Relay 只在你连上且**有手机在线**时每 30s ping；Agent 60s 无消息才探活/判离线（关闭码 4002）。
+8. readiness（v0.3）：收到 `hello` 后立即发一次
+   `{"type":"agent_ready","ready":false,"issues":[{"code":"model_not_configured","label":"未配置 AI 模型"}]}`，
+   状态变化时重发；Relay 会透过 phone `hello`/`presence` 与 REST `/agent/me` 暴露给手机。
+9. 重连：1/2/4/8/15/30s + jitter；重连后重新 hello + 拉 pending。
    **WS 在线时不要轮询 `GET /agent/tasks/next`**（会与推送重复领取）；只在 WS 断开时用 REST 兜底。
-9. 新连接会顶掉旧连接（旧连接若收到关闭帧 code=4001）。每台电脑只保持 1 条 WS。
+10. 新连接会顶掉旧连接（旧连接若收到关闭帧 code=4001）。每台电脑只保持 1 条 WS。
 
 ## 3. 手机（PWA / APK）接入要点
 
@@ -58,16 +66,25 @@
    响应 `data: { ticket, expires_at, agent_id, agent_online, server_time }`。
 2. 连接：`new WebSocket(ws(s)://<relay>/api/v1/ws?ticket=<ticket>)`。
    ticket 60s 有效；**每次连接前都重新取 ticket**（正常断线重连也这样）。
-3. 首帧 `hello`（含 `online`），紧跟 `presence`；之后 `task_updated` / `note` / `note_unavailable` / `ping`。
+3. 首帧 `hello`（含 `online`、`ready`、`issues`），紧跟 `presence`（含 `online`、`last_seen`、`ready`、`issues`）；
+   之后 `task_updated` / `note` / `note_unavailable` / `ping`。`ready` 为 null 表示旧 Agent 未上报（按“在线”显示），
+   `ready===false` 时显示“电脑在线 · 需要处理”，issues 可展开。
 4. 任务列表/详情：创建任务仍走 REST `POST /tasks`；之后只认 WS `task_updated` 更新，不轮询。
    `task_updated.task` 是完整摘要（含 `stage`/`message`/`has_note`/`updated_at`）。
-5. 笔记：`note` 消息只有正文。收到后写入 IndexedDB（localStorage 兜底）再发 `ack_note`。
+5. 笔记：`note` 消息只有正文。收到后写入 IndexedDB（localStorage 兜底）：
+   - 写入成功 → `{"type":"ack_note","task_id":"..."}`（或显式 `persisted:true`）；
+   - 写入失败 → `{"type":"ack_note","task_id":"...","persisted":false}`，提示“未保存到手机，可重试”，
+     Agent 会保留 outbox 并重试；稍后重试保存成功后发 `persisted:true` 即可清 outbox。
    - 打开未缓存笔记：发 `{"type":"note_request","task_id":"..."}`；
    - Agent 在线 → Relay 转发，Agent 重发 `task_note` → 收到 `note`；
    - Agent 离线 → 收到 `{"type":"note_unavailable","task_id":"...","reason":"agent_offline"}`，提示“电脑离线，稍后重试”。
    - `GET /api/v1/tasks/{id}/note` 返回 **410 `note_not_stored`**（旧接口不可再用）。
-6. 在线状态：顶部“电脑在线/离线”只认 `presence`；正常关闭秒级 false，网络突断 ≤60s false。
-   手机自己断开不影响该值。
+6. 在线状态：顶部“电脑在线/离线”只认 `presence`；正常关闭秒级 false。
+   v0.3 起手机连上时 Relay 可能先对 Agent 做 3s 探活（`ping`+`probe`），无响应会先推 `presence online:false`，
+   Agent 之后有消息再恢复 `online:true`（电脑休眠/断网场景不会再长时间“假在线”）。
+   没有手机在线时 Relay 不做周期心跳（成本优化），手机打开后才会开始 30s alarm。
+   **手机必须应答 Relay 的 `{"type":"ping"}`**（回 `{"type":"pong","ts":...}`），否则超过
+   `WS_PHONE_STALE_SECONDS`(90s) 会被服务端断开（4002）并触发重连。
 7. 断线：`onclose` 拿不到 ticket 错误细节（握手 401 时浏览器是 `1006`）。策略：
    - 每次连接前重取 ticket（重取返回 401 → device token 失效 → 清 token 回配对页）；
    - 刚取到 ticket 仍连续 2 次 1006/异常关闭 → 显示“重连中/稍后重试”，不清 token；
@@ -77,8 +94,12 @@
 ## 4. 消息字段速查（Relay 实现补充，增量不破坏冻结协议）
 
 - `task_update` 增加可选 `stage`、`message`、`error_code`；`status` 只认 `running|completed|failed`（也容忍 `succeeded`）。
-- Server→Agent 增加 `ack_note`、`error`；`task.task` 带 `stage`/`progress`。
-- Server→Phone 的 `task_updated.task` 带 `stage`/`message`/`has_note`/`updated_at`/`completed_at`。
+- Server→Agent 增加 `ack_note`（v0.3 带 `persisted: boolean`）、`error`、`ping`、`probe`；
+  `task.task` 带 `stage`/`progress`。
+- Agent→Server 支持 `agent_ready`、`probe_ack`（v0.3）；旧的 JSON `ping` 仍回 `pong`。
+- Server→Phone 增加 `presence`/`hello` 的 `ready`/`issues`（v0.3）；`task_updated.task` 带
+  `stage`/`message`/`has_note`/`updated_at`/`completed_at`。
+- REST `GET /agent/me` 顶层增加 `ready`/`issues`（v0.3；旧 Agent 为 null）。
 - REST `GET /tasks/{id}` 不返回 `markdown`；`has_note` = `status === "succeeded"`（任务已产出笔记，正文不在服务端）。
 - REST `POST /agent/tasks/{id}/complete` 带 markdown 时仅 best-effort 广播给在线手机（`note_forwarded` 字段），不落 D1。
 
@@ -88,14 +109,17 @@
 cd relay
 npm install
 npm run db:local     # 本地 D1 migrations（.wrangler/state）
-npm test             # 46 项：REST 契约 + WS 实时 + A/B 隔离 + 正文不落库（独立 8799 state）
+npm test             # 50 项：REST 契约 + WS 实时 + v0.3 成本/ack/readiness + A/B 隔离 + 正文不落库（独立 8799 state）
 npm run typecheck    # tsc --noEmit
 ```
 
 `npm test` 覆盖：agent 连接/替换、ticket 校验/过期、presence 实时、任务创建→agent 秒收、
-`task_update`→D1+手机、`task_note`→手机、`ack_note`→agent、`note_request` 重发、
+`task_update`→D1+手机、`task_note`→手机、`ack_note`→agent（含 v0.3 persisted）、`note_request` 重发、
 离线 queued 重连补发、心跳超时离线、A/B 多租户隔离、撤销设备、正文不落 D1/DO SQLite
 （对本地持久化文件做二进制 marker 扫描）。
+v0.3 新增断言：readiness 透传、手机连上探活超时/恢复、**无手机不设 alarm / 不主动 ping /
+不写 `room_meta.last_seen_at`**、手机连上才出现 alarm 且断开即清、`ack persisted=false` 不删 undelivered。
+这些断言直接读取 Miniflare 的 DO SQLite（`room_meta` / `undelivered_notes` / `_cf_ALARM`），不依赖 30s 真实计时。
 
 单独起一个稳定实例给别人联调：
 
@@ -118,14 +142,15 @@ ws.on('message', (raw) => console.log(JSON.parse(String(raw))));
 ## 6. 部署与回滚（2026-10-24 已上线）
 
 - 生产域名：`https://relay.xykong.xyz`（Worker `linknote-relay`，D1 `linknote-db`）。
-- 当前生产 version：`b37623dd-7284-4c12-8757-6ce61a4bbc14`（Lead 同步新 PWA 后部署，2026-10-24T08:30Z）。
-  该版本包含 relay v0.2.0 代码 + 新 PWA 静态资源（app/www 0.3.0）。
-- 历史版本：`3620d7fc-6a8f-4aaf-9510-3b2a613b63ae`（relay v0.2.0 首部署，旧 PWA）、
+- 当前生产 version：`c312b769-1f5f-454c-b17e-f888de32cb9a`（**relay v0.3.0**，2026-10-24T11:14Z 部署，
+  含 PWA 0.3.0 静态资源；health `version: 0.3.0`）。
+- 历史版本：`b37623dd-7284-4c12-8757-6ce61a4bbc14`（relay v0.2.2/PWA 0.3.0）、
+  `3620d7fc-6a8f-4aaf-9510-3b2a613b63ae`（relay v0.2.0 首部署，旧 PWA）、
   `18db4628-d4ff-4389-be29-9c31daa86ee9`（旧 relay REST-only）。
 - 回滚：
   ```powershell
   cd relay
-  npx wrangler rollback 3620d7fc-6a8f-4aaf-9510-3b2a613b63ae
+  npx wrangler rollback b37623dd-7284-4c12-8757-6ce61a4bbc14
   ```
   ⚠️ `wrangler rollback` 会连同静态资源一起回退（即回到旧 PWA）。若只是 relay 代码回归，更推荐用
   当前源码重新 `npx wrangler deploy`（静态资源由 Lead 统一 sync，避免 PWA 回退）。
@@ -146,7 +171,77 @@ ws.on('message', (raw) => console.log(JSON.parse(String(raw))));
   - Agent 断开 → 手机 presence false。
   - 服务端主动 close（生产已验证）：新 Agent 连接顶掉旧连接 → 旧连接 **4001**；撤销设备 → 手机 **4003**。
   - 端到端：PC Agent（真实客户端）202+ 项测试 + 生产 REST/WS 全链路通过；PWA 生产 16/16 通过。
+- **v0.3.0 已部署（2026-10-24T11:14Z，version `c312b769`），生产冒烟 PASS**：
+  - health `version 0.3.0, realtime true`；Agent WS Header token / 手机 ticket WS 均握手 101 并收到 hello；
+  - Agent 发 `agent_ready ready:true` → 手机 hello/presence `ready:true, issues:[]`；静置 >15s 后手机连接触发 `probe`，
+    Agent 回 `probe_ack`+`pong`，presence 保持 online；
+  - **无手机 35s：服务端 ping = 0**；**手机在线 66s：2 次 alarm ping（30.0s / 59.9s，间隔 29.93s）**，
+    修复前 v0.2 约为 1s/次；
+  - 任务链路：REST 建任务 → Agent 收 `task` → `task_update` → 手机 `task_updated` → `task_note` → 手机 `note` 一致；
+    `ack_note persisted=false` → Agent 收到 false；`persisted=true` → Agent 收到 true；
+  - REST detail `succeeded/has_note=true` 且无 markdown 字段；`GET /tasks/:id/note` → 410 `note_not_stored`；
+    `GET /agent/me` → `ready:true, online:true`；
+  - 测试后已清理生产 D1 测试数据（保留用户 2 个 `我的电脑` agent/device），`tasks.markdown` 非空 = 0。
+- v0.3 只新增 WS 消息/字段与内部实现，没有 D1 schema 变更、没有新 secrets、没有新 DO migration
+  （沿用 `v1 new_sqlite_classes=["AgentRoom"]`），「旧代码 ← 回滚」安全、旧客户端仍可用。
 
 > 已知本地环境差异：Miniflare `wrangler dev` 下「Durable Object 主动 close 的 WS 帧」不一定会转发给客户端
 > （客户端可能看到 1006 或收不到 close 帧），但服务端状态（离线/presence/踢下线）已生效；**生产 Cloudflare
 > 已验证 4001/4003 正常下发**。契约测试对本地这一差异做了宽容断言，功能用 presence/REST 状态验证。
+
+## 7. v0.3.0 变更（Relay 侧）
+
+> 依据 `docs/v0.3-protocol-delta.md` §1–§3。目标：DO 成本回到免费额度、修正在线判定、
+> ack 区分「收到/已保存」、手机知道「电脑在线 ≠ 可以生成」。
+
+### 7.1 心跳/在线（成本）
+- **没有手机 socket 时**：不设 alarm、不主动 ping、不写 `room_meta` SQL（Agent 连接/断开的 online 跃迁除外）。
+- **默认值修复（重要）**：v0.2 的 `intVar` 在环境变量缺省时把 `Number('')=0` clamp 到最小值，
+  导致线上 `WS_ALARM_SECONDS` 未配置时实际变成 **1s alarm**（v0.2 生产实测：手机在线时 ~1 ping/s，
+  白白消耗 DO 额度）。v0.3 已修正为「未配置/空串 → 用默认值」，默认 alarm=30s。
+  回归用例：测试套件用**不设置任何 WS_* 变量**的第二个实例断言 alarm 约 30s。
+- `last_seen` 只放 DO 内存；`online`/`last_seen_at`/`ready`/`issues` 只在跃迁或变化时合并成 1 条 SQL 写入。
+- **有手机 socket 时**：每 30s alarm → 给 Agent/手机发 `ping`；Agent 60s 无任何消息 → `probe`+`ping` 观察 3s，
+  仍无响应才 close 4002 + presence offline（hibernation 唤醒后内存 last_seen 会回落，避免误杀活连接）。
+  手机全部断开后立刻 `deleteAlarm`。
+- Agent 连上后若 15s 无活动，手机连上会触发探活（`ping`+`probe`，3s 超时）：无响应 → `presence {online:false}`
+  （只标记，不 close）；收到 `pong`/`probe_ack`/任何 Agent 消息 → `presence {online:true}`。
+- 新 Agent 请改用 WebSocket 协议 ping（`ping_interval=25`），别再发 25s 应用层 JSON ping；
+  旧 Agent 的 JSON `ping` Relay 仍回 `pong`（兼容）。Agent 收到服务端 `ping` 回 `pong`、收到 `probe` 回 `probe_ack`。
+
+### 7.2 ack_note（已保存 vs 仅收到）
+- Phone → Relay：`{"type":"ack_note","task_id":"...","persisted":true|false}`，**缺省 true**（旧 PWA 兼容）。
+- Relay → Agent：转发 `{"type":"ack_note","task_id":"...","persisted":...}`。
+  - `persisted=false`：**不删除** DO 里该 task 的“未送达”标记，Agent 应保留 outbox 并按退避重发；
+  - `persisted=true`：删除标记，Agent 可清理 outbox（本机 `notes/` 保留）。
+- Phone：本地缓存写入成功才 ack true；失败 ack false 并提示可重试。
+
+### 7.3 readiness（在线 ≠ 可生成）
+- Agent → Relay：`{"type":"agent_ready","ready":false,"issues":[{"code":"model_not_configured","label":"未配置 AI 模型"}]}`
+  （收到 hello 后立即发一次，变化时重发；issues 最多 20 项，code ≤64，label ≤200）。
+- Relay 内存保存，变化时写 `room_meta`；在以下位置返回（缺失/旧 Agent 为 `null`）：
+  - phone `hello`：`ready`, `issues`
+  - `presence`：`online`, `last_seen`, `ready`, `issues`
+  - DO `/internal/presence` → REST `GET /api/v1/agent/me` 顶层 `ready`, `issues`
+- 旧 Agent 不上报 → `ready:null`（未知，UI 按“在线”显示）；新 PWA 在 `ready===false` 时显示“电脑在线 · 需要处理”。
+- `probe_ack` 可选携带 `ready`/`issues`（Relay 会当作 readiness 更新；老客户端只回 `ts` 也可以）。
+
+### 7.4 配置项（wrangler.toml vars / 测试可用 `--var` 覆盖）
+| 变量 | 默认 | 说明 |
+|---|---|---|
+| `TICKET_TTL_SECONDS` | 60 | 手机 WS ticket 有效期 |
+| `WS_ALARM_SECONDS` | 30 | 有手机时的 alarm 周期 |
+| `WS_AGENT_STALE_SECONDS` | 60 | Agent 无消息多久进入探活/判离线 |
+| `WS_PHONE_STALE_SECONDS` | 90 | 手机无消息多久被断开 |
+| `WS_PROBE_STALE_SECONDS` | 15 | 手机连上时 Agent 上次活动超过该值就探活 |
+| `WS_PROBE_TIMEOUT_SECONDS` | 3 | 探活超时 |
+
+### 7.5 测试与验证
+- `cd relay && npm test` → **51/51 PASS**：新增 v0.3 用例
+  （readiness 透传、探活超时/恢复、无手机不设 alarm/不 ping/`room_meta.last_seen_at` 不变、
+  手机连上出现 alarm/断开清除、ack persisted=false 保留 undelivered、缺省 true 删除、
+  **默认配置 alarm≈30s（intVar 回归）**）。
+  断言直接读取 Miniflare 的 DO SQLite（`room_meta`/`undelivered_notes`/`_cf_ALARM`），不依赖 30s 真实计时；
+  默认配置回归会额外起一个不传 `WS_*` 变量的独立实例（port+1，测完清理）。
+- `npm run typecheck` 通过。
+- 兼容性：REST/D1 schema 未变；旧 Agent/旧 PWA 不受影响（缺 persisted 视为 true、缺 ready 视为 null）。

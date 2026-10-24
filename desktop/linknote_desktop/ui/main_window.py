@@ -18,8 +18,8 @@ from PySide6.QtWidgets import (
 )
 
 from . import style, utils
-from .pages import NAV_ITEMS
-from .widgets import NavButton, StatusDot, Toast
+from .pages import ADVANCED_KEYS, DEFAULT_PAGE, NAV_ITEMS, PRIMARY_NAV
+from .widgets import NavButton, ReadyBanner, StatusDot, Toast
 
 APP_TITLE = "linknote 链记"
 
@@ -46,6 +46,7 @@ class MainWindow(QMainWindow):
         self._refresh_pending = False
         self._onboarding: Any = None
         self._last_status: dict = controller.last_status or {}
+        self._last_tasks: dict = controller.last_tasks or {}
         self._nav_buttons: Dict[str, NavButton] = {}
 
         central = QWidget()
@@ -58,18 +59,29 @@ class MainWindow(QMainWindow):
         self._sidebar = self._build_sidebar()
         root.addWidget(self._sidebar)
 
+        content = QWidget()
+        content.setObjectName("Root")
+        content_layout = QVBoxLayout(content)
+        content_layout.setContentsMargins(18, 14, 18, 0)
+        content_layout.setSpacing(10)
+        self._ready_banner = ReadyBanner()
+        self._ready_banner.clicked.connect(self._on_ready_banner_clicked)
+        content_layout.addWidget(self._ready_banner, 0)
+
         self._stack = QStackedWidget()
         self._stack.setObjectName("Pages")
-        root.addWidget(self._stack, 1)
+        content_layout.addWidget(self._stack, 1)
+        root.addWidget(content, 1)
 
         self._pages: Dict[str, Any] = {}
         self._build_pages()
 
         self._toast = Toast(central)
         self._connect_controller()
-        self.show_page("status")
+        self.show_page(DEFAULT_PAGE)
         if self._last_status:
             self._apply_status(self._last_status)
+        self._refresh_ready_banner()
 
         # 首次启动：等主窗口显示后再弹配置向导
         QTimer.singleShot(450, self._maybe_show_onboarding)
@@ -115,7 +127,7 @@ class MainWindow(QMainWindow):
 
         self._nav_group = QButtonGroup(self)
         self._nav_group.setExclusive(True)
-        for index, (key, title, _page_class) in enumerate(NAV_ITEMS):
+        for index, (key, title, _page_class) in enumerate(PRIMARY_NAV):
             nav_button = NavButton(title)
             nav_button.clicked.connect(lambda _checked=False, k=key: self.show_page(k))
             self._nav_group.addButton(nav_button, index)
@@ -171,6 +183,7 @@ class MainWindow(QMainWindow):
         controller.error.connect(self._on_error)
         controller.engineChanged.connect(self._on_engine_changed)
         controller.agentChanged.connect(self._on_agent_changed)
+        controller.tasksChanged.connect(self._on_tasks_changed)
 
     # ------------------------------------------------------------ 对外接口
     def set_tray(self, tray: Any) -> None:
@@ -179,22 +192,47 @@ class MainWindow(QMainWindow):
     def page_keys(self) -> list[str]:
         return list(self._pages.keys())
 
+    def primary_page_keys(self) -> list[str]:
+        return list(self._nav_buttons.keys())
+
     def current_page_key(self) -> str:
         page = self._stack.currentWidget()
         for key, candidate in self._pages.items():
             if candidate is page:
                 return key
-        return "status"
+        return DEFAULT_PAGE
 
     def show_page(self, key: str) -> None:
         page = self._pages.get(key)
         if page is None:
             return
         button = self._nav_buttons.get(key)
-        if button is not None and not button.isChecked():
-            button.setChecked(True)
+        if button is not None:
+            if not button.isChecked():
+                button.setChecked(True)
+        else:
+            # 二级页面：取消一级导航的选中态，页面内显示「返回设置」
+            checked = self._nav_group.checkedButton()
+            if checked is not None:
+                self._nav_group.setExclusive(False)
+                checked.setChecked(False)
+                self._nav_group.setExclusive(True)
+        for other_key, other in self._pages.items():
+            setter = getattr(other, "set_back_visible", None)
+            if callable(setter):
+                setter(other_key in ADVANCED_KEYS)
         if self._stack.currentWidget() is not page:
             self._stack.setCurrentWidget(page)
+        self._refresh_ready_banner()
+
+    def refresh_ready_banner(self) -> None:
+        self._refresh_ready_banner()
+
+    def _on_ready_banner_clicked(self) -> None:
+        target = str(getattr(self._ready_banner, "target_key", "") or "")
+        if not target:
+            return
+        self.show_page(target)
 
     def show_and_activate(self) -> None:
         if self.isMinimized():
@@ -231,6 +269,84 @@ class MainWindow(QMainWindow):
                 page.on_status(self._last_status)
             except Exception:  # noqa: BLE001 - 单页异常不应影响全局状态
                 pass
+        self._refresh_ready_banner()
+
+    def _on_tasks_changed(self, data: dict) -> None:
+        self._last_tasks = data or {}
+        self._refresh_ready_banner()
+
+    # ------------------------------------------------------------ 就绪横幅
+    def _refresh_ready_banner(self) -> None:
+        status = self._last_status or {}
+        tasks = self._last_tasks or {}
+        config = self.controller.config
+        agent = status.get("agent") or {}
+        engine = status.get("engine") or {}
+        ffmpeg = status.get("ffmpeg") or {}
+        engine_state = str(engine.get("state") or "stopped")
+        paired = bool(agent.get("paired"))
+
+        issues: list[tuple[str, str, str]] = []
+        if not paired:
+            issues.append(
+                ("未配对手机", "devices", "生成配对码并用手机扫码；配对完成后就能接收视频。")
+            )
+        elif not agent.get("running"):
+            issues.append(
+                ("Agent 未运行", "devices", "进入设备页启动 Agent，恢复接收手机任务。")
+            )
+        if engine_state == "error":
+            issues.append(
+                ("BiliNote 引擎异常", "devices", "引擎启动失败，可重启引擎或查看日志。")
+            )
+        elif engine_state != "running":
+            issues.append(
+                ("BiliNote 引擎未运行", "devices", "启动引擎后才能下载与生成笔记。")
+            )
+        if ffmpeg.get("available") is False:
+            issues.append(("ffmpeg 未安装", "engine", "下载 ffmpeg 或手动指定 bin 目录。"))
+        if not str(config.provider_id or "").strip() or not str(config.model_name or "").strip():
+            issues.append(
+                ("未配置 AI 模型", "ai", "选择供应商、填好 API Key 并保存手机默认模型。")
+            )
+
+        if issues:
+            label, target, detail = issues[0]
+            extra = f" 等 {len(issues)} 项" if len(issues) > 1 else ""
+            level = "error" if (not paired or engine_state == "error") else "warn"
+            self._ready_banner.set_state(
+                level, f"需要处理：{label}{extra}", detail, "去处理 →", target
+            )
+            return
+
+        current = tasks.get("current")
+        queue = tasks.get("queue") or {}
+        queued = int(queue.get("queued") or 0)
+        if current:
+            title = current.get("title") or current.get("url") or "手机任务"
+            progress = int(current.get("progress") or 0)
+            detail = f"正在处理：{utils.clip_text(title, 60)}"
+            if 0 < progress < 100:
+                detail += f" · {progress}%"
+            self._ready_banner.set_state(
+                "ready", "已准备好接收视频", detail, "查看任务 →", "tasks"
+            )
+        elif queued:
+            self._ready_banner.set_state(
+                "ready",
+                "已准备好接收视频",
+                f"有 {queued} 个任务在队列中，稍后会自动处理。",
+                "查看任务 →",
+                "tasks",
+            )
+        else:
+            self._ready_banner.set_state(
+                "ready",
+                "已准备好接收视频",
+                "手机发来视频链接后，电脑会自动下载、转写并生成笔记。",
+                "",
+                "tasks",
+            )
 
     def _apply_status(self, status: dict) -> None:
         overall = utils.overall_state(status)
@@ -332,7 +448,7 @@ class MainWindow(QMainWindow):
         completed = bool(getattr(wizard, "completed_fully", False))
         if wizard is not None:
             wizard.deleteLater()
-        self.show_page("status")
+        self.show_page(DEFAULT_PAGE)
         self.controller.refresh_status_async()
         if completed:
             self.show_toast("配置完成，欢迎使用 LinkNote", "success")

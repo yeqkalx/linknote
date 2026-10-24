@@ -202,3 +202,24 @@ def test_ws_env_overrides(isolated_home, monkeypatch):
     assert cfg.ws_reconnect_delays == [3.0, 6.0]
     assert cfg.use_websocket is False
     assert cfg.ws_ping_interval_seconds == 15.0
+
+# ================================================================ v0.3 配置
+
+
+def test_v03_readiness_and_ack_defaults(isolated_home):
+    cfg = AgentConfig.load()
+    assert cfg.ws_ping_interval_seconds == 25.0
+    assert cfg.ws_ping_timeout_seconds == 20.0
+    assert cfg.readiness_health_cache_seconds == 30.0
+    assert cfg.readiness_health_timeout_seconds == 2.0
+    assert cfg.note_ack_retry_delays_seconds == [30.0, 120.0, 600.0]
+
+
+def test_v03_env_overrides(isolated_home, monkeypatch):
+    monkeypatch.setenv("LINKNOTE_NOTE_ACK_RETRY_DELAYS_SECONDS", "1,2,3")
+    monkeypatch.setenv("LINKNOTE_READINESS_HEALTH_CACHE_SECONDS", "5")
+    monkeypatch.setenv("LINKNOTE_WS_PING_TIMEOUT_SECONDS", "12")
+    cfg = AgentConfig.load()
+    assert cfg.note_ack_retry_delays_seconds == [1.0, 2.0, 3.0]
+    assert cfg.readiness_health_cache_seconds == 5.0
+    assert cfg.ws_ping_timeout_seconds == 12.0

@@ -1,12 +1,18 @@
 /**
- * AgentRoom：每个 agent 一个 Durable Object（SQLite 后端 + WebSocket Hibernation）。
+ * AgentRoom v0.3：每个 agent 一个 Durable Object（SQLite 后端 + WebSocket Hibernation）。
  *
  * 职责：
  * - Agent socket（每台电脑最多 1 条）与手机 socket 的连接、鉴权转发（Worker 校验 token/ticket 后才转发进来）；
- * - 在线状态：agent 连接即 online、正常 close 立即 offline、DO alarm（默认 30s）+ 心跳 >60s 判离线；
+ * - 在线状态：agent socket 存在即 online（探活失败可临时标 offline）；close/error 立即 offline；
  * - 实时事件：任务推 Agent、task_update 更新 D1 并推手机、task_note 转发手机（正文绝不落 D1/DO SQLite）、
- *   note_request 转给 Agent、ack_note 转给 Agent；
+ *   note_request 转给 Agent、ack_note（含 persisted）转给 Agent、readiness（agent_ready）透传给手机；
  * - 内部事件（Worker 的 REST 流程调用）：task_created / task_snapshot / note_forward / device_revoked。
+ *
+ * v0.3 成本约束（docs/v0.3-protocol-delta.md §1）：
+ * - 只有存在手机 socket 时才 setAlarm / 主动 ping；没有手机时不设 alarm、不 ping、不写 room_meta SQL；
+ * - last_seen 只放内存，online / last_seen_at / ready / issues 只在跃迁或变化时写 room_meta；
+ * - 手机连接时若 agent 上次活动超过 15s：ping+probe + 3s 超时探活，无响应则 presence offline（不强行 close）；
+ * - 兼容旧 Agent：JSON ping 照常回 pong；旧手机 ack 缺 persisted 视为 true。
  *
  * 隔离硬约束：所有 D1 查询都带 `agent_id = ?`（来自 DO 实例自身绑定的 agent_id，绝不来自客户端消息）。
  * 多租户隔离：DO 实例按 `idFromName(agent_id)` 划分，A 的 socket 收不到 B 的事件。
@@ -14,7 +20,7 @@
 
 import { bytesOf, isoAfter, isoNow, json } from './lib/http';
 import { TASK_SUMMARY_COLUMNS, toTaskSummary } from './lib/rows';
-import type { AgentPushTask, Env, TaskSummary } from './types';
+import type { AgentIssue, AgentPushTask, Env, TaskSummary } from './types';
 
 const ROLE_AGENT = 'agent';
 const ROLE_PHONE = 'phone';
@@ -25,6 +31,7 @@ const WS_CLOSE_TIMEOUT = 4002;
 /** 与 PC Agent / PWA 的本地校验保持一致（contract §10）。 */
 const MAX_NOTE_BYTES = 1_572_864;
 const MAX_PENDING_TASKS_ON_CONNECT = 50;
+const MAX_ISSUES = 20;
 
 const PROGRESS_STAGES = new Set([
   'pending',
@@ -43,6 +50,7 @@ interface SocketAttachment {
   /** 单条连接的唯一 id；用于区分「被新连接顶掉的旧 socket」与真正的断开。 */
   conn: string;
   device_id?: string;
+  /** 仅手机使用：最后一次收到消息的时间（内存 attachment，不写 SQL）。 */
   last_seen: number;
   superseded?: boolean;
 }
@@ -57,7 +65,11 @@ interface InternalEventBody {
 }
 
 function intVar(raw: string | undefined, fallback: number, min: number, max: number): number {
-  const n = Number(raw || '');
+  // 注意：不能用 `Number(raw || '')` —— 未配置时 Number('') === 0 会被 clamp 到 min，
+  // 导致默认值（如 alarm 30s）失效（v0.2 线上曾因此变成 1s alarm）。
+  // 未配置或空串必须回落到 fallback。
+  if (raw == null || raw === '') return fallback;
+  const n = Number(raw);
   if (!Number.isFinite(n)) return fallback;
   return Math.min(max, Math.max(min, Math.trunc(n)));
 }
@@ -78,6 +90,21 @@ function asTaskId(value: unknown): string | null {
   if (typeof value !== 'string') return null;
   const id = value.trim();
   return /^[A-Za-z0-9_-]{8,80}$/.test(id) ? id : null;
+}
+
+/** readiness issues：最多 20 项，code ≤64、label ≤200；非法项丢弃。 */
+function sanitizeIssues(value: unknown): AgentIssue[] {
+  if (!Array.isArray(value)) return [];
+  const issues: AgentIssue[] = [];
+  for (const item of value.slice(0, MAX_ISSUES)) {
+    if (!item || typeof item !== 'object' || Array.isArray(item)) continue;
+    const row = item as Record<string, unknown>;
+    const code = shortText(row.code, 64);
+    if (!code) continue;
+    const label = shortText(row.label, 200) || code;
+    issues.push({ code, label });
+  }
+  return issues;
 }
 
 function normalizePushTask(task: unknown): AgentPushTask | null {
@@ -124,9 +151,20 @@ export class AgentRoom {
   /** 串行处理 socket 消息：DO 的事件处理在 await 处会交错，按到达顺序串起来才能保证重放/结束的顺序。 */
   private processing: Promise<void> = Promise.resolve();
   private agentId: string | null = null;
+  /** 持久化的 online 跃迁状态（只在跃迁时写 room_meta）。 */
   private online = false;
-  private agentLastSeen: string | null = null;
+  /** 内存 last_seen（ms）；构造时从 room_meta 的上次跃迁时间恢复，之后只在内存更新。 */
+  private agentLastSeen = 0;
   private realtime = false;
+  /** readiness（内存；变化时写 room_meta）。null = 未知（旧 Agent 不上报）。 */
+  private ready: boolean | null = null;
+  private issues: AgentIssue[] = [];
+  /** 手机连接时对 agent 的探活状态。 */
+  private probePending = false;
+  private probeUnreachable = false;
+  /** alarm 判定 stale 时:探活超时后需要关闭 agent socket。 */
+  private probeCloseOnTimeout = false;
+  private probeTimer: ReturnType<typeof setTimeout> | null = null;
 
   constructor(ctx: DurableObjectState, env: Env) {
     this.ctx = ctx;
@@ -148,8 +186,19 @@ export class AgentRoom {
       );
       this.agentId = this.getMeta('agent_id');
       this.online = this.getMeta('online') === '1';
-      this.agentLastSeen = this.getMeta('last_seen_at');
+      const lastSeenIso = this.getMeta('last_seen_at');
+      const lastSeenMs = lastSeenIso ? Date.parse(lastSeenIso) : Number.NaN;
+      this.agentLastSeen = Number.isFinite(lastSeenMs) ? lastSeenMs : 0;
       this.realtime = this.getMeta('realtime') === '1';
+      const readyRaw = this.getMeta('ready');
+      this.ready = readyRaw === '1' ? true : readyRaw === '0' ? false : null;
+      if (this.ready !== null) {
+        try {
+          this.issues = sanitizeIssues(JSON.parse(this.getMeta('issues') || '[]'));
+        } catch {
+          this.issues = [];
+        }
+      }
     });
   }
 
@@ -162,12 +211,15 @@ export class AgentRoom {
     return rows.length ? rows[0].value : null;
   }
 
-  private setMeta(key: string, value: string): void {
+  /** 多条 meta 合并成 1 条 SQL 写入（跃迁/readiness 变化时才调用，禁止每条消息写）。 */
+  private persistMeta(entries: Array<[string, string]>): void {
+    if (!entries.length) return;
+    const placeholders = entries.map(() => '(?, ?)').join(', ');
+    const values = entries.flatMap(([key, value]) => [key, value]);
     this.ctx.storage.sql.exec(
-      `INSERT INTO room_meta (key, value) VALUES (?, ?)
+      `INSERT INTO room_meta (key, value) VALUES ${placeholders}
        ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
-      key,
-      value,
+      ...values,
     );
   }
 
@@ -188,6 +240,15 @@ export class AgentRoom {
     return this.agentId;
   }
 
+  private setMeta(key: string, value: string): void {
+    this.ctx.storage.sql.exec(
+      `INSERT INTO room_meta (key, value) VALUES (?, ?)
+       ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
+      key,
+      value,
+    );
+  }
+
   private alarmMs(): number {
     return intVar(this.env.WS_ALARM_SECONDS, 30, 1, 300) * 1000;
   }
@@ -198,6 +259,14 @@ export class AgentRoom {
 
   private phoneStaleMs(): number {
     return intVar(this.env.WS_PHONE_STALE_SECONDS, 90, 2, 3600) * 1000;
+  }
+
+  private probeStaleMs(): number {
+    return intVar(this.env.WS_PROBE_STALE_SECONDS, 15, 1, 3600) * 1000;
+  }
+
+  private probeTimeoutMs(): number {
+    return intVar(this.env.WS_PROBE_TIMEOUT_SECONDS, 3, 1, 60) * 1000;
   }
 
   private leaseSeconds(): number {
@@ -231,9 +300,11 @@ export class AgentRoom {
       return json({
         ok: true,
         data: {
-          online: this.isAgentConnected(),
-          last_seen_at: this.agentLastSeen,
+          online: this.isAgentOnline(),
+          last_seen_at: this.lastSeenIso(),
           realtime: this.realtime,
+          ready: this.ready,
+          issues: this.ready === null ? null : this.issues,
         },
       });
     }
@@ -255,7 +326,7 @@ export class AgentRoom {
 
   // ------------------------------------------------------------ upgrade
 
-  private handleUpgrade(request: Request, agentId: string): Response {
+  private async handleUpgrade(request: Request, agentId: string): Promise<Response> {
     const roleHeader = request.headers.get('x-role');
     if (roleHeader !== ROLE_AGENT && roleHeader !== ROLE_PHONE) {
       return json({ ok: false, error: { code: 'bad_request', message: '角色无效' } }, 400);
@@ -286,37 +357,115 @@ export class AgentRoom {
       this.ctx.acceptWebSocket(server, [ROLE_AGENT]);
       this.online = true;
       this.realtime = true;
-      this.agentLastSeen = isoNow();
-      this.setMeta('online', '1');
-      this.setMeta('realtime', '1');
-      this.setMeta('last_seen_at', this.agentLastSeen);
+      this.agentLastSeen = Date.now();
+      this.probeUnreachable = false;
+      this.probePending = false;
+      this.probeCloseOnTimeout = false;
+      this.clearProbeTimer();
+      this.ready = null;
+      this.issues = [];
+      // 连接跃迁：唯一允许的 room_meta 写入点之一（合并为 1 条 SQL）。
+      this.persistMeta([
+        ['online', '1'],
+        ['last_seen_at', this.lastSeenIso() || isoNow()],
+        ['realtime', '1'],
+        ['ready', ''],
+        ['issues', '[]'],
+      ]);
       this.send(server, { type: 'hello', agent_id: agentId, server_time: isoNow() });
       this.ctx.waitUntil(this.pushPendingTasks(server));
-      this.broadcastPhones({
-        type: 'presence',
-        online: true,
-        last_seen: this.agentLastSeen,
-        server_time: isoNow(),
-      });
+      this.broadcastPhones(this.presenceMessage());
     } else {
       this.ctx.acceptWebSocket(server, [ROLE_PHONE]);
+      this.sendToAgent({ type: 'phone_online', online: true });
+
+      const agentSocket = this.isAgentSocketConnected();
+      const needsProbe =
+        agentSocket &&
+        (!this.agentLastSeen || Date.now() - this.agentLastSeen > this.probeStaleMs());
+
       this.send(server, {
         type: 'hello',
         agent_id: agentId,
-        online: this.isAgentConnected(),
+        online: agentSocket && !this.probeUnreachable,
+        ready: this.ready,
+        issues: this.ready === null ? null : this.issues,
         server_time: isoNow(),
       });
-      this.send(server, {
-        type: 'presence',
-        online: this.isAgentConnected(),
-        last_seen: this.agentLastSeen,
-        server_time: isoNow(),
-      });
-      this.sendToAgent({ type: 'phone_online', online: true });
+
+      if (!agentSocket) {
+        // 没有 agent：直接告诉手机离线（alarm 仍要调度，用于手机心跳/清理）。
+        this.send(server, this.presenceMessage());
+      } else if (needsProbe) {
+        this.beginProbe();
+      } else {
+        this.send(server, this.presenceMessage());
+      }
+      // 只有存在手机时才设置/刷新 alarm（v0.3 成本核心）。
+      this.ctx.waitUntil(this.ensureAlarm());
     }
 
-    this.ctx.waitUntil(this.ensureAlarm());
     return new Response(null, { status: 101, webSocket: client });
+  }
+
+  // ------------------------------------------------------------ 探活（手机连上时）
+
+  private beginProbe(closeOnTimeout = false): void {
+    if (this.probePending) {
+      this.probeCloseOnTimeout = this.probeCloseOnTimeout || closeOnTimeout;
+      return;
+    }
+    this.probePending = true;
+    this.probeCloseOnTimeout = closeOnTimeout;
+    const now = Date.now();
+    this.sendToAgent({ type: 'probe', ts: now });
+    this.sendToAgent({ type: 'ping', ts: now });
+    this.startProbeTimer();
+  }
+
+  private startProbeTimer(): void {
+    this.clearProbeTimer();
+    this.probeTimer = setTimeout(() => {
+      this.probeTimer = null;
+      if (!this.probePending) return;
+      this.probePending = false;
+      if (!this.isAgentSocketConnected()) {
+        this.probeCloseOnTimeout = false;
+        return;
+      }
+      // 超时内没有任何 pong/probe_ack/其他 Agent 消息：标记 offline。
+      this.probeUnreachable = true;
+      if (this.probeCloseOnTimeout) {
+        // alarm 场景（可能 hibernation 后内存 last_seen 丢失）：确认无响应才关闭，避免误杀活连接。
+        this.probeCloseOnTimeout = false;
+        for (const ws of this.ctx.getWebSockets(ROLE_AGENT)) {
+          this.closeSocket(ws, WS_CLOSE_TIMEOUT, 'heartbeat timeout');
+        }
+        this.markAgentOffline();
+      } else {
+        // 手机连接场景：只标记 offline，不强行 close（Agent 可能只是忙/GC）。
+        this.broadcastPhones(this.presenceMessage());
+      }
+    }, this.probeTimeoutMs());
+  }
+
+  private clearProbeTimer(): void {
+    if (this.probeTimer !== null) {
+      clearTimeout(this.probeTimer);
+      this.probeTimer = null;
+    }
+  }
+
+  /** 任意 Agent 消息都视为存活证据：刷新内存 last_seen，并结束/恢复探活状态。 */
+  private noteAgentActivity(): void {
+    this.agentLastSeen = Date.now();
+    if (this.probePending || this.probeUnreachable) {
+      this.probePending = false;
+      this.probeUnreachable = false;
+      this.probeCloseOnTimeout = false;
+      this.clearProbeTimer();
+      this.broadcastPhones(this.presenceMessage());
+    }
   }
 
   // ------------------------------------------------------------ events
@@ -348,8 +497,8 @@ export class AgentRoom {
     const type = typeof body.type === 'string' ? body.type : '';
 
     if (attachment.role === ROLE_AGENT) {
-      this.agentLastSeen = isoNow();
-      this.setMeta('last_seen_at', this.agentLastSeen);
+      // 只更新内存 last_seen；禁止每条消息写 SQL（v0.3）。
+      this.noteAgentActivity();
       await this.onAgentMessage(ws, type, body);
     } else {
       await this.onPhoneMessage(ws, type, body);
@@ -370,7 +519,12 @@ export class AgentRoom {
     } else if (!this.hasOtherSocket(ROLE_PHONE, attachment.conn)) {
       this.sendToAgent({ type: 'phone_online', online: false });
     }
-    await this.cleanupAlarmIfIdle();
+    if (!this.ctx.getWebSockets(ROLE_PHONE).length) {
+      this.clearProbeTimer();
+      this.probePending = false;
+      this.probeCloseOnTimeout = false;
+      await this.deleteAlarm();
+    }
   }
 
   async webSocketError(ws: WebSocket, error: unknown): Promise<void> {
@@ -380,28 +534,35 @@ export class AgentRoom {
       if (!this.hasOtherSocket(ROLE_AGENT, attachment.conn)) this.markAgentOffline();
     }
     this.closeSocket(ws, 1011, 'websocket error');
-    await this.cleanupAlarmIfIdle();
+    if (!this.ctx.getWebSockets(ROLE_PHONE).length) {
+      this.clearProbeTimer();
+      this.probePending = false;
+      this.probeCloseOnTimeout = false;
+      await this.deleteAlarm();
+    }
   }
 
   async alarm(): Promise<void> {
-    const agents = this.ctx.getWebSockets(ROLE_AGENT);
     const phones = this.ctx.getWebSockets(ROLE_PHONE);
-    if (!agents.length && !phones.length) {
-      this.online = false;
-      this.setMeta('online', '0');
-      this.ctx.storage.sql.exec('DELETE FROM undelivered_notes WHERE received_at < ?', isoAfter(-7 * 24 * 3600));
+    if (!phones.length) {
+      // 没有手机不应该有 alarm：清掉，不主动 ping、不写 SQL。
+      this.clearProbeTimer();
+      this.probePending = false;
+      await this.deleteAlarm();
       return;
     }
 
     const now = Date.now();
+    const agents = this.ctx.getWebSockets(ROLE_AGENT);
     for (const ws of agents) this.send(ws, { type: 'ping', ts: now });
     for (const ws of phones) this.send(ws, { type: 'ping', ts: now });
 
     if (agents.length) {
-      const lastSeen = this.agentLastSeen ? Date.parse(this.agentLastSeen) : 0;
-      if (!Number.isFinite(lastSeen) || now - lastSeen > this.agentStaleMs()) {
-        for (const ws of agents) this.closeSocket(ws, WS_CLOSE_TIMEOUT, 'heartbeat timeout');
-        this.markAgentOffline();
+      if (!this.agentLastSeen) this.agentLastSeen = now;
+      if (now - this.agentLastSeen > this.agentStaleMs()) {
+        // 先 ping+probe 观察 3s 再决定是否关闭：
+        // DO hibernation 后内存 last_seen 会回落到上次跃迁值，直接 close 会误杀活连接。
+        this.beginProbe(true);
       }
     }
 
@@ -414,8 +575,10 @@ export class AgentRoom {
       }
     }
 
-    if (this.ctx.getWebSockets(ROLE_AGENT).length || this.ctx.getWebSockets(ROLE_PHONE).length) {
+    if (this.ctx.getWebSockets(ROLE_PHONE).length) {
       await this.ensureAlarm(true);
+    } else {
+      await this.deleteAlarm();
     }
   }
 
@@ -424,9 +587,19 @@ export class AgentRoom {
   private async onAgentMessage(ws: WebSocket, type: string, body: Record<string, unknown>): Promise<void> {
     switch (type) {
       case 'ping':
+        // 兼容旧 Agent 的 JSON ping：照常回 pong。
         this.send(ws, { type: 'pong', ts: typeof body.ts === 'number' ? body.ts : Date.now() });
         return;
       case 'pong':
+        return;
+      case 'probe_ack':
+        // probe_ack 可携带最新 readiness（可选，老客户端只回 ts）。
+        if (body.ready !== undefined || body.issues !== undefined) {
+          this.applyReady(body.ready, body.issues);
+        }
+        return;
+      case 'agent_ready':
+        this.applyReady(body.ready, body.issues);
         return;
       case 'task_update':
         await this.handleTaskUpdate(ws, body);
@@ -436,6 +609,23 @@ export class AgentRoom {
         return;
       default:
         return;
+    }
+  }
+
+  /** readiness 变化：写一次 room_meta + 向在线手机广播 presence。 */
+  private applyReady(readyRaw: unknown, issuesRaw: unknown): void {
+    const ready = typeof readyRaw === 'boolean' ? readyRaw : null;
+    const issues = sanitizeIssues(issuesRaw);
+    const same = ready === this.ready && JSON.stringify(issues) === JSON.stringify(this.issues);
+    if (same) return;
+    this.ready = ready;
+    this.issues = issues;
+    this.persistMeta([
+      ['ready', ready === null ? '' : ready ? '1' : '0'],
+      ['issues', JSON.stringify(issues)],
+    ]);
+    if (this.ctx.getWebSockets(ROLE_PHONE).length) {
+      this.broadcastPhones(this.presenceMessage());
     }
   }
 
@@ -593,9 +783,12 @@ export class AgentRoom {
       case 'ack_note': {
         const taskId = asTaskId(body.task_id);
         if (!taskId) return;
-        this.ctx.storage.sql.exec('DELETE FROM undelivered_notes WHERE task_id = ?', taskId);
-        // 让 Agent 清理本地 outbox（协议 §2.2 的增量消息，见 docs/api-contract.md）。
-        this.sendToAgent({ type: 'ack_note', task_id: taskId });
+        // v0.3：区分"收到"与"已保存"；缺省 true 兼容旧客户端。
+        const persisted = body.persisted !== false;
+        if (persisted) {
+          this.ctx.storage.sql.exec('DELETE FROM undelivered_notes WHERE task_id = ?', taskId);
+        }
+        this.sendToAgent({ type: 'ack_note', task_id: taskId, persisted });
         return;
       }
       default:
@@ -617,7 +810,7 @@ export class AgentRoom {
       this.send(ws, { type: 'error', code: 'task_not_found', message: '任务不存在' });
       return;
     }
-    if (this.isAgentConnected()) {
+    if (this.isAgentOnline()) {
       this.sendToAgent({ type: 'note_request', task_id: taskId });
     } else {
       this.send(ws, { type: 'note_unavailable', task_id: taskId, reason: 'agent_offline' });
@@ -631,7 +824,7 @@ export class AgentRoom {
     switch (type) {
       case 'task_created': {
         const task = normalizePushTask(body.task);
-        if (task && this.isAgentConnected()) {
+        if (task && this.isAgentSocketConnected()) {
           this.sendToAgent({ type: 'task', task });
         }
         return;
@@ -722,8 +915,28 @@ export class AgentRoom {
     );
   }
 
-  private isAgentConnected(): boolean {
+  private isAgentSocketConnected(): boolean {
     return this.ctx.getWebSockets(ROLE_AGENT).length > 0;
+  }
+
+  /** presence 口径：socket 存在且最近一次探活未被判定不可达。 */
+  private isAgentOnline(): boolean {
+    return this.isAgentSocketConnected() && !this.probeUnreachable;
+  }
+
+  private lastSeenIso(): string | null {
+    return this.agentLastSeen ? new Date(this.agentLastSeen).toISOString() : null;
+  }
+
+  private presenceMessage(onlineOverride?: boolean): Record<string, unknown> {
+    return {
+      type: 'presence',
+      online: onlineOverride === undefined ? this.isAgentOnline() : onlineOverride,
+      last_seen: this.lastSeenIso(),
+      ready: this.ready,
+      issues: this.ready === null ? null : this.issues,
+      server_time: isoNow(),
+    };
   }
 
   private hasOtherSocket(role: string, conn: string): boolean {
@@ -734,16 +947,17 @@ export class AgentRoom {
   }
 
   private markAgentOffline(): void {
-    const wasOnline = this.online || this.isAgentConnected();
+    this.clearProbeTimer();
+    this.probePending = false;
+    this.probeUnreachable = false;
+    this.probeCloseOnTimeout = false;
+    if (!this.online) return;
     this.online = false;
-    this.setMeta('online', '0');
-    if (!wasOnline) return;
-    this.broadcastPhones({
-      type: 'presence',
-      online: false,
-      last_seen: this.agentLastSeen,
-      server_time: isoNow(),
-    });
+    this.persistMeta([
+      ['online', '0'],
+      ['last_seen_at', this.lastSeenIso() || isoNow()],
+    ]);
+    this.broadcastPhones(this.presenceMessage(false));
   }
 
   private send(ws: WebSocket, payload: Record<string, unknown>): void {
@@ -781,8 +995,7 @@ export class AgentRoom {
     }
   }
 
-  private async cleanupAlarmIfIdle(): Promise<void> {
-    if (this.isAgentConnected() || this.ctx.getWebSockets(ROLE_PHONE).length) return;
+  private async deleteAlarm(): Promise<void> {
     try {
       await this.ctx.storage.deleteAlarm();
     } catch {

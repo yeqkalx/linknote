@@ -1,4 +1,4 @@
-# 使用指南（Windows + Android）
+﻿# 使用指南（Windows + Android）
 
 > 你需要：一台常开的 Windows 电脑 + 一部 Android 手机。
 > 手机和电脑**不需要在同一个 Wi-Fi**；电脑不需要公网 IP。
@@ -11,22 +11,22 @@
 优先双击：
 
 ```text
-dist-desktop\LinkNote-Setup-0.2.2.msi
+dist-desktop\LinkNote-Setup-0.3.0.msi
 ```
 
 - Windows Installer per-user，安装界面为英文，应用内全中文
 - 不需要管理员；安装到 `%LOCALAPPDATA%\Programs\LinkNote`
 - 默认创建桌面/开始菜单快捷方式；数据目录由安装服务创建
-- 如果 `LinkNote-Setup-0.2.2.exe` 被杀软报“无法创建临时目录”，直接换 MSI 即可
+- 如果 `LinkNote-Setup-0.3.0.exe` 被杀软报“无法创建临时目录”，直接换 MSI 即可
 
-备用 EXE（Inno）安装包：`dist-desktop\LinkNote-Setup-0.2.2.exe`
+备用 EXE（Inno）安装包：`dist-desktop\LinkNote-Setup-0.3.0.exe`
 
 ### A2. 首次打开：7 步配置向导
 
 程序会自动弹出向导：
 
-1. **欢迎 + 隐私说明**：视频/音频/API Key/转写内容留本机；Relay 只中转链接/状态和最终 Markdown，正文不落 Relay 数据库，手机本地缓存。
-2. **ffmpeg**：检测不到就点“下载 ffmpeg”（约 100 MB，自动解压）。
+1. **欢迎 + 隐私说明**：视频/转写在本机处理；中继只中转链接/状态/Markdown、不持久保存正文（转发瞬间可见明文）；在线 AI 时必要文本发送给模型服务商。
+2. **ffmpeg**：检测不到就点“下载 ffmpeg”（LGPL shared，约 78 MB，自动解压）。
 3. **引擎**：启动内置 BiliNote 引擎；状态变绿后继续。
 4. **AI 模型**：选 DeepSeek/OpenAI 等，粘贴自己的 API Key，点“保存并测试连接”。
 5. **语音转写**：默认 Faster Whisper + small，点“下载模型”；网络慢可选 tiny（约 75 MB）。
@@ -34,7 +34,7 @@ dist-desktop\LinkNote-Setup-0.2.2.msi
 7. **完成**：程序进入托盘常驻。
 
 > 没有 LLM API Key 时无法生成笔记；API Key 由你自己在对应服务商购买/创建。
-> 以后想改配置：托盘图标 → 打开主界面 → 对应页面；设置页可“重新运行配置向导”。
+> 以后想改配置：托盘图标 → 打开主界面 → 设置页（AI 模型/语音转写/引擎与诊断/日志）；设置页可“重新运行配置向导”、开启 Obsidian/本地目录自动归档。主界面顶部横幅会显示“已准备好接收视频”或“需要处理：…”。
 
 ### A3. 手机端
 
@@ -104,6 +104,6 @@ uv pip install --python .venv\Scripts\python.exe -e .
 
 ## 隐私
 
-- 视频、音频、Whisper 转写内容、API Key 都在你的电脑。
+- 视频下载与默认语音转写在你的电脑完成。使用在线 AI 时，必要文本直连你选择的模型服务商；API Key 由你直连模型商鉴权，不经链记中继。
 - Relay 中转：链接、任务状态、最终 Markdown（即时转发，不持久化正文）。
 - **Markdown 不保存在 Relay 数据库中**，只在手机本地缓存；转发瞬间 Relay 可见明文，当前没有端到端加密。

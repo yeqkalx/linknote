@@ -4,7 +4,9 @@
 // - 配对 / 任务 / 重试 / 归档 / 设备撤销 / CORS 等 REST 契约；
 // - POST /realtime/ticket、agent WS（Authorization Bearer）、phone WS（ticket）、hello/presence；
 // - 任务创建 → Agent 秒收；task_update → D1 + 手机 task_updated；task_note → 手机 note；
-// - ack_note 转发 Agent、note_request 重发、离线 queued 重连补发、心跳超时判离线；
+// - ack_note 转发 Agent（v0.3 persisted 语义）、note_request 重发、离线 queued 重连补发、心跳超时判离线；
+// - v0.3：readiness（agent_ready → phone hello/presence//agent/me）、手机连接探活（ping+超时）、
+//   只有手机在线时才设 alarm、无手机时不 ping/不写 room_meta.last_seen、ack persisted=false 不删 undelivered；
 // - A/B 多租户隔离（任务/事件/WS/ticket 全部不可跨 agent）；
 // - 笔记正文不落 D1 / DO SQLite（对本地持久化文件做二进制 marker 扫描）。
 //
@@ -14,6 +16,7 @@ import { rm, mkdir } from 'node:fs/promises';
 import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import path from 'node:path';
 import assert from 'node:assert/strict';
+import { DatabaseSync } from 'node:sqlite';
 import WebSocket from 'ws';
 
 const relayDir = path.resolve(import.meta.dirname, '..');
@@ -69,11 +72,12 @@ function runWrangler(args) {
   });
 }
 
-async function waitForHealth(timeoutMs = 120_000) {
+/** 等待某个 relay 实例就绪（baseUrl 是含 /api/v1 的 API Base）。 */
+async function waitForHealthAt(baseUrl, timeoutMs = 120_000) {
   const start = Date.now();
   while (Date.now() - start < timeoutMs) {
     try {
-      const res = await fetch(`${base}/health`, { signal: AbortSignal.timeout(2000) });
+      const res = await fetch(`${baseUrl}/health`, { signal: AbortSignal.timeout(2000) });
       if (res.ok) return await res.json();
     } catch {
       // not ready
@@ -83,8 +87,12 @@ async function waitForHealth(timeoutMs = 120_000) {
   throw new Error(`Relay 在 ${timeoutMs}ms 内没有就绪\n${logs.slice(-5000)}`);
 }
 
-async function call(method, route, { token, body, headers = {} } = {}) {
-  const res = await fetch(`${base}${route}`, {
+function waitForHealth(timeoutMs = 120_000) {
+  return waitForHealthAt(base, timeoutMs);
+}
+
+async function call(method, route, { token, body, headers = {} } = {}, baseUrl = base) {
+  const res = await fetch(`${baseUrl}${route}`, {
     method,
     headers: {
       ...(body === undefined ? {} : { 'content-type': 'application/json; charset=utf-8' }),
@@ -253,6 +261,24 @@ async function issueTicket(deviceToken) {
   return data;
 }
 
+/** 快速创建一套独立 agent + 手机（用于 v0.3 的隔离场景/成本断言）。 */
+async function pairAndClaim(agentName, deviceName) {
+  const pairing = expectOk(
+    await call('POST', '/pairings', { body: { agent_name: agentName, platform: 'windows' } }),
+    201,
+  );
+  const claim = expectOk(
+    await call('POST', '/pairings/claim', {
+      body: { code: pairing.code, device_name: deviceName, platform: 'android' },
+    }),
+  );
+  return {
+    agentToken: pairing.agent_token,
+    agentId: pairing.agent_id,
+    deviceToken: claim.device_token,
+  };
+}
+
 async function openPhone(deviceToken, options = {}) {
   const data = await issueTicket(deviceToken);
   const client = await connectRaw(`${wsBase}/ws?ticket=${encodeURIComponent(data.ticket)}`, options);
@@ -310,6 +336,83 @@ function scanStateForMarkers(markers) {
   }
 }
 
+// ---------------------------------------------------------------- DO 本地状态（v0.3 成本/持久化断言）
+
+const doClassDir = path.join(stateDir, 'v3', 'do', 'linknote-relay-AgentRoom');
+
+/** 读取某个 agent 的 DO SQLite 状态（room_meta / undelivered_notes）。 */
+async function readRoomState(agentId, { retries = 20 } = {}) {
+  for (let attempt = 0; attempt < retries; attempt++) {
+    try {
+      for (const name of readdirSync(doClassDir)) {
+        if (!name.endsWith('.sqlite') || name === 'metadata.sqlite') continue;
+        const db = new DatabaseSync(path.join(doClassDir, name), { readOnly: true });
+        try {
+          const tables = db
+            .prepare("SELECT name FROM sqlite_master WHERE type = 'table'")
+            .all()
+            .map((row) => row.name);
+          if (!tables.includes('room_meta')) continue;
+          const meta = Object.fromEntries(
+            db.prepare('SELECT key, value FROM room_meta').all().map((row) => [row.key, row.value]),
+          );
+          if (meta.agent_id !== agentId) continue;
+          const undelivered = tables.includes('undelivered_notes')
+            ? db.prepare('SELECT task_id FROM undelivered_notes').all().map((row) => row.task_id)
+            : [];
+          return { meta, undelivered };
+        } finally {
+          db.close();
+        }
+      }
+    } catch {
+      // DO SQLite 可能正在写 WAL，稍后重试
+    }
+    await sleep(150);
+  }
+  throw new Error(`未找到 agent ${agentId} 的 DO 状态`);
+}
+
+/** 读取 DO alarm（Miniflare 把 alarm 存在 class 级 metadata.sqlite 的 _cf_ALARM 表）。 */
+function readAlarmRows(agentId, dir = doClassDir) {
+  const file = path.join(dir, 'metadata.sqlite');
+  if (!existsSync(file)) return [];
+  try {
+    const db = new DatabaseSync(file, { readOnly: true });
+    try {
+      return db
+        .prepare(
+          'SELECT actor_id, actor_name, CAST(scheduled_time AS TEXT) AS scheduled_time FROM _cf_ALARM',
+        )
+        .all()
+        .filter((row) => row.actor_name === agentId);
+    } finally {
+      db.close();
+    }
+  } catch {
+    return [];
+  }
+}
+
+/** alarm 距现在还有多少秒（Miniflare 的 scheduled_time 是纳秒，用 BigInt 解析）。 */
+function readAlarmDelaySeconds(agentId, dir = doClassDir) {
+  const row = readAlarmRows(agentId, dir)[0];
+  if (!row) return null;
+  const scheduledNs = BigInt(row.scheduled_time);
+  const nowNs = BigInt(Date.now()) * 1_000_000n;
+  return Number(scheduledNs - nowNs) / 1e9;
+}
+
+async function waitForAlarmState(agentId, present, timeoutMs = 6000) {
+  const start = Date.now();
+  while (Date.now() - start < timeoutMs) {
+    const rows = readAlarmRows(agentId);
+    if (present ? rows.length > 0 : rows.length === 0) return rows;
+    await sleep(100);
+  }
+  throw new Error(present ? 'alarm 未按预期设置' : 'alarm 未按预期清除');
+}
+
 // ---------------------------------------------------------------- test body
 
 async function main() {
@@ -346,6 +449,10 @@ async function main() {
       'WS_AGENT_STALE_SECONDS:3',
       '--var',
       'WS_PHONE_STALE_SECONDS:8',
+      '--var',
+      'WS_PROBE_STALE_SECONDS:1',
+      '--var',
+      'WS_PROBE_TIMEOUT_SECONDS:1',
     ],
     {
       cwd: relayDir,
@@ -662,13 +769,16 @@ async function main() {
   });
 
   let phoneA;
-  await step('手机 WS 连接：hello + 初始 presence(offline)', async () => {
+  await step('手机 WS 连接：hello + 初始 presence(offline)，readiness 未知为 null', async () => {
     phoneA = track(await openPhone(deviceToken));
     const hello = await phoneA.waitFor((m) => m.type === 'hello', 5000, 'phone hello');
     assert.equal(hello.agent_id, agentId);
     assert.equal(typeof hello.online, 'boolean');
+    assert.equal(hello.ready, null, '旧 Agent 未上报 readiness 时 ready 应为 null');
+    assert.equal(hello.issues, null);
     const presence = await phoneA.waitFor((m) => m.type === 'presence', 5000, 'phone presence');
     assert.equal(presence.online, false);
+    assert.equal(presence.ready, null);
   });
 
   let agentA;
@@ -776,7 +886,7 @@ async function main() {
     );
   });
 
-  await step('手机 ack_note 转发给 Agent', async () => {
+  await step('手机 ack_note 转发给 Agent（旧客户端缺 persisted 视为 true）', async () => {
     phoneA.send({ type: 'ack_note', task_id: liveTaskId });
     const ack = await agentA.waitFor(
       (m) => m.type === 'ack_note' && m.task_id === liveTaskId,
@@ -784,6 +894,7 @@ async function main() {
       'agent ack_note',
     );
     assert.equal(ack.task_id, liveTaskId);
+    assert.equal(ack.persisted, true);
   });
 
   await step('手机 note_request → Agent 收到；Agent 重发 task_note → 手机再次收到', async () => {
@@ -916,6 +1027,195 @@ async function main() {
     await phoneA.waitFor((m) => m.type === 'presence' && m.online === true, 5000, 'presence restore');
   });
 
+  await step('v0.3 readiness：agent_ready → 手机 presence / REST /agent/me 透传', async () => {
+    agentA4.send({
+      type: 'agent_ready',
+      ready: false,
+      issues: [
+        { code: 'model_not_configured', label: '未配置 AI 模型' },
+        { code: 'engine_unreachable', label: 'BiliNote 引擎不可用' },
+      ],
+    });
+    const presence = await phoneA.waitFor(
+      (m) => m.type === 'presence' && m.ready === false,
+      5000,
+      'presence ready false',
+    );
+    assert.equal(presence.issues.length, 2);
+    assert.equal(presence.issues[0].code, 'model_not_configured');
+
+    const me = expectOk(await call('GET', '/agent/me', { token: agentToken }));
+    assert.equal(me.ready, false);
+    assert.equal(me.issues.length, 2);
+    assert.equal(me.issues[1].code, 'engine_unreachable');
+
+    // readiness 变化写一次 room_meta（且不落正文）。
+    const room = await readRoomState(agentId);
+    assert.equal(room.meta.ready, '0');
+    assert.match(room.meta.issues, /model_not_configured/);
+
+    agentA4.send({ type: 'agent_ready', ready: true, issues: [] });
+    const restored = await phoneA.waitFor(
+      (m) => m.type === 'presence' && m.ready === true,
+      5000,
+      'presence ready true',
+    );
+    assert.deepEqual(restored.issues, []);
+    const meReady = expectOk(await call('GET', '/agent/me', { token: agentToken }));
+    assert.equal(meReady.ready, true);
+
+    // 新手机 hello 直接带 readiness（同一设备可以开第二条 WS）。
+    const phoneA2 = track(await openPhone(deviceToken));
+    const hello2 = await phoneA2.waitFor((m) => m.type === 'hello', 5000, 'ready phone hello');
+    assert.equal(hello2.ready, true);
+    assert.deepEqual(hello2.issues, []);
+    phoneA2.close();
+    await sleep(200);
+  });
+
+  await step('v0.3 探活：手机连上时 ping+超时，无响应 presence offline，pong 后恢复', async () => {
+    const probePair = await pairAndClaim('探活测试电脑', '探活测试手机');
+    const silent = track(await openAgent(probePair.agentToken, { autoPong: false }));
+    await silent.waitFor((m) => m.type === 'hello', 5000, 'probe agent hello');
+    // 让 agent 的 last_seen 超过 WS_PROBE_STALE_SECONDS(测试用 1s)。
+    await sleep(1400);
+
+    const phone = track(await openPhone(probePair.deviceToken));
+    const hello = await phone.waitFor((m) => m.type === 'hello', 5000, 'probe phone hello');
+    assert.equal(hello.online, true);
+    const probe = await silent.waitFor((m) => m.type === 'probe', 3000, 'agent probe');
+    assert.equal(typeof probe.ts, 'number');
+
+    const offline = await phone.waitFor(
+      (m) => m.type === 'presence' && m.online === false,
+      4000,
+      'probe offline presence',
+    );
+    assert.equal(offline.online, false);
+    const me = expectOk(await call('GET', '/me', { token: probePair.deviceToken }));
+    assert.equal(me.agent.online, false);
+
+    // Agent 存活证据（pong）→ 恢复 online。
+    silent.send({ type: 'pong', ts: 1 });
+    const online = await phone.waitFor(
+      (m) => m.type === 'presence' && m.online === true,
+      3000,
+      'probe recovered presence',
+    );
+    assert.equal(online.online, true);
+
+    silent.close();
+    await phone.waitFor(
+      (m) => m.type === 'presence' && m.online === false,
+      3000,
+      'probe agent close offline',
+    );
+    phone.close();
+  });
+
+  await step('v0.3 成本：无手机不设 alarm/不 ping/不写 last_seen；手机连上才 alarm、断开即清', async () => {
+    const costPair = await pairAndClaim('成本测试电脑', '成本测试手机');
+    const agentI = track(await openAgent(costPair.agentToken));
+    await agentI.waitFor((m) => m.type === 'hello', 5000, 'cost agent hello');
+
+    const before = await readRoomState(costPair.agentId);
+    const lastSeenBefore = before.meta.last_seen_at;
+    assert.equal(readAlarmRows(costPair.agentId).length, 0, '无手机时不应有 alarm');
+
+    // 发的这条 pong 只刷新内存 last_seen；2.2s 内不应该有服务端主动 ping。
+    agentI.send({ type: 'pong', ts: 1 });
+    await agentI.expectNone((m) => m.type === 'ping', 2200);
+    const after = await readRoomState(costPair.agentId);
+    assert.equal(
+      after.meta.last_seen_at,
+      lastSeenBefore,
+      '无手机时不允许每条消息写 room_meta.last_seen_at',
+    );
+    assert.equal(readAlarmRows(costPair.agentId).length, 0, '无手机时 alarm 必须为空');
+
+    // 手机连上 → 出现 alarm，且 agent 收到服务端 ping。
+    const phone = track(await openPhone(costPair.deviceToken));
+    await phone.waitFor((m) => m.type === 'hello', 5000, 'cost phone hello');
+    await waitForAlarmState(costPair.agentId, true, 5000);
+    await agentI.waitFor((m) => m.type === 'ping', 3000, 'alarm ping to agent');
+    // 测试环境显式 WS_ALARM_SECONDS=1，alarm 应约 1s 后触发（同时验证配置覆盖生效）。
+    const delayWithOverride = readAlarmDelaySeconds(costPair.agentId);
+    assert.ok(
+      delayWithOverride !== null && delayWithOverride > 0.2 && delayWithOverride < 3,
+      `WS_ALARM_SECONDS=1 时 alarm 延时应约 1s，实际 ${delayWithOverride}`,
+    );
+
+    // 手机断开 → alarm 清除。
+    phone.close();
+    await waitForAlarmState(costPair.agentId, false, 6000);
+    agentI.close();
+  });
+
+  await step('v0.3 ack persisted：false 保留 undelivered 并转发 false；缺省 true 删除并转发 true', async () => {
+    const ackPair = await pairAndClaim('ack 测试电脑', 'ack 测试手机');
+    const agentJ = track(await openAgent(ackPair.agentToken));
+    await agentJ.waitFor((m) => m.type === 'hello', 5000, 'ack agent hello');
+
+    const ackTaskId = expectOk(
+      await call('POST', '/tasks', { token: ackPair.deviceToken, body: { url: taskUrl } }),
+      201,
+    ).task.id;
+    await agentJ.waitFor(
+      (m) => m.type === 'task' && m.task?.id === ackTaskId,
+      5000,
+      'ack task push',
+    );
+    agentJ.send({ type: 'task_update', task_id: ackTaskId, status: 'running', progress: 10 });
+    agentJ.send({
+      type: 'task_note',
+      task_id: ackTaskId,
+      markdown: `# ack persisted\n\nACK-${unique}`,
+      title: 'ack 测试',
+    });
+    await sleep(500);
+    const pending = await readRoomState(ackPair.agentId);
+    assert.ok(pending.undelivered.includes(ackTaskId), '无手机时 task_note 应记 undelivered');
+
+    const phone = track(await openPhone(ackPair.deviceToken));
+    await phone.waitFor((m) => m.type === 'hello', 5000, 'ack phone hello');
+
+    phone.send({ type: 'ack_note', task_id: ackTaskId, persisted: false });
+    const ackFalse = await agentJ.waitFor(
+      (m) => m.type === 'ack_note' && m.task_id === ackTaskId,
+      5000,
+      'ack persisted false',
+    );
+    assert.equal(ackFalse.persisted, false);
+    await sleep(250);
+    const stillPending = await readRoomState(ackPair.agentId);
+    assert.ok(
+      stillPending.undelivered.includes(ackTaskId),
+      'persisted=false 不允许删除 undelivered_notes',
+    );
+
+    phone.send({ type: 'ack_note', task_id: ackTaskId });
+    const ackTrue = await agentJ.waitFor(
+      (m) => m.type === 'ack_note' && m.task_id === ackTaskId && m.persisted === true,
+      5000,
+      'ack default persisted true',
+    );
+    assert.equal(ackTrue.persisted, true);
+    let cleared = false;
+    const start = Date.now();
+    while (Date.now() - start < 4000) {
+      const room = await readRoomState(ackPair.agentId);
+      if (!room.undelivered.includes(ackTaskId)) {
+        cleared = true;
+        break;
+      }
+      await sleep(150);
+    }
+    assert.ok(cleared, 'persisted=true 应删除 undelivered_notes');
+
+    agentJ.close();
+    phone.close();
+  });
+
   // ---------------------------------------------------------- A/B 多租户隔离
 
   let agentBToken;
@@ -1034,6 +1334,116 @@ async function main() {
   await step('WS 相关非升级请求返回 426', async () => {
     const res = await call('GET', '/agent/ws', { token: agentToken });
     expectError(res, 426, 'upgrade_required');
+  });
+
+  await step('v0.3 默认配置：未设置 WS_* 时 alarm 默认约 30s（intVar 缺省值回归）', async () => {
+    const defaultStateDir = path.join(relayDir, '.wrangler', 'default-state');
+    const defaultPort = port + 1;
+    const defaultBase = `http://127.0.0.1:${defaultPort}/api/v1`;
+    const defaultWsBase = `ws://127.0.0.1:${defaultPort}/api/v1`;
+    await rm(defaultStateDir, { recursive: true, force: true });
+    await mkdir(defaultStateDir, { recursive: true });
+    await runWrangler([
+      'd1',
+      'migrations',
+      'apply',
+      'linknote-db',
+      '--local',
+      '--persist-to',
+      defaultStateDir,
+    ]);
+    // 注意：不传 WS_ALARM_SECONDS / WS_AGENT_STALE_SECONDS 等变量，走代码内默认值。
+    const defaultChild = spawn(
+      process.execPath,
+      [
+        wranglerBin,
+        'dev',
+        '--port',
+        String(defaultPort),
+        '--inspector-port',
+        String(defaultPort + 500),
+        '--local',
+        '--persist-to',
+        defaultStateDir,
+        '--show-interactive-dev-session=false',
+        '--var',
+        'INTERNAL_SECRET:test-internal-secret',
+        '--var',
+        'TICKET_SECRET:test-ticket-secret',
+      ],
+      {
+        cwd: relayDir,
+        env: { ...process.env, CI: '1', WRANGLER_SEND_METRICS: 'false', NO_COLOR: '1' },
+        stdio: ['ignore', 'pipe', 'pipe'],
+      },
+    );
+    let defaultLogs = '';
+    defaultChild.stdout.on('data', (chunk) => (defaultLogs += chunk));
+    defaultChild.stderr.on('data', (chunk) => (defaultLogs += chunk));
+    try {
+      await waitForHealthAt(defaultBase, 120_000).catch((error) => {
+        throw new Error(`${error.message}\n${defaultLogs.slice(-3000)}`);
+      });
+      const pairing = expectOk(
+        await call(
+          'POST',
+          '/pairings',
+          { body: { agent_name: '默认配置电脑', platform: 'windows' } },
+          defaultBase,
+        ),
+        201,
+      );
+      const claim = expectOk(
+        await call(
+          'POST',
+          '/pairings/claim',
+          { body: { code: pairing.code, device_name: '默认配置手机', platform: 'android' } },
+          defaultBase,
+        ),
+      );
+      const agent = await connectRaw(`${defaultWsBase}/agent/ws`, {
+        headers: { authorization: `Bearer ${pairing.agent_token}` },
+      });
+      await agent.waitFor((m) => m.type === 'hello', 5000, 'default-config agent hello');
+      const ticket = expectOk(
+        await call('POST', '/realtime/ticket', { token: claim.device_token }, defaultBase),
+      );
+      const phone = await connectRaw(
+        `${defaultWsBase}/ws?ticket=${encodeURIComponent(ticket.ticket)}`,
+      );
+      const hello = await phone.waitFor((m) => m.type === 'hello', 5000, 'default-config phone hello');
+      assert.equal(typeof hello.online, 'boolean');
+
+      await sleep(2500);
+      const pings = phone.all.filter((m) => m.type === 'ping').length;
+      assert.equal(pings, 0, '默认配置下 30s alarm 不应在 2.5s 内主动 ping');
+
+      const delay = readAlarmDelaySeconds(
+        pairing.agent_id,
+        path.join(defaultStateDir, 'v3', 'do', 'linknote-relay-AgentRoom'),
+      );
+      assert.ok(
+        delay !== null && delay > 20 && delay < 45,
+        `未设置 WS_ALARM_SECONDS 时 alarm 应约 30s（实际 ${delay}s）`,
+      );
+
+      phone.close();
+      agent.close();
+    } finally {
+      try {
+        if (process.platform === 'win32') {
+          execFileSync('taskkill', ['/PID', String(defaultChild.pid), '/T', '/F'], {
+            stdio: 'ignore',
+          });
+        } else {
+          defaultChild.kill('SIGTERM');
+        }
+      } catch {
+        // ignore
+      }
+      await sleep(500);
+      await rm(defaultStateDir, { recursive: true, force: true }).catch(() => {});
+    }
   });
 
   // 收尾：关闭所有 socket（不影响断言）

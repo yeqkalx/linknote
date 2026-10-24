@@ -106,11 +106,12 @@ class AgentConfig:
     pair_poll_interval_seconds: float = 2.0  # pair 命令轮询配对状态间隔
     max_status_errors: int = 20  # 连续查询 BiliNote 状态失败多少次判定后端失联
 
-    # ---- WebSocket 实时推送（docs/realtime-protocol.md v1）----
+    # ---- WebSocket 实时推送（docs/realtime-protocol.md / v0.3-protocol-delta.md）----
     use_websocket: bool = True  # run 默认走 WS 推送；false 或 CLI --poll 时退回 REST 轮询
     ws_url: str = ""  # 留空由 relay_base_url 推导；本地联调可显式 ws://127.0.0.1:8798/api/v1/agent/ws
-    ws_ping_interval_seconds: float = 25.0  # 应用层 ping 间隔（协议 25s）
-    ws_dead_timeout_seconds: float = 60.0  # 多久没有收到任何消息/心跳判定断线（30–60s）
+    ws_ping_interval_seconds: float = 25.0  # v0.3：WebSocket 协议层 ping 间隔（不再发应用层 JSON ping）
+    ws_ping_timeout_seconds: float = 20.0  # v0.3：协议层 ping 未回 pong 的超时（由 websockets 判定断线）
+    ws_dead_timeout_seconds: float = 60.0  # 已废弃：v0.3 起不再按「无消息」判死连接，保留字段兼容旧配置
     ws_hello_timeout_seconds: float = 10.0  # 连接后等待 hello 的超时
     ws_reconnect_delays: list[float] = field(
         default_factory=lambda: [1.0, 2.0, 4.0, 8.0, 15.0, 30.0]
@@ -119,6 +120,13 @@ class AgentConfig:
     rest_fallback: bool = True  # WS 断开期间用 REST /agent/tasks/next 兜底
     rest_heartbeat_enabled: bool = True  # WS 模式是否同时发 REST 心跳（兼容旧 REST 在线状态）
     note_retention_days: float = 7.0  # 已生成笔记在 outbox 的保留天数（未 ack 也不无限涨）
+
+    # ---- v0.3 readiness（agent_ready）与 ack persisted 重试 ----
+    readiness_health_cache_seconds: float = 30.0  # BiliNote 引擎健康探测缓存（避免每次 ping 都探测）
+    readiness_health_timeout_seconds: float = 2.0  # BiliNote /api/health 探测超时
+    note_ack_retry_delays_seconds: list[float] = field(
+        default_factory=lambda: [30.0, 120.0, 600.0]
+    )  # ack persisted=false 时最多重发 task_note 的 3 次延迟（30s / 2min / 10min）
 
     # ---- 目录（留空 = ~/.linknote/ 下的默认子目录）----
     outbox_dir: str = ""

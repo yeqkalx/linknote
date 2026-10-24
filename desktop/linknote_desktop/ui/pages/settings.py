@@ -6,7 +6,7 @@ from typing import Any
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QComboBox,
-    QDialog,
+    QFileDialog,
     QHBoxLayout,
     QLabel,
     QLineEdit,
@@ -54,10 +54,103 @@ class SettingsPage(BasePage):
     # ------------------------------------------------------------ 构建
     def build(self) -> None:
         self._build_connection_card()
+        self._build_advanced_card()
+        self._build_archive_card()
         self._build_startup_card()
         self._build_generation_card()
         self._build_paths_card()
         self._build_about_card()
+
+    def _build_advanced_card(self) -> None:
+        card = Card()
+        card.add_header(
+            "高级功能",
+            "日常使用一般不需要进来；需要细调时再打开，页面右上角可随时返回设置。",
+        )
+        for key, title, description in (
+            ("ai", "AI 模型", "供应商、API Key、手机默认模型（保存后自动拉取可用模型）"),
+            ("transcription", "语音转写", "Whisper 模型下载与转写引擎选择"),
+            ("engine", "引擎与诊断", "BiliNote 引擎路径、ffmpeg、代理与系统健康"),
+            ("logs", "运行日志", "Agent 与引擎日志，排查问题时查看"),
+        ):
+            card.body.addWidget(self._entry_row(title, description, key))
+        self.add(card)
+
+    def _entry_row(self, title: str, description: str, page_key: str) -> QWidget:
+        container = QWidget()
+        layout = QHBoxLayout(container)
+        layout.setContentsMargins(0, 3, 0, 3)
+        layout.setSpacing(12)
+        column = QVBoxLayout()
+        column.setContentsMargins(0, 0, 0, 0)
+        column.setSpacing(1)
+        title_label = QLabel(title)
+        title_label.setStyleSheet(
+            f"QLabel {{ color: {style.INK}; font-size: 12.5px; font-weight: bold; }}"
+        )
+        column.addWidget(title_label)
+        description_label = QLabel(description)
+        description_label.setStyleSheet(
+            f"QLabel {{ color: {style.MUTED}; font-size: 11.5px; }}"
+        )
+        description_label.setWordWrap(True)
+        column.addWidget(description_label)
+        layout.addLayout(column, 1)
+        open_button = button("打开", "", lambda key=page_key: self.goto(key))
+        open_button.setFixedHeight(30)
+        open_button.setMinimumWidth(64)
+        layout.addWidget(open_button, 0, Qt.AlignmentFlag.AlignVCenter)
+        return container
+
+    def _build_archive_card(self) -> None:
+        card = Card()
+        card.add_header(
+            "笔记自动归档",
+            "把本机 notes/ 里的 Markdown 复制到 Obsidian 仓库或任意本地目录，"
+            "并补上 title / source_url / platform / created_at / model / app_version frontmatter。"
+            "已存在的同名文件不会重复导出。",
+        )
+        config = self.controller.config
+        self._archive_switch = ToggleSwitch()
+        self._archive_switch.setChecked(bool(getattr(config, "archive_enabled", False)))
+        self._archive_switch.toggled.connect(self._toggle_archive)
+        card.body.addWidget(
+            switch_row(
+                "自动归档新笔记",
+                "手机任务完成后自动导出（需要先选择可用的归档目录）。",
+                self._archive_switch,
+            )
+        )
+
+        dir_row = QHBoxLayout()
+        dir_row.setContentsMargins(0, 0, 0, 0)
+        dir_row.setSpacing(8)
+        self._archive_dir_edit = QLineEdit()
+        self._archive_dir_edit.setText(str(getattr(config, "archive_dir", "") or ""))
+        self._archive_dir_edit.setPlaceholderText("选择 Obsidian 仓库或任意文件夹")
+        self._archive_dir_edit.editingFinished.connect(self._save_archive_dir)
+        dir_row.addWidget(self._archive_dir_edit, 1)
+        self._archive_browse_button = button("选择目录", "", self._choose_archive_dir)
+        dir_row.addWidget(self._archive_browse_button, 0)
+        self._archive_open_button = button("打开目录", "", self._open_archive_dir)
+        dir_row.addWidget(self._archive_open_button, 0)
+        card.body.addWidget(_field("归档目录", _wrap_row(dir_row)))
+
+        action_row = QHBoxLayout()
+        action_row.setContentsMargins(0, 2, 0, 0)
+        action_row.setSpacing(8)
+        self._archive_export_button = button("立即导出", "Primary", self._export_now)
+        action_row.addWidget(self._archive_export_button, 0)
+        action_row.addStretch(1)
+        card.body.addLayout(action_row)
+        self._archive_msg = InlineMessage()
+        card.body.addWidget(self._archive_msg)
+        card.body.addWidget(
+            hint_label(
+                "归档只读取本机 notes/ 目录，不会上传到 Relay；默认文件名沿用 notes 里的任务文件名。"
+            )
+        )
+        self.add(card)
 
     def _build_connection_card(self) -> None:
         card = Card()
@@ -201,7 +294,7 @@ class SettingsPage(BasePage):
         ):
             path = str(self._paths.get(key) or "")
             card.body.addWidget(self._path_row(label, description, path))
-        card.body.addWidget(hint_label("高级的引擎路径与 ffmpeg 目录在「引擎与 ffmpeg」页维护。"))
+        card.body.addWidget(hint_label("高级的引擎路径与 ffmpeg 目录在「引擎与诊断」页维护。"))
         self.add(card)
 
     def _path_row(self, title: str, description: str, path: str) -> QWidget:
@@ -257,6 +350,110 @@ class SettingsPage(BasePage):
         self._autostart_switch.blockSignals(previously)
         self._autostart_switch._offset = 1.0 if enabled else 0.0
         self._autostart_switch.update()
+        self._refresh_archive_status()
+
+    # ------------------------------------------------------------ 归档
+    def _toggle_archive(self, checked: bool) -> None:
+        self.controller.config.archive_enabled = bool(checked)
+        self.controller.save_config()
+        if checked and not str(self.controller.config.archive_dir or "").strip():
+            self._archive_msg.set_message("已开启自动归档，但还没有选择归档目录。", "warning")
+        else:
+            self._archive_msg.set_message(
+                "已开启自动归档。" if checked else "已关闭自动归档。",
+                "success" if checked else "info",
+            )
+        self._refresh_archive_status()
+
+    def _save_archive_dir(self) -> None:
+        directory = self._archive_dir_edit.text().strip()
+        if directory == str(self.controller.config.archive_dir or "").strip():
+            return
+        self.controller.config.archive_dir = directory
+        self.controller.save_config()
+        self._refresh_archive_status()
+
+    def _choose_archive_dir(self) -> None:
+        start_dir = str(self.controller.config.archive_dir or "")
+        directory = QFileDialog.getExistingDirectory(
+            self, "选择笔记归档目录（Obsidian 仓库或任意文件夹）", start_dir
+        )
+        if not directory:
+            return
+        self.controller.config.archive_dir = directory
+        self.controller.save_config()
+        self._archive_dir_edit.setText(directory)
+        self._refresh_archive_status()
+        self.toast("归档目录已保存", "success")
+
+    def _open_archive_dir(self) -> None:
+        directory = str(self.controller.config.archive_dir or "").strip()
+        if not directory or not utils.open_path(directory):
+            self._archive_msg.set_message("归档目录不存在或无法打开，请重新选择。", "warning")
+            return
+
+    def _refresh_archive_status(self) -> None:
+        current_dir = str(self.controller.config.archive_dir or "")
+        if not self._archive_dir_edit.hasFocus() and self._archive_dir_edit.text() != current_dir:
+            self._archive_dir_edit.setText(current_dir)
+        try:
+            status = self.controller.archive_status()
+        except Exception as exc:  # noqa: BLE001
+            self._archive_msg.set_message(f"读取归档状态失败：{exc}", "error")
+            return
+        error = str(status.get("error") or "")
+        if error:
+            self._archive_msg.set_message(f"归档目录不可用：{error}", "warning")
+        elif status.get("enabled"):
+            self._archive_msg.set_message(
+                f"自动归档已开启，目录：{status.get('dir')}", "success"
+            )
+        else:
+            self._archive_msg.set_message(
+                "自动归档未开启；仍可用「立即导出」手动导出一次。", "info"
+            )
+
+    def _export_now(self) -> None:
+        if not str(self.controller.config.archive_dir or "").strip():
+            self._archive_msg.set_message("请先选择归档目录。", "warning")
+            return
+        self._archive_export_button.setEnabled(False)
+        self._archive_msg.set_message("正在导出本地笔记…", "info")
+
+        def on_result(result) -> None:
+            self._archive_export_button.setEnabled(True)
+            data = result if isinstance(result, dict) else {}
+            error = str(data.get("error") or "")
+            if error:
+                self._archive_msg.set_message(f"导出失败：{error}", "error")
+                return
+            exported = int(data.get("exported") or 0)
+            skipped = int(data.get("skipped") or 0)
+            failed = int(data.get("failed") or 0)
+            errors = data.get("errors") or []
+            if not exported and not skipped and not failed:
+                self._archive_msg.set_message(
+                    "notes 目录里还没有可归档的笔记（正常情况下笔记会回传手机）。",
+                    "info",
+                )
+                return
+            level = "warning" if failed else "success"
+            detail = ""
+            if failed:
+                detail = "；失败：" + "；".join(str(item) for item in errors[:3])
+            self._archive_msg.set_message(
+                f"已导出 {exported} 篇，跳过 {skipped} 篇（已存在）"
+                + (f"，失败 {failed} 篇{detail}" if failed else "。"),
+                level,
+            )
+            if exported:
+                self.toast(f"已归档 {exported} 篇笔记", "success")
+
+        def on_error(message: str) -> None:
+            self._archive_export_button.setEnabled(True)
+            self._archive_msg.set_message(f"导出失败：{message}", "error")
+
+        self.run_bg(self.controller.archive_notes, on_result=on_result, on_error=on_error)
 
     # ------------------------------------------------------------ 动作
     def _save_connection(self) -> None:
@@ -287,8 +484,8 @@ class SettingsPage(BasePage):
         if answer != QMessageBox.StandardButton.Yes:
             return
         self.controller.cancel_pairing()
-        self.toast("请到状态页重新生成配对码", "info")
-        self.goto("status")
+        self.toast("请到「设备」页重新生成配对码", "info")
+        self.goto("devices")
 
     def _toggle_autostart(self, checked: bool) -> None:
         try:
@@ -351,6 +548,12 @@ def _field(title: str, field: QWidget, hint: str = "") -> QWidget:
     layout.addWidget(field)
     if hint:
         layout.addWidget(hint_label(hint))
+    return container
+
+
+def _wrap_row(layout: QHBoxLayout) -> QWidget:
+    container = QWidget()
+    container.setLayout(layout)
     return container
 
 

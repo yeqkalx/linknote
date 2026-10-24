@@ -65,7 +65,7 @@
 - DO 按 `agent_id` 分实例，SQLite 存储在线状态/心跳/待处理事件；使用 WebSocket Hibernation（`acceptWebSocket` + `webSocketMessage/Close/Error` + `setAlarm`），空闲连接不计时长、不占常驻内存。
 - Agent WS 用 Header Bearer 鉴权；手机 WS 用 `POST /realtime/ticket` 签发的 60s HMAC ticket；所有事件只发给同 agent_id 的 socket。
 - 同时用 Workers Static Assets 托管 PWA（`relay/public/`），同源免 CORS 麻烦。
-- 免费套餐：推送只在有事件时产生消息；Agent/手机空闲心跳 25s；心跳超时 + 30s alarm 兜底离线。D1 只存元数据，读写量随任务数而非轮询次数增长。
+- 成本边界：免费计划 DO 为 10 万请求/天 + 10 万行写/天，**超限硬失败**；alarm 按请求计费、`setAlarm()` 按行写计费，Hibernation 只免“时长”。v0.3.0 起仅在有手机连接时启用 30s alarm/心跳，无手机时不唤醒、不写 SQL；Agent 心跳改用 WebSocket 协议 ping。估算与监控见 [成本模型](cost-model.md)。
 
 ### 3.2 PC Agent（Python 3.11+）
 
@@ -168,7 +168,7 @@ bilinote-to-android/
 
 1. **电脑必须常开 + 装 Agent**：产品最大漏斗；先服务 BiliNote 现有用户/团队，不做大众。
 2. **国内访问 Cloudflare**：`*.workers.dev` 不可靠；用自定义域名 `relay.xykong.xyz`，4G 实测。不行则同一套 API 迁香港/新加坡 VPS（README 记录迁移点）。
-3. **免费额度**：D1 元数据读写随任务增长；DO 空闲连接 Hibernation 不计时长，但每个 DO 有 SQLite/请求成本。见 §3.1。
+3. **成本边界**：免费计划 DO 10 万请求/天 + 10 万行写/天，超限**硬失败**；v0.2.x 约 32 台常在线触顶。v0.3.0 改为手机在线才心跳 + 协议 ping，估算 1,000 台可留在免费额度内；生产建议 Workers Paid $5/月兜底。见 [成本模型](cost-model.md)。
 4. **无系统推送**：App 不在前台时没有 OS 级提醒；项目内 WS 推送已实现，后续可接邮件/服务号/厂商推送。
 5. **合规**：B 站/YouTube ToS、版权、生成式 AI 备案/标识、应用商店。MVP 只做自用/小范围测试，不公开分发 APK。
 6. **品牌**：不使用 BiliNote 官方品牌；代码保留上游 MIT 归属说明。

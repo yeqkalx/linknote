@@ -55,7 +55,7 @@ if (-not $Version) {
         $m = Select-String -Path $pyproject -Pattern '^version\s*=\s*"([0-9]+\.[0-9]+\.[0-9]+)"' | Select-Object -First 1
         if ($m) { $Version = $m.Matches[0].Groups[1].Value }
     }
-    if (-not $Version) { $Version = "0.2.1" }
+    if (-not $Version) { $Version = "0.3.0" }
 }
 $msi = Join-Path $outDir "LinkNote-Setup-$Version.msi"
 
@@ -71,6 +71,9 @@ if (-not $SkipPayload) {
     }
     $engineNotice = Join-Path $repo "desktop\installer\THIRD-PARTY-NOTICES.txt"
     if (Test-Path $engineNotice) { Copy-Item $engineNotice (Join-Path $payload "engine\THIRD-PARTY-NOTICES.txt") -Force }
+    # GPL-3.0 / LGPL-3.0 full texts -> <install dir>\licenses\
+    $licensesDir = Join-Path $repo "desktop\installer\licenses"
+    if (Test-Path $licensesDir) { Copy-Item $licensesDir $payload -Recurse -Force }
     # make sure the harvested tree never contains local runtime state
     foreach ($bad in @("bili_note.db", "Uninstall BiliNote.lnk", "app.exe")) {
         $hit = Get-ChildItem $payload -Recurse -File -Filter $bad -ErrorAction SilentlyContinue
@@ -157,5 +160,7 @@ Write-Host "MSI  : $msi"
 Write-Host "size : $($item.Length) bytes"
 Write-Host "sha256: $hash"
 Write-Host "per-user / launch-action / autostart: all static checks PASS"
+
+
 
 

@@ -1,7 +1,8 @@
 # 部署 Relay（Cloudflare Workers + D1）
 
 > 目标：把 `relay/` 部署到 `https://relay.xykong.xyz`，同时把 PWA 一起托管（一个域名）。
-> 免费额度：Workers 10 万请求/天 + D1 500 万行读/天，个人使用完全够。
+> 免费额度：Workers/DO 10 万请求/天 + DO 10 万行写/天 + D1 500 万行读/天；**超限是硬失败，不是账单**。
+> 个人 1–3 台设备够用；约 30 台常在线会接近上限，生产/内测建议开 Workers Paid **$5/月**。算法见 [成本模型](cost-model.md)。
 
 ## 0. 前置
 
@@ -114,14 +115,21 @@ https://relay.xykong.xyz/
 
 | 项 | 免费额度 | 超出后 |
 |---|---|---|
-| Workers 请求 | 100k/天 | $5/月含 10M 请求 |
+| Workers 请求 | 100k/天 | Paid $5/月含 10M 请求 |
 | Workers CPU | 10ms/次 | Paid 30M CPU-ms/月 |
+| Durable Objects 请求（含 alarm） | 100k/天 | Paid $5/月含 1M，之后 $0.15/M |
+| Durable Objects 行写（含 setAlarm） | 100k/天 | Paid 含 50M/月，之后 $1.00/M |
+| Durable Objects 时长 | 13k GB-s/天 | Paid $12.50/M GB-s |
 | D1 行读 | 5M/天 | Paid 25B/月 |
 | D1 行写 | 100k/天 | Paid 50M/月 |
 | D1 存储 | 5GB（单库 500MB） | Paid 5GB 起 |
 | 自定义域名/TLS | 免费 | — |
 
-实时架构（v0.2.0+）：Agent/手机通过 Durable Object WebSocket Hibernation 长连接推送，空闲连接不计时长；D1 只存任务元数据。成本随事件量而非轮询次数增长。`npm test` 会启动本地 wrangler 验证 DO/WS；生产需要设置 `INTERNAL_SECRET`、`TICKET_SECRET` 并 apply D1 migration 0002。
+**免费额度是硬失败**：任意一项超限，当天该类型操作直接报错。v0.2.x 的“每台常在线 30s alarm + 25s 应用层 ping”约 **32 台常在线**就触顶，30 台时请求/行写已到 92%/86%。v0.3.0 改为只在手机在线时才 alarm/心跳，Agent 使用 WebSocket 协议 ping。详细算法与监控项见 [成本模型](cost-model.md)。
+
+实时架构（v0.2.0+）：Agent/手机通过 Durable Object WebSocket Hibernation 长连接推送，空闲连接不计时长；D1 只存任务元数据；正文不落 D1/DO。生产需要设置 `INTERNAL_SECRET`、`TICKET_SECRET` 并 apply D1 migration 0002。
+
+v0.3.0 心跳参数可通过 `wrangler.toml` 的 vars 覆盖（默认值已满足协议）：`WS_ALARM_SECONDS=30`、`WS_AGENT_STALE_SECONDS=60`、`WS_PROBE_STALE_SECONDS=15`、`WS_PROBE_TIMEOUT_SECONDS=3`。只有存在手机连接时才会设置 alarm；无手机时 Relay 不主动 ping、不写心跳 SQL。
 
 ## 11. 中国大陆访问备选
 

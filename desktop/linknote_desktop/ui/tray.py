@@ -120,7 +120,7 @@ class TrayIcon(QSystemTrayIcon):
         self._open_window()
         show_page = getattr(self.window, "show_page", None)
         if callable(show_page):
-            show_page("status")
+            show_page("devices")
         try:
             self.controller.create_pairing_async()
         except Exception as exc:  # noqa: BLE001
@@ -137,7 +137,7 @@ class TrayIcon(QSystemTrayIcon):
             self._open_window()
             show_page = getattr(self.window, "show_page", None)
             if callable(show_page):
-                show_page("status")
+                show_page("devices")
             return
         self.controller.start_agent()
         self.show_notification("已恢复手机任务", "Agent 正在运行，手机会继续发送任务。", "success")

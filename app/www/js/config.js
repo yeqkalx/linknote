@@ -35,11 +35,14 @@ export const CODE_LENGTH = 8;
 export const CODE_ALPHABET = '23456789ABCDEFGHJKLMNPQRSTUVWXYZ';
 export const DEFAULT_DEVICE_NAME = '我的手机';
 
-/** App 侧限制（超出后不再缓存，避免撑爆 localStorage） */
+/** App 侧限制（超出后不再缓存，避免撑爆本地存储） */
 export const MAX_SHARE_TEXT = 4000;
 export const MAX_CACHED_TASKS = 40;
-export const MAX_CACHED_NOTES = 8;
-export const NOTE_CACHE_BUDGET = 2500000;
+/** v0.3：最多 30 篇笔记 / 6MB 字节预算（固定/收藏的笔记不参与淘汰） */
+export const MAX_CACHED_NOTES = 30;
+export const NOTE_CACHE_BUDGET_BYTES = 6 * 1024 * 1024;
+/** localStorage 兜底时的保守预算（localStorage 约 5MB 且与其它状态共用） */
+export const NOTE_LEGACY_BUDGET_BYTES = 2.5 * 1024 * 1024;
 
 /** 契约 §8：任务阶段（顺序即时间线顺序） */
 export const STAGES = [
@@ -66,6 +69,33 @@ export const STAGE_LABELS = {
 };
 
 export const STAGE_HINTS = Object.fromEntries(STAGES.map((stage) => [stage.key, stage.hint]));
+
+/** v0.3 任务页三态摘要（等待电脑 → 获取内容 → 生成笔记） */
+export const TASK_PHASES = [
+  { key: 'waiting', label: '等待电脑', hint: '电脑领取任务后开始' },
+  { key: 'fetching', label: '获取内容', hint: '下载视频并转写字幕' },
+  { key: 'generating', label: '生成笔记', hint: 'AI 总结与排版' },
+];
+
+export const STAGE_PHASE = {
+  pending: 'waiting',
+  parsing: 'fetching',
+  downloading: 'fetching',
+  transcribing: 'fetching',
+  summarizing: 'generating',
+  formatting: 'generating',
+  saving: 'generating',
+  done: 'generating',
+  failed: 'generating',
+};
+
+/** readiness（电脑在线 ≠ 可生成）issues 的兜底中文文案 */
+export const READINESS_ISSUE_LABELS = {
+  model_not_configured: '未配置 AI 模型',
+  engine_unreachable: 'BiliNote 引擎不可用',
+  ffmpeg_missing: '缺少 ffmpeg',
+  agent_paused: 'Agent 已暂停',
+};
 
 /** 契约 §8：任务状态 */
 export const STATUS_META = {

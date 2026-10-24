@@ -1055,3 +1055,86 @@ class StatTile(QFrame):
             self._hint.setText(hint)
             self._hint.setVisible(bool(hint))
 
+
+class ReadyBanner(QFrame):
+    """主窗口顶部「就绪 / 需要处理」横幅：整条可点击，跳到对应页面。"""
+
+    clicked = Signal()
+
+    _THEMES = {
+        "ready": (style.OK_BG, style.OK_BORDER, style.OK),
+        "warn": (style.WARN_BG, style.WARN_BORDER, "#8A5E00"),
+        "error": (style.DANGER_BG, style.DANGER_BORDER, style.DANGER),
+    }
+
+    def __init__(self, parent: Optional[QWidget] = None):
+        super().__init__(parent)
+        self.setObjectName("ReadyBanner")
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.target_key = ""
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(16, 10, 16, 10)
+        layout.setSpacing(10)
+        self._dot = StatusDot(style.OK, 9)
+        layout.addWidget(self._dot, 0, Qt.AlignmentFlag.AlignVCenter)
+        column = QVBoxLayout()
+        column.setContentsMargins(0, 0, 0, 0)
+        column.setSpacing(1)
+        self._title = QLabel("正在检查本地状态…")
+        self._title.setWordWrap(True)
+        column.addWidget(self._title)
+        self._detail = QLabel("")
+        self._detail.setWordWrap(True)
+        self._detail.setVisible(False)
+        column.addWidget(self._detail)
+        layout.addLayout(column, 1)
+        self._action = QLabel("")
+        self._action.setVisible(False)
+        layout.addWidget(self._action, 0, Qt.AlignmentFlag.AlignVCenter)
+        self.set_state("ready", "正在检查本地状态…", "")
+
+    def set_state(
+        self,
+        level: str,
+        title: str,
+        detail: str = "",
+        action_text: str = "",
+        target_key: str = "",
+    ) -> None:
+        background, border, foreground = self._THEMES.get(level, self._THEMES["ready"])
+        self.setStyleSheet(
+            "QFrame#ReadyBanner {"
+            f"background-color: {background}; border: 1px solid {border}; border-radius: 10px;"
+            "}"
+            "QFrame#ReadyBanner QLabel { background: transparent; border: none; }"
+        )
+        self._dot.set_state(foreground, busy=False)
+        self._title.setText(str(title or ""))
+        self._title.setStyleSheet(
+            f"QLabel {{ color: {foreground}; font-size: 12.5px; font-weight: bold; }}"
+        )
+        self._detail.setText(str(detail or ""))
+        self._detail.setStyleSheet(
+            f"QLabel {{ color: {style.INK_SOFT}; font-size: 11.5px; }}"
+        )
+        self._detail.setVisible(bool(detail))
+        self._action.setText(str(action_text or ""))
+        self._action.setStyleSheet(
+            f"QLabel {{ color: {foreground}; font-size: 12px; font-weight: bold; }}"
+        )
+        self._action.setVisible(bool(action_text))
+        self.target_key = str(target_key or "")
+
+    def mouseReleaseEvent(self, event) -> None:  # noqa: N802
+        if event.button() == Qt.MouseButton.LeftButton:
+            self.clicked.emit()
+        super().mouseReleaseEvent(event)
+
+    def keyPressEvent(self, event) -> None:  # noqa: N802
+        if event.key() in (Qt.Key.Key_Space, Qt.Key.Key_Return, Qt.Key.Key_Enter):
+            self.clicked.emit()
+            return
+        super().keyPressEvent(event)
+
+

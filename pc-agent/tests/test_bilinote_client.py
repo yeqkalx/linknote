@@ -155,3 +155,57 @@ async def test_unreachable_backend_raises():
     finally:
         await client.aclose()
     assert "无法连接 BiliNote 后端" in excinfo.value.message
+
+# ================================================================ v0.3 引擎健康探测（readiness）
+
+async def test_engine_health_prefers_health_endpoint(bilinote_client, fake_bilinote):
+    assert await bilinote_client.engine_health(timeout=2.0) is True
+    assert fake_bilinote.health_calls == 1
+
+
+async def test_engine_health_false_when_unhealthy(bilinote_client, fake_bilinote):
+    fake_bilinote.health_ok = False
+    assert await bilinote_client.engine_health(timeout=2.0) is False
+    assert fake_bilinote.health_calls == 1
+
+
+async def test_engine_health_falls_back_for_old_backend_without_health_route():
+    """老版本 BiliNote 没有 /api/health（404）→ 回退 /get_all_providers。"""
+    seen: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request.url.path)
+        if request.url.path == "/api/health":
+            return httpx.Response(404, json={"detail": "Not Found"})
+        if request.url.path == "/api/get_all_providers":
+            return httpx.Response(200, json={"code": 0, "msg": "success", "data": []})
+        return httpx.Response(404, json={"detail": "Not Found"})
+
+    client = BiliNoteClient(BILINOTE_BASE, transport=httpx.MockTransport(handler))
+    try:
+        assert await client.engine_health(timeout=2.0) is True
+    finally:
+        await client.aclose()
+    assert seen[:2] == ["/api/health", "/api/get_all_providers"]
+
+
+async def test_engine_health_false_on_http_500():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(500, json={"code": 500, "msg": "boom"})
+
+    client = BiliNoteClient(BILINOTE_BASE, transport=httpx.MockTransport(handler))
+    try:
+        assert await client.engine_health(timeout=2.0) is False
+    finally:
+        await client.aclose()
+
+
+async def test_engine_health_false_on_timeout():
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ReadTimeout("simulated timeout", request=request)
+
+    client = BiliNoteClient(BILINOTE_BASE, transport=httpx.MockTransport(handler))
+    try:
+        assert await client.engine_health(timeout=0.2) is False
+    finally:
+        await client.aclose()
