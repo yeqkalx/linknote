@@ -6,7 +6,7 @@
  * - 页面导航：网络优先；离线回退到缓存的 index.html（hash 路由只有一个入口）。
  * - API（/api/）：不拦截、不缓存，永远走网络；离线由页面的本地队列兜底。
  */
-const SW_VERSION = '0.1.0';
+const SW_VERSION = '0.2.0';
 const SHELL_CACHE = `linknote-shell-v${SW_VERSION}`;
 const SCOPE = self.registration.scope;
 const toUrl = (path) => new URL(path, SCOPE).href;
@@ -146,7 +146,7 @@ async function handleNavigate(request) {
 
   return new Response(
     '<!doctype html><html lang="zh-CN"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">' +
-      '<title>链记 · 离线</title><body style="margin:0;padding:32px;background:#f6efe4;color:#221d19;font-family:system-ui,sans-serif">' +
+      '<title>链记 · 离线</title><body style="margin:0;padding:32px;background:#f4f7fc;color:#0f1b30;font-family:system-ui,sans-serif">' +
       '<h1 style="font-size:20px">当前处于离线状态</h1><p style="line-height:1.7">本地还没有缓存页面。请连接网络后重新打开链记。</p></body></html>',
     { status: 200, headers: { 'Content-Type': 'text/html;charset=utf-8' } },
   );
@@ -179,3 +179,5 @@ async function handleAsset(request) {
     headers: { 'Content-Type': 'text/plain;charset=utf-8' },
   });
 }
+
+

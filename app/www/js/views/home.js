@@ -115,10 +115,10 @@ export async function homeView(container, ctx) {
     <section class="screen home-screen">
       <header class="appbar">
         <div class="brand">
-          <span class="brand-mark" aria-hidden="true">${icon('link', { size: 20 })}</span>
+          <span class="brand-mark" aria-hidden="true"><img src="./icons/icon-192.png" alt="" /></span>
           <span class="brand-text">
             <span class="brand-name">链记</span>
-            <span class="brand-sub">LinkNote</span>
+            <span class="brand-sub">linknote</span>
           </span>
         </div>
         <div class="appbar-actions">

@@ -1,4 +1,4 @@
-# 端到端验证报告（2026-10-24）
+﻿# 端到端验证报告（2026-10-24）
 
 > 目的：证明「手机/浏览器 → Relay → PC Agent → 本机 BiliNote → Markdown 回手机」真实链路可用，而不是只跑 mock。
 > 环境：Windows、本机 BiliNote 安装版 `C:\app\bilinote\BiliNoteBackend.exe`，LLM `deepseek / deepseek-v4-flash`，转写 fast-whisper small，本地 wrangler D1。
@@ -13,7 +13,7 @@
 | PWA 离线壳 + SW | ✅ | 断网重载仍显示配对页 |
 | 真实 YouTube 任务 | ✅ | 19 秒视频 12 秒生成，`Me at the zoo`，403 字 |
 | 真实 B 站任务 | ✅ | 3:32 视频约 57 秒生成，`【官方 MV】Never Gonna Give You Up - Rick Astley`，779 字 |
-| Android debug APK | ✅ 构建 / ⚠️ 未真机 | 4,552,937 字节，包名、label、SEND intent-filter、allowBackup=false、品牌图标已校验 |
+| Android debug APK | ✅ 构建 / ⚠️ 未真机 | 4,701,573 字节，包名、label、SEND intent-filter、allowBackup=false、品牌图标已校验 |
 
 ## 2. 真实链路细节
 
@@ -57,7 +57,7 @@
 9. PWA `/share?text=...` 预填分享内容
 10. 页面无 JS 错误
 
-截图：`assets/ui-shots/01-pair.png`、`02-home-empty.png`、`03-reader.png`、`04-home-done.png`、`05-settings.png`、`06-share-target.png`、`07-offline.png`、`08-real-bilibili-note.png`、`10-home-viewport.png`。
+截图：`assets/ui-shots/01-pair.png`、`02-home-empty.png`、`03-reader.png`、`04-home-done.png`、`05-settings.png`、`06-share-target.png`、`10-home-viewport.png`。
 
 ## 3.1 Agent 常驻模式
 
@@ -65,11 +65,11 @@
 
 ## 3.2 Android APK
 
-最终 APK 构建于 2026-10-24 05:03:28：
+最终 APK 构建于 2026-10-24 15:07:42：
 
 - 路径：`release/LinkNote-debug.apk`
-- 大小：4,552,937 字节（4.34 MiB）
-- SHA256：`E1C960162DBCFB870E24BB2B33E3C62BB2EF5B514B41C3C5D5CA8F84B59546CA`
+- 大小：4,701,573 字节（4.34 MiB）
+- SHA256：`2FFAC8785F5DE5D28E5E3DB284347F710C97AE5393EC86FF90B2221B599FE012`
 - launcher / adaptive 图标已替换为 LinkNote 品牌图标（15 个 PNG 与 `assets/android-icons` 逐字节一致；adaptive background `#1C1A18`）
 - `app/www` 30 个文件与 APK `assets/public` 逐字节一致；另有 Capacitor 生成的 0 字节 `cordova.js/cordova_plugins.js`
 - aapt2：`xyz.xykong.linknote`、versionCode 1、minSdk 24、targetSdk 36、label 链记、launchable MainActivity、INTERNET
@@ -108,3 +108,5 @@ node scripts\ui-smoke.mjs
 # 5. 真实链路（需要本机 BiliNote 可用）
 #   见 scripts/e2e-real-claim.mjs + pc-agent README 的 pair/run 流程
 ```
+
+

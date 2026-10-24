@@ -1,6 +1,6 @@
-/* ==========================================================================
+﻿/* ==========================================================================
    链记 LinkNote — 移动优先样式表
-   暖纸色 + 炭黑 + 珊瑚强调；跟随系统浅色/深色；无外部字体/CDN。
+   浅蓝背景 + 深海军蓝 + 品牌蓝；跟随系统浅色/深色；无外部字体/CDN。
    ========================================================================== */
 
 :root {
@@ -8,26 +8,26 @@
 
   --font-body: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
     "Hiragino Sans GB", "Microsoft YaHei", "Noto Sans CJK SC", sans-serif;
-  --font-display: "Iowan Old Style", "Palatino Linotype", "Songti SC",
-    "Noto Serif CJK SC", Georgia, "Times New Roman", serif;
+  --font-display: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
+    "Hiragino Sans GB", "Microsoft YaHei", "Noto Sans CJK SC", sans-serif;
   --font-mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
 
-  --paper: #f4ebde;
-  --paper-deep: #ece0cf;
-  --surface: #fbf6ee;
-  --surface-strong: #fffdf8;
-  --surface-muted: #f0e6d8;
-  --ink: #221d19;
-  --ink-2: #5b4f45;
-  --ink-3: #8b7d70;
-  --line: rgba(34, 29, 25, 0.11);
-  --line-strong: rgba(34, 29, 25, 0.2);
+  --paper: #f4f7fc;
+  --paper-deep: #eaf0fa;
+  --surface: #ffffff;
+  --surface-strong: #ffffff;
+  --surface-muted: #eaf0ff;
+  --ink: #0f1b30;
+  --ink-2: #334155;
+  --ink-3: #64748b;
+  --line: rgba(15, 27, 48, 0.10);
+  --line-strong: rgba(15, 27, 48, 0.18);
 
-  --coral: #e1573a;
-  --coral-strong: #c94527;
-  --coral-ink: #b23f26;
-  --coral-soft: rgba(225, 87, 58, 0.12);
-  --on-coral: #fffaf6;
+  --coral: #1e4dfd;
+  --coral-strong: #173ed6;
+  --coral-ink: #1a3fc4;
+  --coral-soft: rgba(30, 77, 253, 0.10);
+  --on-coral: #ffffff;
 
   --ok: #2f7a52;
   --ok-soft: rgba(47, 122, 82, 0.13);
@@ -36,16 +36,16 @@
   --danger: #b23c2c;
   --danger-soft: rgba(178, 60, 44, 0.12);
 
-  --appbar-bg: rgba(244, 235, 222, 0.84);
-  --tabbar-bg: rgba(251, 246, 238, 0.94);
-  --toast-bg: #2a2320;
-  --toast-ink: #f7f0e6;
-  --code-bg: #26201b;
-  --code-ink: #f4eadc;
+  --appbar-bg: rgba(244, 247, 252, 0.84);
+  --tabbar-bg: rgba(255, 255, 255, 0.94);
+  --toast-bg: #0f1b30;
+  --toast-ink: #eaf0ff;
+  --code-bg: #0f1b30;
+  --code-ink: #e8f0ff;
 
   --shadow-card: 0 1px 0 rgba(255, 255, 255, 0.55) inset,
-    0 14px 34px -24px rgba(48, 33, 18, 0.5);
-  --shadow-float: 0 12px 32px -12px rgba(40, 26, 14, 0.38);
+    0 14px 34px -24px rgba(15, 27, 48, 0.35);
+  --shadow-float: 0 12px 32px -12px rgba(15, 27, 48, 0.25);
 
   --radius-lg: 22px;
   --radius-md: 16px;
@@ -55,36 +55,36 @@
 
 @media (prefers-color-scheme: dark) {
   :root {
-    --paper: #16120f;
-    --paper-deep: #100d0b;
-    --surface: #201a16;
-    --surface-strong: #27211c;
-    --surface-muted: #1b1613;
-    --ink: #f2e9de;
-    --ink-2: #c7b9ac;
-    --ink-3: #94867a;
-    --line: rgba(242, 233, 222, 0.12);
-    --line-strong: rgba(242, 233, 222, 0.22);
+    --paper: #0b1220;
+    --paper-deep: #070d17;
+    --surface: #111c2e;
+    --surface-strong: #16233a;
+    --surface-muted: #0d1727;
+    --ink: #eaf0ff;
+    --ink-2: #b6c4dc;
+    --ink-3: #7f90ad;
+    --line: rgba(234, 240, 255, 0.12);
+    --line-strong: rgba(234, 240, 255, 0.22);
 
-    --coral: #ff7a57;
-    --coral-strong: #ff9070;
-    --coral-ink: #ff9d80;
-    --coral-soft: rgba(255, 122, 87, 0.16);
-    --on-coral: #1d0f0a;
+    --coral: #5b82ff;
+    --coral-strong: #7d9cff;
+    --coral-ink: #8aa6ff;
+    --coral-soft: rgba(91, 130, 255, 0.16);
+    --on-coral: #071022;
 
-    --ok: #74c193;
+    --ok: #4ade80;
     --ok-soft: rgba(116, 193, 147, 0.14);
-    --warn: #e0b062;
+    --warn: #fbbf24;
     --warn-soft: rgba(224, 176, 98, 0.14);
-    --danger: #ef8069;
+    --danger: #f87171;
     --danger-soft: rgba(239, 128, 105, 0.16);
 
-    --appbar-bg: rgba(22, 18, 15, 0.84);
-    --tabbar-bg: rgba(32, 26, 22, 0.94);
-    --toast-bg: #f4ebde;
-    --toast-ink: #241e19;
-    --code-bg: #0f0c0a;
-    --code-ink: #f0e6d8;
+    --appbar-bg: rgba(11, 18, 32, 0.84);
+    --tabbar-bg: rgba(17, 28, 46, 0.94);
+    --toast-bg: #f4f7fc;
+    --toast-ink: #0f1b30;
+    --code-bg: #070d17;
+    --code-ink: #eaf0ff;
 
     --shadow-card: 0 1px 0 rgba(255, 255, 255, 0.04) inset,
       0 18px 40px -26px rgba(0, 0, 0, 0.9);
@@ -113,12 +113,12 @@ body {
   color: var(--ink);
   background-color: var(--paper);
   background-image:
-    radial-gradient(900px 480px at 8% -8%, rgba(225, 87, 58, 0.09), transparent 62%),
-    radial-gradient(760px 420px at 96% 2%, rgba(178, 141, 92, 0.12), transparent 58%),
+    radial-gradient(900px 480px at 8% -8%, rgba(30, 77, 253, 0.08), transparent 62%),
+    radial-gradient(760px 420px at 96% 2%, rgba(30, 77, 253, 0.10), transparent 58%),
     repeating-linear-gradient(
       0deg,
-      rgba(120, 90, 60, 0.02) 0px,
-      rgba(120, 90, 60, 0.02) 1px,
+      rgba(15, 27, 48, 0.025) 0px,
+      rgba(15, 27, 48, 0.025) 1px,
       transparent 1px,
       transparent 3px
     );
@@ -134,8 +134,8 @@ body {
 @media (prefers-color-scheme: dark) {
   body {
     background-image:
-      radial-gradient(900px 480px at 8% -8%, rgba(255, 122, 87, 0.07), transparent 62%),
-      radial-gradient(760px 420px at 96% 2%, rgba(178, 141, 92, 0.06), transparent 58%);
+      radial-gradient(900px 480px at 8% -8%, rgba(91, 130, 255, 0.10), transparent 62%),
+      radial-gradient(760px 420px at 96% 2%, rgba(30, 77, 253, 0.06), transparent 58%);
   }
 }
 
@@ -300,6 +300,13 @@ code {
   line-height: 1;
 }
 
+.brand-mark img {
+  width: 36px;
+  height: 36px;
+  border-radius: 12px;
+  display: block;
+}
+
 .brand-name {
   font-family: var(--font-display);
   font-size: 19px;
@@ -310,8 +317,7 @@ code {
 .brand-sub {
   margin-top: 3px;
   font-size: 9.5px;
-  letter-spacing: 0.18em;
-  text-transform: uppercase;
+  letter-spacing: 0.14em;
   color: var(--ink-3);
 }
 
@@ -361,7 +367,7 @@ code {
 .btn-primary {
   background: linear-gradient(180deg, var(--coral), var(--coral-strong));
   color: var(--on-coral);
-  box-shadow: 0 10px 22px -12px rgba(200, 70, 40, 0.8);
+  box-shadow: 0 10px 22px -12px rgba(30, 77, 253, 0.35);
 }
 
 .btn-soft {
@@ -1673,7 +1679,7 @@ code {
   border-radius: 19px;
   background: linear-gradient(160deg, var(--coral), var(--coral-strong));
   color: var(--on-coral);
-  box-shadow: 0 16px 30px -14px rgba(200, 70, 40, 0.9);
+  box-shadow: 0 16px 30px -14px rgba(30, 77, 253, 0.40);
 }
 
 .pair-brand {
@@ -2105,15 +2111,17 @@ code {
   width: 64px;
   height: 64px;
   border-radius: 20px;
-  background: linear-gradient(160deg, var(--coral), var(--coral-strong));
+  background: transparent;
   color: var(--on-coral);
-  box-shadow: 0 20px 40px -18px rgba(200, 70, 40, 0.8);
+  box-shadow: 0 16px 34px -20px rgba(30, 77, 253, 0.45);
   animation: boot-pulse 1.8s ease-in-out infinite;
 }
 
-.boot-mark svg {
-  width: 30px;
-  height: 30px;
+.boot-mark img {
+  width: 64px;
+  height: 64px;
+  border-radius: 18px;
+  display: block;
 }
 
 .boot-title {
@@ -2359,3 +2367,13 @@ code {
     text-decoration: underline;
   }
 }
+
+
+
+
+
+
+
+
+
+

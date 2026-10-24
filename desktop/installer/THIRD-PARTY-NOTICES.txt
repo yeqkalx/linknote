@@ -1,0 +1,31 @@
+LinkNote / 链记 — bundled third-party component notices
+========================================================
+
+This installer may install an optional copy of the BiliNote backend engine
+under <install dir>\engine\. It is disabled by default only if you uncheck the
+"内置 BiliNote 引擎" component.
+
+BiliNote
+--------
+* Upstream project: https://github.com/JefferyHcool/BiliNote
+* License: MIT (https://github.com/JefferyHcool/BiliNote/blob/main/LICENSE)
+* Bundled artifact: BiliNoteBackend.exe + _internal\ runtime, copied unmodified
+  from a local BiliNote build (default source: C:\app\bilinote). No BiliNote
+  source code is modified by LinkNote; the engine is started as a separate
+  local process and driven over HTTP (127.0.0.1:8483).
+* "BiliNote" is the upstream project's name. LinkNote is an independent
+  project and is not affiliated with or endorsed by the BiliNote project.
+* If you do not want to redistribute the BiliNote binary, build LinkNote with
+  -SkipEngine (see desktop\packaging\README.md); the app can then use any
+  locally installed BiliNote engine.
+
+Other bundled components
+------------------------
+* Python 3.11 runtime, PySide6 (LGPLv3), httpx, qrcode, Pillow — bundled by
+  PyInstaller from desktop\.venv per desktop\pyproject.toml. PySide6/Qt is
+  dynamically linked; Qt libraries are used unmodified. See the "Third-party
+  notices" section of the repository NOTICE file for the full list.
+* PyInstaller bootloader is GPLv2 with a special exception permitting
+  distribution of bundled applications.
+
+LinkNote itself is MIT licensed — see LICENSE in the install directory.

@@ -1,4 +1,4 @@
-/**
+﻿/**
  * 链记 LinkNote — 配对页
  * 输入 8 位配对码（忽略大小写/横线）+ 设备名，POST /api/v1/pairings/claim。
  * 高级选项里可以修改 Relay 地址（APK / 局域网调试必须）。
@@ -45,7 +45,7 @@ export async function pairView(container, ctx) {
   container.innerHTML = `
     <section class="screen pair-screen">
       <header class="pair-hero">
-        <span class="pair-logo" aria-hidden="true">${icon('link', { size: 26 })}</span>
+        <span class="pair-logo" aria-hidden="true"><img src="./icons/icon-192.png" alt="" /></span>
         <h1 class="pair-brand">${escapeHtml(APP_NAME)}</h1>
         <p class="pair-tagline">${escapeHtml(APP_TAGLINE)}</p>
       </header>
@@ -150,6 +150,19 @@ export async function pairView(container, ctx) {
 
   if (storedSettings.deviceName && storedSettings.deviceName !== DEFAULT_DEVICE_NAME) {
     nameInput.value = storedSettings.deviceName;
+  }
+
+  // 电脑端二维码内容：https://relay.../#/pair?code=XXXX-XXXX，扫码打开后自动填码。
+  try {
+    const presetCode = normalizePairCode(ctx.query?.get('code') || '');
+    if (presetCode.valid) {
+      codeInput.value = presetCode.formatted;
+      clearError();
+      codeInput.focus();
+      codeInput.select();
+    }
+  } catch (error) {
+    // 忽略无效的预填参数
   }
 
   if (!currentBase) {
@@ -405,3 +418,5 @@ export async function pairView(container, ctx) {
     stopScanner();
   };
 }
+
+

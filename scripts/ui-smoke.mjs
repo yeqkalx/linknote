@@ -1,4 +1,4 @@
-// LinkNote PWA UI 冒烟测试（Playwright + 系统 Chrome，无需下载浏览器）。
+﻿// LinkNote PWA UI 冒烟测试（Playwright + 系统 Chrome，无需下载浏览器）。
 // 前置：relay 在 http://127.0.0.1:8787 运行；PWA 已 sync 到 relay/public。
 // 用法：node scripts/ui-smoke.mjs
 import { chromium } from 'playwright-core';
@@ -131,6 +131,7 @@ try {
   await page.goto(`${RELAY}/#/task/${taskId}`, { waitUntil: 'networkidle' });
   await page.waitForTimeout(1200);
   await page.waitForSelector('#reader', { timeout: 15_000 });
+  await page.waitForTimeout(3500);
   // 阅读器会去掉与卡片标题重复的 H1，所以标题在页面主体（.note-title），正文在 #reader。
   const pageText = await page.locator('body').innerText();
   assert.ok(pageText.includes(title), '详情页应显示笔记标题');
@@ -212,4 +213,5 @@ if (failed.length) {
   console.error(failed.map((item) => `- ${item.name}: ${item.error?.message || item.error}`).join('\n'));
   process.exitCode = 1;
 }
+
 

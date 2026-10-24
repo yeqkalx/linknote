@@ -1,4 +1,4 @@
-# LinkNote Android 打包（Capacitor 壳）
+﻿# LinkNote Android 打包（Capacitor 壳）
 
 把 `app/www` 的 LinkNote PWA 装进 Capacitor 8.5.3 Android 壳，产出可安装的 debug APK，并让 App 能接收其他 Android 应用分享的文本/链接。
 
@@ -114,13 +114,13 @@ cd android
 | 项 | 值 |
 | --- | --- |
 | 交付路径 | `C:\yeqkalx\code\bilinote-to-android\release\LinkNote-debug.apk` |
-| 构建时间 | 2026-10-24 05:03:28（Asia/Shanghai, UTC+08:00） |
+| 构建时间 | 2026-10-24 15:07:42（Asia/Shanghai, UTC+08:00） |
 | www 冻结时间 | 2026-10-24 04:55:37（app/www 最终修改；此后未再改动） |
-| 大小 | 4,552,937 字节（4.34 MiB / 约 4.55 MB） |
-| SHA256 | `E1C960162DBCFB870E24BB2B33E3C62BB2EF5B514B41C3C5D5CA8F84B59546CA` |
+| 大小 | 4,701,573 字节（4.34 MiB / 约 4.55 MB） |
+| SHA256 | `2FFAC8785F5DE5D28E5E3DB284347F710C97AE5393EC86FF90B2221B599FE012` |
 | 构建命令 | `powershell -ExecutionPolicy Bypass -File packaging\android\build-android.ps1`（内部：cap sync → 品牌图标 → 打补丁 → gradlew assembleDebug → 复制 release） |
 | 图标 | `res/mipmap-{mdpi,hdpi,xhdpi,xxhdpi,xxxhdpi}-v4/` 下 `ic_launcher.png`、`ic_launcher_round.png`、`ic_launcher_foreground.png` 共 15 个 PNG 与 `assets\android-icons\` 源文件 **SHA256 逐字节一致**；adaptive icon 背景色 `resources.arsc` 中 `color/ic_launcher_background = #ff1c1a18` ✓（原先为 Capacitor 默认蓝色图标）。 |
-| 图标幂等性 | 紧接着重跑一次 `build-android.ps1`：图标复制内容逐字节相同 → Gradle `assembleDebug` 判定 `UP-TO-DATE`，APK 字节未变（同一 SHA256 `E1C960…46CA`），证明图标步骤可安全重复执行。 |
+| 图标幂等性 | 紧接着重跑一次 `build-android.ps1`：图标复制内容逐字节相同 → Gradle `assembleDebug` 判定 `UP-TO-DATE`，APK 字节未变（同一 SHA256 `2FFA…FE012`），证明图标步骤可安全重复执行。 |
 | 校验 | aapt2：package=`xyz.xykong.linknote`、versionCode=1、versionName=1.0、minSdk=24、targetSdk=36、compileSdk=36、label=`链记`、launchable-activity=`xyz.xykong.linknote.MainActivity`；INTERNET 权限。Manifest：`ACTION_SEND`+`text/plain` intent-filter ✓、`android:allowBackup="false"` ✓、launchMode=singleTask ✓。assets/public：30/30 与 `app/www` 逐字节一致（另含 Capacitor 生成的 0 字节 `cordova.js`/`cordova_plugins.js`），含 index.html/css/js/vendor/icons/manifest/sw.js/share.html。apksigner：v2 签名通过（Android Debug 证书）。apkanalyzer summary：`xyz.xykong.linknote 1 1.0`。 |
 | 校验原始输出 | `packaging\android\verification\`（aapt2-badging.txt、aapt2-manifest-xmltree.txt、AndroidManifest.printed.xml、apkanalyzer-summary.txt、apksigner-verify.txt、apk-filelist.txt、apk-filelist-with-sizes.txt、icon-verify.txt、SHA256SUMS.txt、manifest-patch-selftest.xml） |
 | 未验证 | 真机/模拟器安装、launcher 图标实际显示、分享端到端（本机 `adb devices` 为空、无模拟器）；release 签名（仅 debug 证书） |
@@ -196,3 +196,6 @@ $bt = "$root\tools\android-sdk\build-tools\36.0.0"
 - `window.LinkNoteNative.getSharedText()` 在真实页面中的返回。
 - 与 relay 后端的端到端连通（本任务不涉及 relay 部署）。
 - release 签名（当前只有 debug 签名）。
+
+
+

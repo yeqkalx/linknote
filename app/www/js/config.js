@@ -6,7 +6,7 @@
 export const APP_NAME = '链记';
 export const APP_NAME_EN = 'LinkNote';
 export const APP_TAGLINE = '手机发链接，电脑做笔记';
-export const APP_VERSION = '0.1.0';
+export const APP_VERSION = '0.2.0';
 
 /** 接口前缀（docs/api-contract.md 约定：所有路径以 /api/v1 开头） */
 export const API_PREFIX = '/api/v1';
@@ -88,3 +88,4 @@ export const STORAGE_KEYS = {
   draft: `${STORAGE_PREFIX}draft.v1`,
   afterPair: `${STORAGE_PREFIX}after-pair.v1`,
 };
+

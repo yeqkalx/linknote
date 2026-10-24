@@ -48,6 +48,12 @@ app/ios/
 # PWA
 app/dist/
 
+# Desktop build artifacts
+desktop/.venv/
+dist-desktop/
+desktop/installer/Output/
+desktop/installer/*.exe
+
 # Secrets / local
 *.local
 .env
