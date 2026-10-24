@@ -12,7 +12,8 @@
 
 ## 1. 用户怎么用
 
-1. 双击 `LinkNote-Setup-0.2.0.exe` 安装（无需管理员）。
+1. 双击 `LinkNote-Setup-0.2.0.msi`（推荐；Windows Installer，免管理员）。
+   - 如果机器上装了联想电脑管家/火绒，它们可能拦截 Inno 版 `LinkNote-Setup-0.2.0.exe` 的临时解压；MSI 由 Windows Installer 服务创建目录，通常可通过。
 2. 首次打开按向导：
    - 自动下载 ffmpeg（约 100 MB，只需一次）
    - 启动内置 BiliNote 引擎

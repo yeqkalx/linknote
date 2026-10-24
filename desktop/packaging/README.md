@@ -1,4 +1,4 @@
-﻿# LinkNote Desktop Windows 打包（PyInstaller + Inno Setup）
+# LinkNote Desktop Windows 打包（PyInstaller + Inno Setup）
 
 本目录负责把 `desktop/linknote_desktop` 打成 Windows 桌面端 EXE，并生成
 per-user（免管理员）安装包。所有中间产物和大文件都在 `desktop/build/` 与
@@ -10,7 +10,8 @@ per-user（免管理员）安装包。所有中间产物和大文件都在 `desk
 | 产物 | 路径 | 说明 |
 |---|---|---|
 | 桌面端主程序 | `dist-desktop/LinkNote/LinkNote.exe` | PyInstaller onedir，windowed（无控制台） |
-| 安装包 | `dist-desktop/LinkNote-Setup-0.2.0.exe` | Inno Setup 6，per-user 安装 |
+| 安装包（MSI，推荐） | `dist-desktop/LinkNote-Setup-0.2.0.msi` | WiX 3.14 / Windows Installer，per-user；由安装服务创建数据目录 |
+| 安装包（EXE） | `dist-desktop/LinkNote-Setup-0.2.0.exe` | Inno Setup 6，per-user 安装；部分安全软件会拦 Temp 解压 |
 | 内置引擎（可选组件） | `desktop/build/engine/` | BiliNoteBackend.exe + `_internal/`，约 300 MB / 1903 文件 |
 | 引擎 staging 清单 | `desktop/build/engine-manifest.json` | 来源、文件数、SHA256 |
 | 构建报告 | `desktop/build/build-report.json` | 各步骤结果、大小、SHA256、安装/卸载验证 |
@@ -18,6 +19,30 @@ per-user（免管理员）安装包。所有中间产物和大文件都在 `desk
 
 最终数字以 `desktop/build/build-report.json` 为准（每次构建自动更新）。
 `0.2.0` 首次完整构建结果见第 8 节。
+
+### MSI 备用安装器
+
+联想电脑管家/火绒等安全软件可能拦截 Inno Setup 的 `is-*.tmp` 临时解压，报错 5；
+同样的目录保护也会让未签名 app 无法创建 `%LOCALAPPDATA%\LinkNote`。MSI 用
+Windows Installer 服务创建安装目录和数据目录，不经过 EXE 自解压，通常可绕过这两类拦截。
+
+```powershell
+# WiX 3.14 解压到 tools\wix314（含 candle/light/heat）
+# 先生成 dist-desktop\LinkNote 和 desktop\build\engine
+powershell -ExecutionPolicy Bypass -File desktop\packaging\build-msi.ps1
+```
+
+- 产物：`dist-desktop/LinkNote-Setup-0.2.0.msi`（约 144 MB）
+- `build-msi.ps1 -SkipPayload` 可复用已有 `desktop/build/msi/payload`
+- MSI 安装界面由 `WixUI_Minimal` 提供（当前英文），应用内中文
+- 安装到 `{LocalAppData}\Programs\LinkNote`，数据目录 `{LocalAppData}\LinkNote` 由安装服务创建
+- 卸载保留 `%LOCALAPPDATA%\LinkNote` 用户数据
+
+### 当前 MSI 产物（2026-10-24）
+
+- 路径：`dist-desktop/LinkNote-Setup-0.2.0.msi`
+- 大小：150,971,639 字节
+- SHA256：`E22E4095333A92EF89BF1B23865E5602BCDEA64EA1092EB77517D3E992A0B127`
 
 ## 2. 工具链（本机已验证）
 

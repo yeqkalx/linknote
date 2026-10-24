@@ -8,16 +8,18 @@
 
 ### A1. 安装
 
-双击：
+优先双击：
 
 ```text
-dist-desktop\LinkNote-Setup-0.2.0.exe
+dist-desktop\LinkNote-Setup-0.2.0.msi
 ```
 
-- per-user 安装，不需要管理员权限
-- 默认安装到 `%LOCALAPPDATA%\Programs\LinkNote`
-- 默认创建桌面/开始菜单快捷方式，默认开机自启
-- 内置 BiliNote 引擎；卸载时保留 `%LOCALAPPDATA%\LinkNote` 里的设置/笔记数据
+- Windows Installer per-user，安装界面为英文，应用内全中文
+- 不需要管理员；安装到 `%LOCALAPPDATA%\Programs\LinkNote`
+- 默认创建桌面/开始菜单快捷方式；数据目录由安装服务创建
+- 如果 `LinkNote-Setup-0.2.0.exe` 被杀软报“无法创建临时目录”，直接换 MSI 即可
+
+备用 EXE（Inno）安装包：`dist-desktop\LinkNote-Setup-0.2.0.exe`
 
 ### A2. 首次打开：7 步配置向导
 

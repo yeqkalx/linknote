@@ -1,0 +1,92 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<Wix xmlns="http://schemas.microsoft.com/wix/2006/wi">
+  <Product
+      Id="*"
+      Name="LinkNote"
+      Language="1033"
+      Codepage="1252"
+      Version="0.2.0"
+      Manufacturer="LinkNote"
+      UpgradeCode="{9B6F2D7E-3B0A-4E2C-9F2A-6C6D5E1F8A31}">
+
+    <Package
+        InstallerVersion="500"
+        Compressed="yes"
+        InstallScope="perUser"
+        InstallPrivileges="limited"
+        Platform="x64" />
+
+    <MajorUpgrade DowngradeErrorMessage="A newer version of LinkNote is already installed. Please uninstall it first." />
+    <MediaTemplate EmbedCab="yes" CompressionLevel="high" />
+
+    <Property Id="ARPPRODUCTICON" Value="LinkNoteIcon" />
+    <Property Id="ARPHELPLINK" Value="https://relay.xykong.xyz" />
+    <Property Id="ARPNOREPAIR" Value="1" />
+    <Icon Id="LinkNoteIcon" SourceFile="$(var.IconPath)" />
+
+    <Directory Id="TARGETDIR" Name="SourceDir">
+      <Directory Id="LocalAppDataFolder">
+        <Directory Id="LocalProgramsDir" Name="Programs">
+          <Directory Id="INSTALLDIR" Name="LinkNote" />
+        </Directory>
+        <Directory Id="DATADIR" Name="LinkNote" />
+      </Directory>
+      <Directory Id="DesktopFolder" />
+      <Directory Id="ProgramMenuFolder">
+        <Directory Id="LinkNoteMenu" Name="LinkNote" />
+      </Directory>
+    </Directory>
+
+    <DirectoryRef Id="DATADIR">
+      <Component Id="DataDirectory" Guid="{3B0D6C5A-7E1F-4B2D-8A4C-9F1E2D3C4B5A}">
+        <CreateFolder />
+        <RegistryValue Root="HKCU" Key="Software\LinkNote" Name="DataDirectory" Type="integer" Value="1" KeyPath="yes" />
+      </Component>
+    </DirectoryRef>
+
+    <DirectoryRef Id="INSTALLDIR">
+      <Component Id="Shortcuts" Guid="{A1B2C3D4-E5F6-4A7B-8C9D-0E1F2A3B4C5D}">
+        <Shortcut Id="DesktopShortcut"
+                  Directory="DesktopFolder"
+                  Name="LinkNote"
+                  Description="Send a video link from your phone, get a Markdown note on your PC."
+                  Target="[INSTALLDIR]LinkNote.exe"
+                  WorkingDirectory="INSTALLDIR"
+                  Icon="LinkNoteIcon" />
+        <Shortcut Id="StartMenuShortcut"
+                  Directory="LinkNoteMenu"
+                  Name="LinkNote"
+                  Description="Send a video link from your phone, get a Markdown note on your PC."
+                  Target="[INSTALLDIR]LinkNote.exe"
+                  WorkingDirectory="INSTALLDIR"
+                  Icon="LinkNoteIcon" />
+        <RemoveFolder Id="RemoveLinkNoteMenu" Directory="LinkNoteMenu" On="uninstall" />
+        <RemoveFile Id="RemoveDesktopShortcut" Directory="DesktopFolder" Name="LinkNote.lnk" On="uninstall" />
+        <RemoveFile Id="RemoveStartMenuShortcut" Directory="LinkNoteMenu" Name="LinkNote.lnk" On="uninstall" />
+        <RegistryValue Root="HKCU" Key="Software\LinkNote" Name="Shortcuts" Type="integer" Value="1" KeyPath="yes" />
+      </Component>
+
+      <Component Id="Autostart" Guid="{C2D3E4F5-1A2B-4C3D-9E4F-5A6B7C8D9E0F}">
+        <RegistryValue Root="HKCU"
+                       Key="Software\Microsoft\Windows\CurrentVersion\Run"
+                       Name="LinkNote"
+                       Type="string"
+                       Value="&quot;[INSTALLDIR]LinkNote.exe&quot; --minimized"
+                       KeyPath="yes" />
+      </Component>
+    </DirectoryRef>
+
+    <Feature Id="ProductFeature" Title="LinkNote" Level="1">
+      <ComponentGroupRef Id="AppFiles" />
+      <ComponentRef Id="DataDirectory" />
+      <ComponentRef Id="Shortcuts" />
+      <ComponentRef Id="Autostart" />
+    </Feature>
+
+    <UIRef Id="WixUI_Minimal" />
+    <WixVariable Id="WixUILicenseRtf" Value="$(var.LicenseRtf)" />
+  </Product>
+</Wix>
+
+
+

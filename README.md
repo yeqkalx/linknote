@@ -1,4 +1,4 @@
-﻿# LinkNote / 链记
+# LinkNote / 链记
 
 手机分享视频链接 → 家里电脑的 BiliNote 生成 AI 笔记 → Markdown 回到手机。
 
@@ -22,7 +22,11 @@
 给不想折腾命令行/API 路径的人：**一个安装包，内置 BiliNote 引擎**，首次打开走 7 步向导。
 品牌已更新为蓝白配色 / 链条文档图标（`assets/brand/`）。
 
-- 安装包：`dist-desktop/LinkNote-Setup-0.2.0.exe`
+- 安装包（MSI，推荐）：`dist-desktop/LinkNote-Setup-0.2.0.msi`
+  - 大小：150,971,639 字节（144.0 MB）
+  - SHA256：`E22E4095333A92EF89BF1B23865E5602BCDEA64EA1092EB77517D3E992A0B127`
+  - Windows Installer per-user 安装，免管理员；由安装服务创建 `%LOCALAPPDATA%\LinkNote` 数据目录，不经过 Inno 的临时解压，适合被联想电脑管家/火绒拦截的机器
+- 安装包（EXE，备用）：`dist-desktop/LinkNote-Setup-0.2.0.exe`
   - 大小：133,085,401 字节（126.9 MB）
   - SHA256：`C2C60506DE870BD2BD66319A2A1A3816269F5C4A23B2BAFCA8AAB09BFF5C07FA`
   - per-user 安装，免管理员，默认创建桌面/开始菜单快捷方式、默认开机自启
