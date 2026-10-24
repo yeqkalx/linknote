@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import contextlib
 import json
 import subprocess
 import sys
@@ -24,6 +25,7 @@ import httpx
 from . import __version__
 from .backend import BackendSupervisor
 from .bilinote_client import BiliNoteClient
+from .bots.runner import BotRunner
 from .config import (
     AgentConfig,
     ConfigError,
@@ -339,6 +341,7 @@ async def cmd_run(
     bilinote_transport: httpx.AsyncBaseTransport | None = None,
     stop_event: asyncio.Event | None = None,
     ws_client: Any | None = None,
+    bot_runner: Any | None = None,
 ) -> int:
     cfg_path = Path(args.config) if getattr(args, "config", None) else None
     cfg = AgentConfig.load(cfg_path)
@@ -367,6 +370,16 @@ async def cmd_run(
     print(f"  传输模式：{mode}" + (f"（{ws_url}）" if use_websocket else ""))
     print(f"  BiliNote 后端：{cfg.backend_base_url}（exe：{cfg.backend_exe}）")
     print(f"  模型：{cfg.provider_id} / {cfg.model_name}（quality={cfg.quality} style={cfg.style}）")
+    bot_channels = cfg.bot_channels_enabled
+    if bot_channels:
+        labels = []
+        if "telegram" in bot_channels:
+            labels.append("Telegram" + (f" (@{cfg.telegram_bot_username})" if cfg.telegram_bot_username else ""))
+        if "qq" in bot_channels:
+            labels.append("QQ")
+        print(f"  Bot 入口：{', '.join(labels)}")
+    else:
+        print("  Bot 入口：未启用")
     if use_websocket:
         print(
             f"  重连退避：{','.join(str(int(d)) for d in cfg.ws_reconnect_delays)} 秒 + "
@@ -402,8 +415,27 @@ async def cmd_run(
             )
         else:
             runner = AgentRunner(cfg, relay, bilinote, backend=backend, outbox=outbox)
-        await runner.run_forever(stop_event)
-        return 0
+
+        stop = stop_event or asyncio.Event()
+        bot: Any = None
+        bot_task: Optional[asyncio.Task] = None
+        if bot_channels:
+            bot = bot_runner or BotRunner(cfg, relay, outbox=outbox)
+            bot_task = asyncio.create_task(bot.run(stop), name="bot-runner")
+            print(f"  Bot Runner 已随 Agent 启动（{'、'.join(bot_channels)}）")
+        try:
+            await runner.run_forever(stop)
+            return 0
+        finally:
+            stop.set()
+            if bot_task is not None:
+                with contextlib.suppress(asyncio.CancelledError, Exception):
+                    bot_task.cancel()
+                with contextlib.suppress(asyncio.CancelledError, Exception):
+                    await bot_task
+            if bot is not None:
+                with contextlib.suppress(asyncio.CancelledError, Exception):
+                    await bot.close()
     finally:
         if runner is not None:
             await runner.close()

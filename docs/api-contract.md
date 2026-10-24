@@ -214,6 +214,35 @@ Agent 每 30 秒调用一次；`busy=true` 表示正在处理任务。
 
 设备 token 立即失效（后续 401）。返回 `{ "ok": true }`。
 
+### 4.4 签发 Bot 专用设备（v0.4.0 增量）
+
+`POST /api/v1/agent/devices`，Agent 认证（`Authorization: Bearer agt_...`）。
+
+用于本机 Bot Runner（用户自己的 Telegram / QQ bot）申请独立 device token，无需用户扫码配对
+（设计见 `docs/bot-channels.md` §2）。请求：
+
+```json
+{ "name": "Telegram @abclinknote_bot", "platform": "telegram" }
+```
+
+- `name`：必填，1–40 字符（去首尾空格后非空）。
+- `platform`：必填，`android` | `ios` | `web` | `telegram` | `qq`；其它值返回 `400 invalid_platform`。
+
+返回 `201`（明文 token **只出现这一次**，Relay 只存 SHA-256，不写日志、响应不含 `token_hash`）：
+
+```json
+{
+  "ok": true,
+  "data": {
+    "device": { "id": "uuid", "name": "Telegram @abclinknote_bot", "platform": "telegram", "created_at": "..." },
+    "token": "dev_..."
+  }
+}
+```
+
+- 新设备与手机设备同级、按 `device_id` 隔离任务；bot 用该 token 调 `POST /tasks`、`GET /tasks/{id}` 等。
+- 凭证错误返回 401；`name`/`platform` 校验失败返回 400。Agent 可用 4.3 撤销该设备。
+
 ## 5. 手机端
 
 ### 5.1 当前设备信息

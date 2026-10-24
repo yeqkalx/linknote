@@ -120,6 +120,11 @@ async function routeApi(request: Request, env: Env): Promise<Response> {
       if (method === 'POST') return h.createAgentPairing(request, env);
       return fail('method_not_allowed', '请求方法不支持', 405);
     }
+    // v0.4：Agent 为本机 Bot 签发专用 device token（docs/bot-channels.md §2）。
+    if (seg.length === 2 && seg[1] === 'devices') {
+      if (method === 'POST') return h.createAgentDevice(request, env);
+      return fail('method_not_allowed', '请求方法不支持', 405);
+    }
     if (seg.length === 3 && seg[1] === 'devices') {
       if (method === 'DELETE') return h.deleteAgentDevice(request, env, seg[2]);
       return fail('method_not_allowed', '请求方法不支持', 405);

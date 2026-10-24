@@ -159,6 +159,10 @@ class Outbox:
             self.notes_dir / f"{_safe_name(task_id)}.md"
         ).exists()
 
+    def note_path(self, task_id: str) -> Path:
+        """本地笔记文件路径（``notes/<task_id>.md``）。"""
+        return self.notes_dir / f"{_safe_name(task_id)}.md"
+
     def note_for(self, task_id: str) -> Optional[tuple[str, str]]:
         """取 ``(title, markdown)``：优先 outbox 记录，其次本地 notes 文件。"""
         for entry in self.pending_notes():

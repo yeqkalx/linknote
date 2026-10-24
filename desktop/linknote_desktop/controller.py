@@ -12,6 +12,8 @@ from urllib.parse import quote
 
 from PySide6.QtCore import QObject, QRunnable, QThreadPool, QTimer, Signal
 
+import httpx
+
 from linknote_agent.stage_map import format_elapsed as _format_elapsed
 from linknote_agent.stage_map import map_status as _map_status
 
@@ -465,6 +467,88 @@ class DesktopController(QObject):
             "notes": str(notes_dir),
             "outbox": str(outbox_dir),
         }
+
+    # ================================================================== 消息入口（Bot 凭证）
+    def test_telegram_bot(self, token: str) -> dict[str, Any]:
+        """Telegram `getMe` 连通性测试。
+
+        注意：请求 URL 本身包含 Bot Token，因此错误信息只保留异常类型，
+        绝不把 token / 带 token 的 URL 带进异常、日志或 UI 弹窗。
+        """
+        token_text = str(token or "").strip()
+        if not token_text:
+            raise ValueError("请先填写 Telegram Bot Token")
+        try:
+            with httpx.Client(timeout=12.0, trust_env=False) as client:
+                response = client.get(f"https://api.telegram.org/bot{token_text}/getMe")
+        except httpx.HTTPError as exc:
+            raise RuntimeError(
+                f"无法连接 Telegram（{type(exc).__name__}），请检查网络或代理"
+            ) from None
+        try:
+            payload = response.json()
+        except ValueError:
+            raise RuntimeError(
+                f"Telegram 返回了非 JSON 响应（HTTP {response.status_code}）"
+            ) from None
+        payload = payload if isinstance(payload, dict) else {}
+        if response.status_code == 200 and payload.get("ok"):
+            result = payload.get("result")
+            result = result if isinstance(result, dict) else {}
+            return {
+                "ok": True,
+                "username": str(result.get("username") or "").strip(),
+                "name": str(result.get("first_name") or "").strip(),
+                "bot_id": result.get("id"),
+            }
+        description = str(payload.get("description") or "").strip()
+        raise RuntimeError(
+            "Telegram 验证失败：" + (description or "Token 无效，或网络无法直连 Telegram")
+        )
+
+    def test_qq_bot(self, app_id: str, app_secret: str) -> dict[str, Any]:
+        """QQ 开放平台 `getAppAccessToken` 测试；只验证可行，不保存 access_token。"""
+        app_id_text = str(app_id or "").strip()
+        secret_text = str(app_secret or "").strip()
+        if not app_id_text:
+            raise ValueError("请先填写 QQ AppID")
+        if not secret_text:
+            raise ValueError("请先填写 QQ AppSecret")
+        body = {"appId": app_id_text, "clientSecret": secret_text}
+        try:
+            with httpx.Client(timeout=15.0, trust_env=False) as client:
+                response = client.post(
+                    "https://api.bot.qq.com/app/getAppAccessToken", json=body
+                )
+        except httpx.HTTPError as exc:
+            # 请求体里有 AppSecret：错误信息只用异常类型，避免凭证泄漏
+            raise RuntimeError(
+                f"无法连接 QQ 开放平台（{type(exc).__name__}），请检查网络或代理"
+            ) from None
+        try:
+            payload = response.json()
+        except ValueError:
+            raise RuntimeError(
+                f"QQ 开放平台返回了非 JSON 响应（HTTP {response.status_code}）"
+            ) from None
+        payload = payload if isinstance(payload, dict) else {}
+        access_token = str(payload.get("access_token") or "").strip()
+        if response.status_code == 200 and access_token:
+            expires_in = 0
+            raw_expires = payload.get("expires_in")
+            if raw_expires is not None:
+                try:
+                    expires_in = int(raw_expires)
+                except (TypeError, ValueError):
+                    expires_in = 0
+            return {"ok": True, "expires_in": expires_in}
+        message = str(
+            payload.get("message") or payload.get("msg") or payload.get("error") or ""
+        ).strip()
+        raise RuntimeError(
+            "QQ 验证失败："
+            + (message or f"HTTP {response.status_code}，请检查 AppID / AppSecret")
+        )
 
     # ================================================================== 笔记自动归档
     def archive_status(self) -> dict[str, Any]:

@@ -15,13 +15,14 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from ...config import APP_VERSION, DEFAULT_RELAY_URL
+from ...config import APP_VERSION, DEFAULT_RELAY_URL, mask_secret
 from .. import style, utils
 from ..widgets import (
     Card,
     InlineMessage,
     ToggleSwitch,
     button,
+    divider,
     field_label,
     hint_label,
     switch_row,
@@ -53,13 +54,142 @@ class SettingsPage(BasePage):
 
     # ------------------------------------------------------------ 构建
     def build(self) -> None:
+        self._telegram_username = ""
         self._build_connection_card()
+        self._build_bot_card()
         self._build_advanced_card()
         self._build_archive_card()
         self._build_startup_card()
         self._build_generation_card()
         self._build_paths_card()
         self._build_about_card()
+
+    def _build_bot_card(self) -> None:
+        card = Card()
+        self._bot_card = card
+        card.add_header(
+            "消息入口",
+            "用自己的 Telegram / QQ 机器人在聊天里发视频链接。凭证只保存在本机 agent.json，"
+            "不会上传 Relay；保存后 Agent 会自动重启生效。",
+        )
+
+        # ---- Telegram
+        telegram_title = QLabel("Telegram 机器人")
+        telegram_title.setStyleSheet(
+            f"QLabel {{ color: {style.INK}; font-size: 13px; font-weight: bold; }}"
+        )
+        card.body.addWidget(telegram_title)
+        self._telegram_enable_switch = ToggleSwitch()
+        self._telegram_enable_switch.setChecked(
+            bool(self.controller.config.telegram_enabled)
+        )
+        self._telegram_enable_switch.toggled.connect(self._on_bot_field_changed)
+        card.body.addWidget(
+            switch_row(
+                "启用 Telegram 入口",
+                "在 Telegram 私聊里给机器人发视频链接即可建任务。",
+                self._telegram_enable_switch,
+            )
+        )
+        self._telegram_token_edit = _SecretLineEdit()
+        self._telegram_token_edit.setPlaceholderText("BotFather 生成的 Bot Token")
+        self._telegram_token_edit.textEdited.connect(self._on_bot_field_changed)
+        self._telegram_test_button = button("测试连接", "", self._test_telegram)
+        token_row = QHBoxLayout()
+        token_row.setContentsMargins(0, 0, 0, 0)
+        token_row.setSpacing(8)
+        token_row.addWidget(self._telegram_token_edit, 1)
+        token_row.addWidget(self._telegram_test_button, 0)
+        card.body.addWidget(
+            _field(
+                "Bot Token",
+                _wrap_row(token_row),
+                "在 Telegram 里找 @BotFather → /newbot 获取 Token；"
+                "已有 Token 会以掩码显示，输入新值可替换。",
+            )
+        )
+        self._telegram_allow_groups_switch = ToggleSwitch()
+        self._telegram_allow_groups_switch.setChecked(
+            bool(self.controller.config.telegram_allow_groups)
+        )
+        self._telegram_allow_groups_switch.toggled.connect(self._on_bot_field_changed)
+        card.body.addWidget(
+            switch_row(
+                "允许在群聊中使用",
+                "默认只处理私聊；开启后仅处理群聊里 @机器人 或命令。",
+                self._telegram_allow_groups_switch,
+            )
+        )
+        self._telegram_msg = InlineMessage()
+        card.body.addWidget(self._telegram_msg)
+        card.body.addWidget(divider())
+
+        # ---- QQ
+        qq_title = QLabel("QQ 机器人")
+        qq_title.setStyleSheet(
+            f"QLabel {{ color: {style.INK}; font-size: 13px; font-weight: bold; }}"
+        )
+        card.body.addWidget(qq_title)
+        self._qq_enable_switch = ToggleSwitch()
+        self._qq_enable_switch.setChecked(bool(self.controller.config.qq_enabled))
+        self._qq_enable_switch.toggled.connect(self._on_bot_field_changed)
+        card.body.addWidget(
+            switch_row(
+                "启用 QQ 入口",
+                "在 QQ 单聊或群里 @机器人 发视频链接。",
+                self._qq_enable_switch,
+            )
+        )
+        self._qq_app_id_edit = QLineEdit()
+        self._qq_app_id_edit.setPlaceholderText("QQ 开放平台 AppID")
+        self._qq_app_id_edit.textEdited.connect(self._on_bot_field_changed)
+        card.body.addWidget(
+            _field("AppID", self._qq_app_id_edit, "QQ 开放平台 → 机器人 → 开发设置里获取。")
+        )
+        self._qq_app_secret_edit = _SecretLineEdit()
+        self._qq_app_secret_edit.setPlaceholderText("QQ 开放平台 AppSecret")
+        self._qq_app_secret_edit.textEdited.connect(self._on_bot_field_changed)
+        self._qq_test_button = button("测试连接", "", self._test_qq)
+        secret_row = QHBoxLayout()
+        secret_row.setContentsMargins(0, 0, 0, 0)
+        secret_row.setSpacing(8)
+        secret_row.addWidget(self._qq_app_secret_edit, 1)
+        secret_row.addWidget(self._qq_test_button, 0)
+        card.body.addWidget(
+            _field(
+                "AppSecret",
+                _wrap_row(secret_row),
+                "已有 AppSecret 会以掩码显示；测试连接只校验凭证，不会保存 access token。",
+            )
+        )
+        card.body.addWidget(
+            InlineMessage(
+                "个人主体暂不支持公开使用：只能加自己的群，或使用官方 20 个内部体验号码；"
+                "公开给普通用户需要企业/个体户认证。",
+                "warning",
+            )
+        )
+        self._qq_msg = InlineMessage()
+        card.body.addWidget(self._qq_msg)
+        card.body.addWidget(
+            hint_label(
+                "QQ 开放平台创建机器人 → 获取 AppID / AppSecret → 把机器人拉进自己的群或加为好友。"
+            )
+        )
+
+        action_row = QHBoxLayout()
+        action_row.setContentsMargins(0, 4, 0, 0)
+        action_row.setSpacing(8)
+        self._bot_save_button = button("保存消息入口", "Primary", self._save_bot_channels)
+        action_row.addWidget(self._bot_save_button, 0)
+        dirty_hint = QLabel("保存后 Agent 会重启生效。")
+        dirty_hint.setObjectName("Help")
+        action_row.addWidget(dirty_hint, 0)
+        action_row.addStretch(1)
+        card.body.addLayout(action_row)
+        self._bot_msg = InlineMessage()
+        card.body.addWidget(self._bot_msg)
+        self.add(card)
 
     def _build_advanced_card(self) -> None:
         card = Card()
@@ -351,6 +481,179 @@ class SettingsPage(BasePage):
         self._autostart_switch._offset = 1.0 if enabled else 0.0
         self._autostart_switch.update()
         self._refresh_archive_status()
+        self._load_bot_channels()
+
+    # ------------------------------------------------------------ 消息入口（Bot）
+    def _load_bot_channels(self) -> None:
+        """从 config 回填掩码后的 Bot 凭证与开关（不打印明文）。"""
+        config = self.controller.config
+        self._telegram_username = str(config.telegram_bot_username or "")
+        token = str(config.telegram_bot_token or "")
+        secret = str(config.qq_app_secret or "")
+        self._set_secret_edit(self._telegram_token_edit, token)
+        self._set_secret_edit(self._qq_app_secret_edit, secret)
+        app_id = str(config.qq_app_id or "")
+        if self._qq_app_id_edit.text() != app_id:
+            self._qq_app_id_edit.setText(app_id)
+
+        for switch, value in (
+            (self._telegram_enable_switch, bool(config.telegram_enabled)),
+            (self._telegram_allow_groups_switch, bool(config.telegram_allow_groups)),
+            (self._qq_enable_switch, bool(config.qq_enabled)),
+        ):
+            previous = switch.blockSignals(True)
+            switch.setChecked(value)
+            switch.blockSignals(previous)
+            switch._offset = 1.0 if value else 0.0
+            switch.update()
+
+        if config.telegram_enabled:
+            if token:
+                suffix = f" · @{self._telegram_username}" if self._telegram_username else ""
+                self._telegram_msg.set_message(f"Telegram 入口已启用{suffix}", "success")
+            else:
+                self._telegram_msg.set_message(
+                    "Telegram 入口已启用，但还没有填写 Bot Token。", "warning"
+                )
+        elif token:
+            self._telegram_msg.set_message("Bot Token 已保存，开启开关后生效。", "info")
+        else:
+            self._telegram_msg.clear()
+        if config.qq_enabled:
+            if app_id and secret:
+                self._qq_msg.set_message("QQ 入口已启用。", "success")
+            else:
+                self._qq_msg.set_message(
+                    "QQ 入口已启用，但 AppID / AppSecret 还没填完整。", "warning"
+                )
+        elif app_id or secret:
+            self._qq_msg.set_message("QQ 凭证已保存，开启开关后生效。", "info")
+        else:
+            self._qq_msg.clear()
+        self._bot_msg.clear()
+
+    def _set_secret_edit(self, edit: QLineEdit, value: str) -> None:
+        display = mask_secret(value) if value else ""
+        if edit.text() == display:
+            return
+        previous = edit.blockSignals(True)
+        edit.setText(display)
+        edit.blockSignals(previous)
+
+    def _on_bot_field_changed(self, *_args: Any) -> None:
+        self._bot_msg.set_message("有未保存的修改：保存后 Agent 会重启生效。", "info")
+
+    def _telegram_token_value(self) -> str:
+        return self._resolve_secret(
+            self._telegram_token_edit,
+            str(self.controller.config.telegram_bot_token or ""),
+        )
+
+    def _qq_secret_value(self) -> str:
+        return self._resolve_secret(
+            self._qq_app_secret_edit,
+            str(self.controller.config.qq_app_secret or ""),
+        )
+
+    @staticmethod
+    def _resolve_secret(edit: QLineEdit, stored: str) -> str:
+        text = edit.text().strip()
+        if not text:
+            return stored
+        if stored and text == mask_secret(stored):
+            return stored
+        # 掩码被部分编辑时仍视为未修改（首尾匹配）
+        if stored and "…" in text and text.startswith(stored[:4]) and text.endswith(stored[-4:]):
+            return stored
+        return text
+
+    def _test_telegram(self) -> None:
+        token = self._telegram_token_value()
+        if not token:
+            self._telegram_msg.set_message("请先填写 Telegram Bot Token。", "warning")
+            return
+        self._telegram_test_button.setEnabled(False)
+        self._telegram_msg.set_message("正在连接 Telegram…", "info")
+
+        def on_result(data: Any) -> None:
+            self._telegram_test_button.setEnabled(True)
+            result = data if isinstance(data, dict) else {}
+            username = str(result.get("username") or "").strip()
+            self._telegram_username = username or self._telegram_username
+            if username:
+                self._telegram_msg.set_message(f"连接成功：@{username}", "success")
+            else:
+                self._telegram_msg.set_message("连接成功（该机器人没有 username）。", "success")
+
+        def on_error(message: str) -> None:
+            self._telegram_test_button.setEnabled(True)
+            self._telegram_msg.set_message(f"测试失败：{message}", "error")
+
+        self.run_bg(
+            self.controller.test_telegram_bot,
+            token,
+            on_result=on_result,
+            on_error=on_error,
+        )
+
+    def _test_qq(self) -> None:
+        app_id = self._qq_app_id_edit.text().strip()
+        secret = self._qq_secret_value()
+        if not app_id or not secret:
+            self._qq_msg.set_message("请先填写 QQ AppID 和 AppSecret。", "warning")
+            return
+        self._qq_test_button.setEnabled(False)
+        self._qq_msg.set_message("正在连接 QQ 开放平台…", "info")
+
+        def on_result(data: Any) -> None:
+            self._qq_test_button.setEnabled(True)
+            result = data if isinstance(data, dict) else {}
+            expires = int(result.get("expires_in") or 0)
+            suffix = f"（access token 有效期约 {expires} 秒，不保存）" if expires else ""
+            self._qq_msg.set_message(f"连接成功，机器人凭证可用{suffix}。", "success")
+
+        def on_error(message: str) -> None:
+            self._qq_test_button.setEnabled(True)
+            self._qq_msg.set_message(f"测试失败：{message}", "error")
+
+        self.run_bg(
+            self.controller.test_qq_bot,
+            app_id,
+            secret,
+            on_result=on_result,
+            on_error=on_error,
+        )
+
+    def _save_bot_channels(self) -> None:
+        config = self.controller.config
+        config.telegram_enabled = self._telegram_enable_switch.isChecked()
+        config.telegram_bot_token = self._telegram_token_value()
+        if self._telegram_username:
+            config.telegram_bot_username = self._telegram_username
+        config.telegram_allow_groups = self._telegram_allow_groups_switch.isChecked()
+        config.qq_enabled = self._qq_enable_switch.isChecked()
+        config.qq_app_id = self._qq_app_id_edit.text().strip()
+        config.qq_app_secret = self._qq_secret_value()
+        self._bot_save_button.setEnabled(False)
+        restarted = False
+        try:
+            self.controller.save_config()
+            if getattr(self.controller.agent, "running", False):
+                self.controller.restart_agent()
+                restarted = True
+        except Exception as exc:  # noqa: BLE001 - 不把凭证拼进错误信息
+            self._bot_save_button.setEnabled(True)
+            self._bot_msg.set_message(f"保存失败：{exc}", "error")
+            return
+        self._bot_save_button.setEnabled(True)
+        self._load_bot_channels()
+        if restarted:
+            self._bot_msg.set_message(
+                "已保存；Agent 已重启，消息入口配置已生效。", "success"
+            )
+        else:
+            self._bot_msg.set_message("已保存；Agent 启动后生效。", "success")
+        self.toast("消息入口已保存", "success")
 
     # ------------------------------------------------------------ 归档
     def _toggle_archive(self, checked: bool) -> None:
@@ -568,3 +871,15 @@ def utils_elided(text: str) -> QWidget:
     label = ElidedLabel(text or "", color=style.MUTED)
     label.setStyleSheet(f"QLabel {{ color: {style.MUTED}; font-size: 11px; }}")
     return label
+
+
+class _SecretLineEdit(QLineEdit):
+    """密码输入框：默认掩码；聚焦时全选，方便直接覆盖已保存的掩码值。"""
+
+    def __init__(self, parent: QWidget | None = None):
+        super().__init__(parent)
+        self.setEchoMode(QLineEdit.EchoMode.Password)
+
+    def focusInEvent(self, event) -> None:  # noqa: N802
+        super().focusInEvent(event)
+        self.selectAll()

@@ -230,6 +230,28 @@ class RelayClient:
         """契约 §4.3：撤销某台手机（其 device token 立即失效）。"""
         await self._request("DELETE", f"/agent/devices/{quote(device_id, safe='')}")
 
+    async def create_agent_device(self, name: str, platform: str) -> dict[str, Any]:
+        """v0.4：为本机 Bot 入口签发一个专用 device token（Agent 认证）。
+
+        用于 Telegram/QQ bot 以自己的身份调 Relay 建任务/查任务，不碰手机 token。
+        返回 ``{"device": {...}, "token": "dev_..."}``；token 只出现这一次。
+        """
+        data = await self._request(
+            "POST",
+            "/agent/devices",
+            json={"name": (name or "Bot")[:40], "platform": platform},
+        )
+        if not isinstance(data, dict):
+            raise RelayError("Relay 签发 Bot 设备返回格式异常。", code="bad_response")
+        device = data.get("device")
+        token = str(data.get("token") or "")
+        if not isinstance(device, dict) or not token:
+            raise RelayError(
+                "Relay 签发 Bot 设备响应缺少 device/token（可能尚未部署 v0.4 端点）。",
+                code="bad_response",
+            )
+        return {"device": device, "token": token}
+
     # ---------------------------------------------------------------- 任务
 
     async def next_task(self) -> Optional[dict[str, Any]]:

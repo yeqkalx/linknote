@@ -1,9 +1,10 @@
 # LinkNote Relay 实时通道交接（agent-dev / app-dev）
 
-> 状态（2026-10-24）：Relay v0.3.0 已在本地实现并通过契约/实时测试 **51/51**（v0.3 增量见第 7 节；
-> 生产尚未部署，由 Lead 统一部署）。Durable Objects（SQLite 后端）+ WebSocket Hibernation + REST 兼容。
-> 协议基础以 `docs/realtime-protocol.md` / `docs/v0.3-protocol-delta.md` 为准，
-> 接口细节与增量字段见 `docs/api-contract.md` 第 11 节。本文件给 PC Agent / PWA 的具体接入信息。
+> 状态（2026-10-24）：Relay **v0.4.0** 已在本地实现并通过契约/实时测试 **53/53**
+> （v0.3 增量见第 7 节、v0.4 Bot 设备签发见第 8 节；生产当前部署的是 v0.3.0，v0.4 等 Lead 统一部署）。
+> Durable Objects（SQLite 后端）+ WebSocket Hibernation + REST 兼容。
+> 协议基础以 `docs/realtime-protocol.md` / `docs/v0.3-protocol-delta.md` / `docs/bot-channels.md` 为准，
+> 接口细节与增量字段见 `docs/api-contract.md`。本文件给 PC Agent / PWA / Bot Runner 的具体接入信息。
 
 ## 1. URL
 
@@ -237,7 +238,7 @@ ws.on('message', (raw) => console.log(JSON.parse(String(raw))));
 | `WS_PROBE_TIMEOUT_SECONDS` | 3 | 探活超时 |
 
 ### 7.5 测试与验证
-- `cd relay && npm test` → **51/51 PASS**：新增 v0.3 用例
+- `cd relay && npm test` → **53/53 PASS**（v0.3 时 51 项；v0.4 新增 2 项 Bot 设备签发用例）：新增 v0.3 用例
   （readiness 透传、探活超时/恢复、无手机不设 alarm/不 ping/`room_meta.last_seen_at` 不变、
   手机连上出现 alarm/断开清除、ack persisted=false 保留 undelivered、缺省 true 删除、
   **默认配置 alarm≈30s（intVar 回归）**）。
@@ -245,3 +246,31 @@ ws.on('message', (raw) => console.log(JSON.parse(String(raw))));
   默认配置回归会额外起一个不传 `WS_*` 变量的独立实例（port+1，测完清理）。
 - `npm run typecheck` 通过。
 - 兼容性：REST/D1 schema 未变；旧 Agent/旧 PWA 不受影响（缺 persisted 视为 true、缺 ready 视为 null）。
+
+## 8. v0.4.0 增量：Agent 签发 Bot 专用 device token
+
+> 依据 `docs/bot-channels.md` §2。用户在自己的电脑跑 Telegram/QQ bot，bot 不需要扫码配对，
+> 由本机 Agent 向 Relay 申请一个独立 device token。**不新增 D1 表、不改现有端点行为、无新 secrets/迁移。**
+
+`POST /api/v1/agent/devices`（Agent 认证，`Authorization: Bearer agt_...`）
+
+```json
+// 请求
+{ "name": "Telegram @abclinknote_bot", "platform": "telegram" }
+// 201 响应（明文 token 只在这一次出现）
+{
+  "ok": true,
+  "data": {
+    "device": { "id": "uuid", "name": "Telegram @abclinknote_bot", "platform": "telegram", "created_at": "..." },
+    "token": "dev_..."
+  }
+}
+```
+
+- `name` 必填 1–40 字符；`platform` ∈ `android|ios|web|telegram|qq`，非法值 → `400 invalid_platform`。
+- D1 `devices` 只存 `sha256(token)`；响应不返回 `token_hash`，不写日志；丢失只能重新签发。
+- Bot 用该 token 调普通 device 接口：`POST /tasks`、`GET /tasks`、`GET /tasks/{id}`、`GET /me` 等；
+  任务按 `device_id` 与手机隔离，但与该 Agent 的任务队列/处理链路共享（同一台电脑处理）。
+- 撤销：Agent 用 `DELETE /api/v1/agent/devices/{device_id}`；被撤销后 bot token 立即 401。
+- 版本：Relay `RELAY_VERSION = 0.4.0`（health 的 `data.version`）；测试 53/53；typecheck 通过。
+  部署：仅需 `npx wrangler deploy`，无 schema/secrets/DO migration 变更。

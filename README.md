@@ -9,14 +9,23 @@
 
 | 能力 | 状态 |
 |---|---|
-| Relay：配对/设备/任务 + DO WebSocket 推送 + readiness + ack persisted（v0.3.0） | ✅ 51 项契约/实时测试通过 |
-| PC Agent：WS 收任务、协议心跳、probe/ready 上报、笔记 ack 重试 | ✅ 222 项单测通过 |
+| Relay：配对/设备/任务 + DO WebSocket 推送 + readiness + ack persisted + Bot device 签发（v0.4.0） | ✅ 53 项契约/实时测试通过 |
+| PC Agent：WS 收任务、协议心跳、probe/ready 上报、笔记 ack 重试 + 本机 Telegram/QQ Bot 入口 | ✅ 254 项单测通过 |
 | 手机 PWA：配对、分享、实时进度、阅读器、缓存固定/徽标、readiness、无假进度 | ✅ 10 项 Playwright 冒烟 + v0.3 mock E2E 全绿 |
-| 桌面客户端 v0.3.0：4 导航 + 就绪横幅 + Obsidian/本地目录自动归档 | ✅ 84 项 UI smoke + 17 项 pytest |
+| 桌面客户端 v0.4.0：4 导航 + 就绪横幅 + 自动归档 + 消息入口设置 | ✅ 100 项 UI smoke + 28 项 pytest |
 | 真实链路：YouTube + B 站各生成一篇笔记 | ✅ 见 [E2E 报告](docs/e2e-report.md) |
-| Windows 桌面安装包（内置 BiliNote 引擎） | ✅ MSI 0.3.0 已安装验证；EXE 备用 |
+| Windows 桌面安装包（内置 BiliNote 引擎） | ✅ MSI 0.4.0；旧 0.3.0 已安装验证 |
 | Android debug APK（Capacitor 壳 + ACTION_SEND） | ✅ 已构建（v1.2）；⚠️ 未真机验证 |
-| 生产部署到 `relay.xykong.xyz` | ✅ v0.3.0，Worker `c312b769` |
+| 生产部署到 `relay.xykong.xyz` | ✅ v0.4.0，Worker `8f2b5be9` |
+
+## v0.4.0 更新：Bot 链接入口（2026-10-24）
+
+- **每个用户填自己的 bot，凭证只存本机**：Telegram 用 `getUpdates` 长轮询，QQ 用官方 WebSocket 网关；不需要公网回调、不上传 bot token 到 Relay。
+- 用法：桌面 → 设置 → 消息入口 → 填 Telegram Bot Token / QQ AppID+AppSecret → 测试 → 启用 → 保存（Agent 自动重启）。
+- 收到链接后走现有任务管线；完成后 **Telegram 回预览 + 完整 `.md` 文件**，**QQ 回笔记文本**（QQ 被动回复窗口约 5–60 分钟，超时用 `/last` 取回）。
+- 命令：`/start` `/help` `/status` `/last` `/retry`；默认只处理私聊/群内 @ 消息；同 bot 不要公开分享（谁发消息谁能用你的电脑）。
+- 限制：QQ 个人主体暂不支持公开使用（只能自己的群 + 20 个内部体验号码，公开需企业认证）；`GROUP_AND_C2C_EVENT` 需平台授权；大陆直连 Telegram 通常不可用。
+- 详细步骤/排查：[Bot 链接入口文档](docs/bot-channels.md)。
 
 ## v0.3.0 更新（2026-10-24）
 
@@ -32,19 +41,20 @@
 给不想折腾命令行/API 路径的人：**一个安装包，内置 BiliNote 引擎**，首次打开走 7 步向导。
 品牌已更新为蓝白配色 / 链条文档图标（`assets/brand/`）。
 
-- 安装包（MSI，推荐）：`dist-desktop/LinkNote-Setup-0.3.0.msi`
-  - 大小：151,453,069 字节（144.4 MB）
-  - SHA256：`AF17C876C30DB6D2BA6623A41EEEC8C148CEEE761D3DD2F457A800B64D4A18DC`
+- 安装包（MSI，推荐）：`dist-desktop/LinkNote-Setup-0.4.0.msi`
+  - 大小：151,518,605 字节（144.5 MB）
+  - SHA256：`0C29888AA763FA364424D4E58C15EE5DFC670005A86E2A69E19A0F7276AF5B30`
   - Windows Installer per-user 安装，免管理员；由安装服务创建 `%LOCALAPPDATA%\LinkNote` 数据目录，不经过 Inno 的临时解压，适合被联想电脑管家/火绒拦截的机器
-- 安装包（EXE，备用）：`dist-desktop/LinkNote-Setup-0.3.0.exe`
-  - 大小：133,550,198 字节（127.4 MB）
-  - SHA256：`A7407EA4B7AAE95E3A600EE503748D405A946B8F157E21C2D05056C9B6F62CF9`
+- 安装包（EXE，备用）：`dist-desktop/LinkNote-Setup-0.4.0.exe`
+  - 大小：133,618,566 字节（127.4 MB）
+  - SHA256：`BF73841162C1A4506A3CA74A43ACC67B58693555099A742D8668B17BDBF08BE2`
   - per-user 安装，免管理员，默认创建桌面/开始菜单快捷方式、默认开机自启
   - 内置 BiliNote 引擎（约 300 MB），不要求用户自己安装 BiliNote
 - 主程序：`dist-desktop/LinkNote/LinkNote.exe`
-  - SHA256：`BC353B5CD0A42DD2AFA145CA582E513F6D6D710BD8DF29D2E192F37DC6D54E73`（FileVersion 0.3.0.0）
+  - 大小：6,751,018 字节；SHA256：`838CD27DB9C144D0A9E19A3C218E006973482A9BC779C801B8FC10E5976F65F5`（FileVersion 0.4.0.0）
 - 首次向导：ffmpeg（LGPL shared，约 78MB）→ 启动引擎 → 填 LLM Key/选模型 → 下载 Whisper → 配对手机
-- 主界面：笔记库（搜索/预览/打开文件）、任务、设备（配对常驻）、设置（AI/转写/引擎/日志入口；自动归档）
+- 主界面：笔记库（搜索/预览/打开文件）、任务、设备（配对常驻）、设置（AI/转写/引擎/日志入口；自动归档；消息入口）
+- 消息入口：设置页填自己的 Telegram Bot Token / QQ AppID+AppSecret；本机 Agent 直接跑 bot，凭证不上传 Relay
 - 常驻系统托盘；托盘显示绿/黄/红状态；开机自启；关闭窗口即最小化
 - 详细说明：[desktop/README.md](desktop/README.md)、[打包说明](desktop/packaging/README.md)
 
@@ -89,11 +99,13 @@
 
 电脑不需要公网 IP，路由器不用端口映射；手机在 4G/公司网络也能用。原理与取舍见 [架构](docs/architecture.md)。
 
+**Bot 入口（v0.4.0）**：Telegram/QQ 消息由本机 Agent 直接长轮询/WebSocket 接收（无需公网回调），建任务仍走同一条 Relay→Agent→BiliNote 管线；笔记从本机 `notes/` 直接回发聊天，不经过 Relay 的 bot 服务。
+
 ## 快速开始
 
 ### 普通用户（Windows）
 
-1. 双击 `dist-desktop/LinkNote-Setup-0.3.0.msi` 安装（推荐；EXE 为备用）。
+1. 双击 `dist-desktop/LinkNote-Setup-0.4.0.msi` 安装（推荐；EXE 为备用）。
 2. 按首次配置向导完成：ffmpeg → 引擎 → LLM Key → Whisper → 手机配对。
 3. 手机打开 `https://relay.xykong.xyz`（或安装 APK），输入配对码即可。
 
@@ -124,10 +136,12 @@ cd pc-agent
 - [桌面客户端说明](desktop/README.md)（安装/向导/架构/限制）
 - [桌面端打包](desktop/packaging/README.md)
 - [架构与取舍](docs/architecture.md)
+- [Bot 链接入口（Telegram / QQ）](docs/bot-channels.md)
 - [实时协议（DO/WS）v1.1](docs/realtime-protocol.md) / [v0.3 协议增量](docs/v0.3-protocol-delta.md)
 - [接口契约](docs/api-contract.md)（Relay / Agent / PWA 三方唯一约定）
 - [成本模型](docs/cost-model.md)（免费额度/DO 计费/压测口径）
 - [v0.3.0 发布报告](docs/v0.3-release-report.md)
+- [v0.4.0 发布报告（Bot 入口）](docs/v0.4-release-report.md)
 - [部署到 Cloudflare](docs/deployment.md)
 - [使用指南（Windows + Android）](docs/user-guide.md)
 - [安全模型](docs/security.md)
@@ -152,11 +166,11 @@ cd pc-agent
 ## 测试
 
 ```powershell
-npm --prefix relay test          # Relay 契约/实时 51 项（自动起 wrangler dev）
+npm --prefix relay test          # Relay 契约/实时 53 项（自动起 wrangler dev）
 node scripts\ui-smoke.mjs        # PWA UI 10 项（需 relay 在 8787 且 UI_RELAY 指向它）
-cd pc-agent; .venv\Scripts\python.exe -m pytest -q   # Agent 222 项
-cd desktop; .venv\Scripts\python.exe -m linknote_desktop.ui._smoke   # 桌面 84 项 smoke
-cd desktop; .venv\Scripts\python.exe -m pytest tests -q              # 桌面 17 项 pytest
+cd pc-agent; .venv\Scripts\python.exe -m pytest -q   # Agent 254 项（含 Bot mock）
+cd desktop; .venv\Scripts\python.exe -m linknote_desktop.ui._smoke   # 桌面 100 项 smoke
+cd desktop; .venv\Scripts\python.exe -m pytest tests -q              # 桌面 28 项 pytest
 npm run check                    # 常用组合（Agent venv 存在时）
 ```
 

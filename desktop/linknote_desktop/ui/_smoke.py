@@ -466,6 +466,14 @@ def main() -> int:
     controller.cancel_pairing = lambda: controller.pairingChanged.emit({})  # type: ignore[method-assign]
     controller.revoke_device = lambda device_id: None  # type: ignore[method-assign]
     controller.unpair = lambda: controller.pairingChanged.emit({})  # type: ignore[method-assign]
+    controller.test_telegram_bot = lambda token: {  # type: ignore[method-assign]
+        "ok": True,
+        "username": "abclinknote_bot",
+    }
+    controller.test_qq_bot = lambda app_id, app_secret: {  # type: ignore[method-assign]
+        "ok": True,
+        "expires_in": 7200,
+    }
 
     # 冒烟里没有真实 Agent 子进程：把快照里的 Agent 运行态伪装成运行中，
     # 让「当前任务」页展示和真实场景一致的运行中样式。
@@ -499,7 +507,7 @@ def main() -> int:
         "二级页面不在侧栏",
         all(key not in window._nav_buttons for key in ("ai", "transcription", "engine", "logs")),
     )
-    check("版本号为 0.3.0", ui_utils.APP_VERSION == "0.3.0")
+    check("版本号为 0.4.0", ui_utils.APP_VERSION == "0.4.0")
     check("就绪横幅-已准备好接收视频", "已准备好接收视频" in window._ready_banner._title.text())
 
     tray = None
@@ -679,10 +687,10 @@ def main() -> int:
                 )
             ),
         )
-        check("归档 frontmatter 版本 0.3.0", 'app_version: "0.3.0"' in archive_text)
+        check("归档 frontmatter 版本 0.4.0", 'app_version: "0.4.0"' in archive_text)
     else:
         check("归档 frontmatter 字段完整", False)
-        check("归档 frontmatter 版本 0.3.0", False)
+        check("归档 frontmatter 版本 0.4.0", False)
     second_archive = controller.archive_notes()
     check(
         "归档幂等（重复导出 0 篇）",
@@ -707,6 +715,89 @@ def main() -> int:
     _pump(app, 600)
     archive_msg = settings_page._archive_msg._label.text()
     check("设置页立即导出有结果提示", ("跳过" in archive_msg) or ("导出" in archive_msg))
+
+    # ---- 消息入口（Telegram / QQ Bot 凭证）
+    check(
+        "设置页有消息入口卡",
+        hasattr(settings_page, "_bot_card")
+        and hasattr(settings_page, "_telegram_token_edit")
+        and hasattr(settings_page, "_qq_app_secret_edit"),
+    )
+    controller.config.telegram_enabled = True
+    controller.config.telegram_bot_token = "1234567890:AAH-smoke-telegram-token"
+    controller.config.telegram_bot_username = ""
+    controller.config.telegram_allow_groups = True
+    controller.config.qq_enabled = True
+    controller.config.qq_app_id = "1020304050"
+    controller.config.qq_app_secret = "smoke-qq-app-secret-abcdef"
+    settings_page._load_bot_channels()
+    _pump(app, 120)
+    telegram_mask = settings_page._telegram_token_edit.text()
+    check("Telegram Token 显示掩码", bool(telegram_mask) and "…" in telegram_mask)
+    check(
+        "Telegram Token 未明文显示",
+        telegram_mask != controller.config.telegram_bot_token,
+    )
+    qq_mask = settings_page._qq_app_secret_edit.text()
+    check("QQ AppSecret 显示掩码", bool(qq_mask) and "…" in qq_mask)
+    check("QQ AppSecret 未明文显示", qq_mask != controller.config.qq_app_secret)
+    check(
+        "消息入口开关已回填",
+        settings_page._telegram_enable_switch.isChecked()
+        and settings_page._qq_enable_switch.isChecked()
+        and settings_page._telegram_allow_groups_switch.isChecked(),
+    )
+
+    # 测试连接（fake controller 方法，不访问网络）
+    settings_page._test_telegram()
+    _pump(app, 400)
+    telegram_test_msg = settings_page._telegram_msg._label.text()
+    check("Telegram 测试连接显示 @username", "@abclinknote_bot" in telegram_test_msg)
+    settings_page._test_qq()
+    _pump(app, 400)
+    qq_test_msg = settings_page._qq_msg._label.text()
+    check("QQ 测试连接成功提示", "连接成功" in qq_test_msg)
+
+    # 修改字段 + 保存：写 config 并同步 agent.json
+    new_telegram_token = "9999999999:AAH-new-smoke-token"
+    new_qq_secret = "new-smoke-qq-secret-123456"
+    settings_page._telegram_token_edit.setText(new_telegram_token)
+    settings_page._qq_app_id_edit.setText("5566778899")
+    settings_page._qq_app_secret_edit.setText(new_qq_secret)
+    settings_page._save_bot_channels()
+    _pump(app, 500)
+    check("消息入口保存写入 config", controller.config.telegram_bot_token == new_telegram_token)
+    check("消息入口保存 QQ 配置", controller.config.qq_app_id == "5566778899")
+    agent_json = controller.agent.read_config()
+    check("消息入口同步到 agent.json", agent_json.get("telegram_bot_token") == new_telegram_token)
+    check("QQ 凭证同步到 agent.json", agent_json.get("qq_app_secret") == new_qq_secret)
+    check(
+        "agent.json 保留既有 bot 字段",
+        "telegram_device_token" in agent_json or "agent_token" in agent_json,
+    )
+    check("消息入口保存成功提示", "已保存" in settings_page._bot_msg._label.text())
+    settings_page._load_bot_channels()
+    _pump(app, 120)
+    check(
+        "保存后重新掩码显示",
+        settings_page._telegram_token_edit.text() != new_telegram_token
+        and "…" in settings_page._telegram_token_edit.text(),
+    )
+
+    # 滚动到「消息入口」卡截图（设置页较长）
+    try:
+        scroll = settings_page.verticalScrollBar()
+        scroll.setValue(max(0, settings_page._bot_card.y() - 8))
+        _pump(app, 250)
+        bots_path = REPO_ROOT / "assets" / "desktop-ui-settings-bots.png"
+        ok = _grab_widget(window, bots_path)
+        check("截图 desktop-ui-settings-bots.png", ok)
+        print(f"[ok] 消息入口设置截图: {bots_path}")
+        scroll.setValue(0)
+        _pump(app, 150)
+    except Exception as exc:  # noqa: BLE001
+        errors.append(f"消息入口截图异常: {exc}")
+        print("[error] 消息入口截图异常:", exc)
 
     # ---- 配对成功态（设备页 PairingPanel）
     controller.pairingChanged.emit(_fake_claimed_pairing())

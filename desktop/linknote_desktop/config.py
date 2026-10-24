@@ -14,7 +14,7 @@ from typing import Any, Iterable
 
 APP_NAME = "LinkNote"
 APP_NAME_CN = "链记"
-APP_VERSION = "0.3.0"
+APP_VERSION = "0.4.0"
 DEFAULT_RELAY_URL = "https://relay.xykong.xyz"
 DEFAULT_BACKEND_URL = "http://127.0.0.1:8483/api"
 DEFAULT_PROVIDER = "deepseek"
@@ -126,6 +126,14 @@ class DesktopConfig:
     archive_enabled: bool = False
     archive_dir: str = ""          # 目标目录（Obsidian vault 或普通目录）
     archive_template: str = ""     # 文件名模板；留空 = 沿用 notes/ 里的文件名
+    # 消息入口（用户自己的 Telegram / QQ 机器人凭证；只存本机 agent.json）
+    telegram_enabled: bool = False
+    telegram_bot_token: str = ""
+    telegram_bot_username: str = ""   # 测试连接 getMe 回填/缓存
+    telegram_allow_groups: bool = False
+    qq_enabled: bool = False
+    qq_app_id: str = ""
+    qq_app_secret: str = ""
     # 日志
     log_retention_days: int = 14
     # 首次引导
@@ -230,6 +238,19 @@ def ensure_agent_config(cfg: DesktopConfig) -> dict[str, Any]:
         except (OSError, json.JSONDecodeError):
             existing = {}
     existing.update(cfg.to_agent_overrides())
+    # 消息入口（Bot）配置：Agent 读取这些字段启动 Telegram / QQ 入口。
+    # 这里只写显式字段，保留 agent.json 里已有的 *_device_token / bot-state 等字段。
+    existing.update(
+        {
+            "telegram_enabled": bool(cfg.telegram_enabled),
+            "telegram_bot_token": cfg.telegram_bot_token,
+            "telegram_bot_username": cfg.telegram_bot_username,
+            "telegram_allow_groups": bool(cfg.telegram_allow_groups),
+            "qq_enabled": bool(cfg.qq_enabled),
+            "qq_app_id": cfg.qq_app_id,
+            "qq_app_secret": cfg.qq_app_secret,
+        }
+    )
     existing.setdefault("platform", "windows")
     existing.setdefault("version", APP_VERSION)
     existing.setdefault("auto_start_backend", True)
@@ -247,3 +268,16 @@ def ensure_agent_config(cfg: DesktopConfig) -> dict[str, Any]:
     tmp.write_text(json.dumps(existing, ensure_ascii=False, indent=2), encoding="utf-8")
     tmp.replace(target)
     return existing
+
+
+def mask_secret(value: str) -> str:
+    """把 Bot Token / AppSecret 变成可展示的掩码，避免明文回显。
+
+    例：``1234567890abcd`` → ``1234…abcd``；短值只显示圆点。
+    """
+    text = str(value or "")
+    if not text:
+        return ""
+    if len(text) <= 8:
+        return "•" * len(text)
+    return f"{text[:4]}…{text[-4:]}"

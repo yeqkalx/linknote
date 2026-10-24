@@ -722,6 +722,108 @@ async function main() {
     expectError(await call('GET', '/me', { token: otherDeviceToken }), 401, 'unauthorized');
   });
 
+  await step('v0.4 Agent 签发 Bot 专用 device token（明文 token 只在响应出现一次）', async () => {
+    const created = expectOk(
+      await call('POST', '/agent/devices', {
+        token: agentToken,
+        body: { name: 'Telegram @abclinknote_bot', platform: 'telegram' },
+      }),
+      201,
+    );
+    assert.equal(created.device.name, 'Telegram @abclinknote_bot');
+    assert.equal(created.device.platform, 'telegram');
+    assert.match(
+      created.device.id,
+      /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/,
+    );
+    assert.ok(Date.parse(created.device.created_at) > 0);
+    assert.match(created.token, /^dev_[\w-]{40,}$/);
+    // 不泄漏 hash；device 对象里不带 token。
+    assert.equal(Object.prototype.hasOwnProperty.call(created, 'token_hash'), false);
+    assert.equal(Object.prototype.hasOwnProperty.call(created.device, 'token'), false);
+    assert.equal(Object.prototype.hasOwnProperty.call(created.device, 'token_hash'), false);
+
+    // /agent/me 能看到新设备（仍不含 token/hash）。
+    const agentMe = expectOk(await call('GET', '/agent/me', { token: agentToken }));
+    const botDevice = agentMe.devices.find((d) => d.id === created.device.id);
+    assert.ok(botDevice, '新设备应出现在 /agent/me devices');
+    assert.equal(botDevice.platform, 'telegram');
+    assert.equal(Object.prototype.hasOwnProperty.call(botDevice, 'token_hash'), false);
+
+    // Bot token 与手机 token 同级隔离：可建任务、查自己的任务；其他设备看不到。
+    const botTask = expectOk(
+      await call('POST', '/tasks', {
+        token: created.token,
+        body: { url: taskUrl, client_key: 'bot-device-key-0001' },
+      }),
+      201,
+    ).task;
+    const botDetail = expectOk(await call('GET', `/tasks/${botTask.id}`, { token: created.token }));
+    assert.equal(botDetail.task.id, botTask.id);
+    expectError(
+      await call('GET', `/tasks/${botTask.id}`, { token: deviceToken }),
+      404,
+      'task_not_found',
+    );
+
+    // 清理队列：Agent 领取并完成 bot 任务，避免影响后续 /agent/tasks/next 断言。
+    const claimed = expectOk(await call('GET', '/agent/tasks/next', { token: agentToken }));
+    assert.equal(claimed.task.id, botTask.id);
+    expectOk(
+      await call('POST', `/agent/tasks/${botTask.id}/complete`, {
+        token: agentToken,
+        body: { title: 'bot 设备任务' },
+      }),
+    );
+  });
+
+  await step('v0.4 /agent/devices 校验：无 auth/device token 401，非法 platform/name 400', async () => {
+    expectError(
+      await call('POST', '/agent/devices', { body: { name: 'x', platform: 'telegram' } }),
+      401,
+      'unauthorized',
+    );
+    expectError(
+      await call('POST', '/agent/devices', {
+        token: deviceToken,
+        body: { name: 'x', platform: 'telegram' },
+      }),
+      401,
+      'unauthorized',
+    );
+    expectError(
+      await call('POST', '/agent/devices', {
+        token: agentToken,
+        body: { name: 'x', platform: 'wechat' },
+      }),
+      400,
+      'invalid_platform',
+    );
+    expectError(
+      await call('POST', '/agent/devices', { token: agentToken, body: { name: 'x' } }),
+      400,
+      'invalid_platform',
+    );
+    expectError(
+      await call('POST', '/agent/devices', { token: agentToken, body: { platform: 'telegram' } }),
+      400,
+      'bad_request',
+    );
+    expectError(
+      await call('POST', '/agent/devices', {
+        token: agentToken,
+        body: { name: 'x'.repeat(41), platform: 'qq' },
+      }),
+      400,
+      'bad_request',
+    );
+    expectError(
+      await call('GET', '/agent/devices', { token: agentToken }),
+      405,
+      'method_not_allowed',
+    );
+  });
+
   await step('CORS：允许的 Origin 有头，不允许的 403', async () => {
     const allowed = await call('GET', '/health', {
       headers: { Origin: 'http://localhost:8787' },

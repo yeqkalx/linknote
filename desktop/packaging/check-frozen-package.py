@@ -5,6 +5,9 @@ Checks inside the *built* executable (not just the source tree):
     and no longer references gyan.dev (task-17 regression)
   * linknote_agent.relay_ws and the websockets package are frozen
     (task-12 regression: 0.2.1 shipped without websockets)
+  * linknote_agent.bots.* (base/telegram/qq/runner/state/device_relay) plus the
+    httpx/httpcore runtime deps used by the bots are frozen
+    (task-23: bot entry must not raise ImportError in the installed app)
 
 Usage:
   desktop\\.venv\\Scripts\\python.exe desktop\\packaging\\check-frozen-package.py ^
@@ -16,10 +19,20 @@ from __future__ import annotations
 
 import argparse
 import json
-import sys
 from pathlib import Path
 from types import CodeType
 from typing import Any
+
+# LinkNote 0.4.0 bot entry modules; every one must exist in the frozen PYZ.
+BOTS_REQUIRED = [
+    "linknote_agent.bots",
+    "linknote_agent.bots.base",
+    "linknote_agent.bots.telegram",
+    "linknote_agent.bots.qq",
+    "linknote_agent.bots.runner",
+    "linknote_agent.bots.state",
+    "linknote_agent.bots.device_relay",
+]
 
 
 def _walk_strings(code: CodeType):
@@ -90,8 +103,43 @@ def main() -> int:
         report["linknote_agent_found"] = any(str(n).startswith("linknote_agent") for n in names)
         report["websockets_ok"] = len(ws_modules) > 0 and report["relay_ws_found"]
 
+        # ----------------------------------------------------- bots modules (0.4)
+        bots_found = [m for m in BOTS_REQUIRED if m in names]
+        bots_missing = [m for m in BOTS_REQUIRED if m not in names]
+        report["bots_required"] = BOTS_REQUIRED
+        report["bots_found"] = bots_found
+        report["bots_missing"] = bots_missing
+        report["bots_ok"] = not bots_missing
+        bots_all = sorted(str(n) for n in names if str(n).startswith("linknote_agent.bots"))
+        report["bots_modules_in_pyz"] = bots_all
+        report["bots_module_count"] = len(bots_all)
+        bot_extract_errors: list[str] = []
+        for required in BOTS_REQUIRED:
+            if required in names:
+                try:
+                    pyz.extract(required)  # raises if the code object is corrupt
+                except Exception as exc:  # noqa: BLE001
+                    bot_extract_errors.append(f"{required}: {type(exc).__name__}: {exc}")
+        report["bots_extract_ok"] = not bot_extract_errors
+        report["bots_extract_errors"] = bot_extract_errors
+
+        # ------------------------------------- runtime deps used by the bots
+        httpx_modules = [n for n in names if str(n) == "httpx" or str(n).startswith("httpx.")]
+        report["httpx_module_count"] = len(httpx_modules)
+        report["httpx_ok"] = len(httpx_modules) > 0
+        httpcore_modules = [n for n in names if str(n) == "httpcore" or str(n).startswith("httpcore.")]
+        report["httpcore_module_count"] = len(httpcore_modules)
+        report["httpcore_ok"] = len(httpcore_modules) > 0
+
         report["module_count"] = len(names)
-        report["ok"] = bool(report["ffmpeg_btbn_ok"] and report["websockets_ok"])
+        report["ok"] = bool(
+            report["ffmpeg_btbn_ok"]
+            and report["websockets_ok"]
+            and report["bots_ok"]
+            and report["bots_extract_ok"]
+            and report["httpx_ok"]
+            and report["httpcore_ok"]
+        )
     except Exception as exc:  # noqa: BLE001
         report["error"] = f"{type(exc).__name__}: {exc}"
         print(json.dumps(report, ensure_ascii=False))

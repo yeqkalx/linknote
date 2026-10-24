@@ -26,7 +26,7 @@ export interface Env {
 
 export type Platform = 'bilibili' | 'youtube' | 'douyin' | 'kuaishou';
 export type AgentPlatform = 'windows' | 'macos' | 'linux';
-export type DevicePlatform = 'android' | 'ios' | 'web';
+export type DevicePlatform = 'android' | 'ios' | 'web' | 'telegram' | 'qq';
 export type TaskStatus = 'queued' | 'running' | 'succeeded' | 'failed';
 export type TaskStage =
   | 'pending'

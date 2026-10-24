@@ -128,6 +128,21 @@ class AgentConfig:
         default_factory=lambda: [30.0, 120.0, 600.0]
     )  # ack persisted=false 时最多重发 task_note 的 3 次延迟（30s / 2min / 10min）
 
+    # ---- v0.4 Bot 入口（Telegram / QQ，凭证只存本机、不上传 Relay）----
+    telegram_enabled: bool = False
+    telegram_bot_token: str = field(default="", repr=False)  # BotFather token；日志/导出必须 mask
+    telegram_bot_username: str = ""  # getMe 回填/cache
+    telegram_device_token: str = field(default="", repr=False)  # Relay 签发的 dev_ token
+    telegram_allow_groups: bool = False  # 默认只允许私聊
+    qq_enabled: bool = False
+    qq_app_id: str = ""
+    qq_app_secret: str = field(default="", repr=False)  # 日志/导出必须 mask
+    qq_device_token: str = field(default="", repr=False)  # Relay 签发的 dev_ token
+    bot_task_poll_seconds: float = 3.0  # Bot 轮询 Relay 任务状态间隔
+    bot_task_timeout_seconds: float = 3600.0  # Bot 端单任务最长等待
+    bot_telegram_preview_chars: int = 3500  # Telegram 预览正文字符数
+    bot_qq_chunk_chars: int = 1500  # QQ 长笔记分片字符数
+
     # ---- 目录（留空 = ~/.linknote/ 下的默认子目录）----
     outbox_dir: str = ""
     notes_dir: str = ""
@@ -243,7 +258,26 @@ class AgentConfig:
         data = {f.name: getattr(self, f.name) for f in fields(self) if f.name != "_extra"}
         if not include_token:
             data["agent_token"] = self.masked_token
+            # v0.4 Bot 凭证：导出/状态里一律 mask，绝不打印明文。
+            for key in (
+                "telegram_bot_token",
+                "telegram_device_token",
+                "qq_app_secret",
+                "qq_device_token",
+            ):
+                if data.get(key):
+                    data[key] = mask_secret(str(data[key]))
         return data
+
+    @property
+    def bot_channels_enabled(self) -> list[str]:
+        """返回已启用的 Bot 入口（telegram / qq）。"""
+        channels: list[str] = []
+        if self.telegram_enabled:
+            channels.append("telegram")
+        if self.qq_enabled:
+            channels.append("qq")
+        return channels
 
     def copy(self) -> AgentConfig:
         data = {f.name: getattr(self, f.name) for f in fields(self) if f.name != "_extra"}
@@ -316,6 +350,16 @@ def _apply_env_overrides(cfg: AgentConfig) -> None:
             continue
 
 
+def mask_secret(value: str) -> str:
+    """把 token/secret 变成可安全打印的形式（日志、状态、导出用）。"""
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    if len(text) <= 8:
+        return "***"
+    return f"{text[:4]}…{text[-4:]}"
+
+
 __all__ = [
     "AgentConfig",
     "ConfigError",
@@ -328,5 +372,6 @@ __all__ = [
     "default_notes_dir",
     "default_outbox_dir",
     "load_config",
+    "mask_secret",
     "save_config",
 ]
