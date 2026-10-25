@@ -31,8 +31,8 @@ from pathlib import Path
 
 from PyInstaller.utils.hooks import collect_submodules
 
-DESKTOP_DIR = Path(SPECPATH).resolve().parent          # ...\bilinote-to-android\desktop
-ROOT_DIR = DESKTOP_DIR.parent                          # ...\bilinote-to-android
+DESKTOP_DIR = Path(SPECPATH).resolve().parent          # ...\linknote\desktop
+ROOT_DIR = DESKTOP_DIR.parent                          # ...\linknote
 AGENT_SRC = ROOT_DIR / "pc-agent"                      # linknote_agent package root
 RESOURCES = DESKTOP_DIR / "linknote_desktop" / "resources"
 ENTRY = DESKTOP_DIR / "packaging" / "linknote_launcher.py"

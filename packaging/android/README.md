@@ -114,7 +114,7 @@ cd android
 
 | 项 | 值 |
 | --- | --- |
-| 交付路径 | `release\LinkNote-debug.apk`（绝对路径：`C:\yeqkalx\code\bilinote-to-android\release\LinkNote-debug.apk`） |
+| 交付路径 | `release\LinkNote-debug.apk` |
 | 构建时间 | 2026-10-25 17:39:41（Asia/Shanghai, UTC+08:00） |
 | app/www 冻结时间 | 2026-10-25 17:37:34（PWA v0.4.0，31 个文件；此后未再改动） |
 | 大小 | 4,701,320 字节（4.48 MiB / 约 4.70 MB） |

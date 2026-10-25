@@ -7,7 +7,7 @@
 ## 1. 为什么是现在这个形状
 
 - BiliNote v2.4.4 的本机处理链路已经成熟（下载 → ffmpeg → 本地 Whisper/Groq → BYOK LLM → Markdown），不需要重写。
-- 企业微信机器人原型（`BiliNote-master/wecom_bot`）已经证明「手机发链接 → 本机处理 → 回传 Markdown」可行，但依赖企业微信、不能做独立产品。
+- 企业微信机器人原型（BiliNote 仓库的 `wecom_bot`）已经证明「手机发链接 → 本机处理 → 回传 Markdown」可行，但依赖企业微信、不能做独立产品。
 - 手机不可能替代 PC 做 Whisper + ffmpeg + 长文 LLM；全云端又会让用户失去 BYOK/隐私/成本优势。
 - 家庭宽带没有公网 IPv4，4G 手机无法直连；必须有中转。Cloudflare Workers + D1 的免费额度对个人/小团队足够，且无需维护服务器。
 - 参考项目：
@@ -112,7 +112,7 @@
 ## 4. 目录结构
 
 ```text
-bilinote-to-android/
+linknote/
 ├─ README.md
 ├─ docs/
 │  ├─ api-contract.md        # 三方接口契约（先读这个）
