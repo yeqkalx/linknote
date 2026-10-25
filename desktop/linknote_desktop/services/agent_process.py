@@ -49,6 +49,14 @@ class AgentProcess:
         return bool(self.read_config().get("agent_token"))
 
     @property
+    def telegram_local_mode(self) -> bool:
+        """无 Relay + Telegram 已配置：允许不配对手机直接启动 Agent（本地模式）。"""
+        try:
+            return bool(self.config.telegram_local_mode())
+        except (AttributeError, TypeError):
+            return False
+
+    @property
     def agent_token(self) -> str:
         return str(self.read_config().get("agent_token") or "")
 
@@ -108,8 +116,11 @@ class AgentProcess:
         with self._lock:
             if self.running:
                 return True
-            if not self.is_paired:
-                self.last_error = "还没有配对手机，请先生成配对码"
+            if not self.is_paired and not self.telegram_local_mode:
+                self.last_error = (
+                    "还没有配对手机，也没有启用 Telegram 消息入口。"
+                    "请生成配对码，或在设置里启用 Telegram（可无 Relay 本地运行）。"
+                )
                 return False
             self.log_path.parent.mkdir(parents=True, exist_ok=True)
             try:

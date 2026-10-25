@@ -108,7 +108,7 @@ class DevicesPage(BasePage):
 
     def _build_relay_card(self) -> _ConnCard:
         card = _ConnCard("Relay 中转")
-        card.add_action("测试连接", "Primary", self._test_relay)
+        self._relay_test_button = card.add_action("测试连接", "Primary", self._test_relay)
         return card
 
     def _build_agent_card(self) -> _ConnCard:
@@ -161,10 +161,17 @@ class DevicesPage(BasePage):
         agent = status.get("agent") or {}
         relay = status.get("relay") or {}
         paired = bool(agent.get("paired"))
+        local_mode = bool(self.controller.config.telegram_local_mode())
 
         # Relay
         online = utils.relay_online(status)
-        if online:
+        if local_mode:
+            self._relay_card.set_state("info", "本地模式")
+            self._relay_card.set_value("未配置 Relay · Telegram 本地模式")
+            self._relay_card.set_message(
+                "无需 Relay 即可在 Telegram 使用；手机/PWA 需要 Relay。", "info"
+            )
+        elif online:
             self._relay_card.set_state("ok", "在线")
             agent_name = (relay.get("agent") or {}).get("name") or self.controller.config.agent_name
             self._relay_card.set_value(f"连接到 {relay.get('url') or self.controller.config.relay_base_url}\n{agent_name or '本机'}")
@@ -186,23 +193,38 @@ class DevicesPage(BasePage):
         running = bool(agent.get("running"))
         if running:
             self._agent_card.set_state("ok", "运行中")
-        elif paired:
+        elif paired or local_mode:
             self._agent_card.set_state("neutral", "已停止")
         else:
             self._agent_card.set_state("error", "未配对")
         pid = agent.get("pid")
-        pair_text = "已配对" if paired else "未配对"
+        if paired:
+            pair_text = "已配对"
+        elif local_mode:
+            pair_text = "Telegram 本地模式"
+        else:
+            pair_text = "未配对"
         self._agent_card.set_value(
             f"{'运行中' if running else '未运行'} · {pair_text}" + (f" · PID {pid}" if pid else "")
         )
         if agent.get("error"):
             self._agent_card.set_message(utils.clip_text(agent.get("error"), 90), "error")
+        elif local_mode:
+            self._agent_card.set_message(
+                "Telegram 本地模式运行中（无需 Relay）；手机配对/PWA 不可用。", "info"
+            )
         elif not paired:
-            self._agent_card.set_message("先在上方完成手机配对，Agent 才能接收任务。", "warning")
+            self._agent_card.set_message("先在上方完成手机配对，或在设置启用 Telegram 本地模式。", "warning")
         else:
             self._agent_card.set_message("")
         self._agent_button.setText("停止" if running else "启动")
-        self._agent_button.setEnabled(running or paired)
+        self._agent_button.setEnabled(running or paired or local_mode)
+
+        if hasattr(self, "_relay_test_button"):
+            self._relay_test_button.setEnabled(not local_mode)
+            self._relay_test_button.setToolTip(
+                "" if not local_mode else "Telegram 本地模式未配置 Relay，无需测试"
+            )
 
         # 引擎
         state = str(engine.get("state") or "stopped")
@@ -251,8 +273,15 @@ class DevicesPage(BasePage):
         elif agent.get("paired"):
             self.controller.start_agent()
             self._agent_card.set_message("正在启动 Agent…", "info")
+        elif self.controller.config.telegram_local_mode():
+            self.controller.start_agent()
+            self._agent_card.set_message(
+                "正在启动 Agent（Telegram 本地模式，无需 Relay）…", "info"
+            )
         else:
-            self._agent_card.set_message("还没有配对手机，请先在上方生成配对码。", "warning")
+            self._agent_card.set_message(
+                "还没有配对手机，也没有启用 Telegram 消息入口。", "warning"
+            )
 
     def _toggle_engine(self) -> None:
         state = str((self._status.get("engine") or {}).get("state") or "stopped")

@@ -92,7 +92,7 @@ def test_ensure_agent_config_writes_telegram_fields(
         assert value["telegram_allow_groups"] is True
         assert value["agent_token"] == "agt_existing"
         assert value["telegram_device_token"] == "dev_telegram_existing"
-        assert value["version"] == "0.5.0"
+        assert value["version"] == "0.5.1"
         assert not any(str(key).startswith("qq_") for key in value)
 
 

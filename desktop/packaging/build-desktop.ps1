@@ -1,4 +1,4 @@
-﻿<#
+<#
 .SYNOPSIS
   Build LinkNote Desktop: PyInstaller onedir exe + Inno Setup installer, and
   verify both on this machine.
@@ -333,7 +333,11 @@ VSVersionInfo(
     $stdoutLog = Join-Path $AppBuild 'pyinstaller-stdout.log'
     $stderrLog = Join-Path $AppBuild 'pyinstaller-stderr.log'
     $t0 = Get-Date
-    $p = Start-Process -FilePath $PyInstaller -ArgumentList $pyiArgs -Wait -PassThru -NoNewWindow `
+    # Run PyInstaller as a module, not via the venv console-script trampoline:
+    # uv trampolines embed absolute paths and break after the repo directory is
+    # moved/renamed ("uv trampoline failed to canonicalize script path").
+    $pyiRunner = @('-m', 'PyInstaller') + $pyiArgs
+    $p = Start-Process -FilePath $Python -ArgumentList $pyiRunner -Wait -PassThru -NoNewWindow `
         -RedirectStandardOutput $stdoutLog -RedirectStandardError $stderrLog
     } finally {
         Remove-Item Env:\LINKNOTE_VERSION_FILE -ErrorAction SilentlyContinue

@@ -43,7 +43,7 @@ def test_state_roundtrip_is_atomic(tmp_path):
     assert loaded.task_times["telegram:private:c1"] == [now]
 
     raw = json.loads((tmp_path / "bot-state.json").read_text(encoding="utf-8"))
-    assert raw["version"] == 2
+    assert raw["version"] == 3
     # 原子写不留临时文件
     assert [p for p in tmp_path.iterdir() if p.name.endswith(".tmp")] == []
 

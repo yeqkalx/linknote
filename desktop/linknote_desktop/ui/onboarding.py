@@ -288,7 +288,8 @@ class OnboardingWizard(QDialog):
         card.add_header(
             "你自己的 Relay",
             "先按仓库里的 docs/self-hosting.md 用你自己的 Cloudflare 账号部署 Relay"
-            "（免费套餐即可），再把地址填到这里。部署好之前可以先跳过，稍后在设置页配置。",
+            "（免费套餐即可），再把地址填到这里。部署好之前可以先跳过，稍后在设置页配置。"
+            "只使用 Telegram 也可以跳过：没有 Relay 时 Telegram 可以本地模式运行（没有手机/PWA）。",
         )
         self._ob_relay_edit = QLineEdit()
         self._ob_relay_edit.setPlaceholderText("https://your-relay.example.com")
@@ -1319,11 +1320,18 @@ class OnboardingWizard(QDialog):
     def _enter_pair_step(self) -> None:
         if not self._relay_configured():
             self._pairing_panel.refresh()
-            self._ob_pair_msg.set_message(
-                "还没有配置 Relay，暂时不能生成配对码。可以先跳过此步："
-                "在「设置 → 连接」填写 Relay 地址后，再到「设备」页配对手机。",
-                "warning",
-            )
+            if self.controller.config.telegram_local_mode():
+                self._ob_pair_msg.set_message(
+                    "当前为 Telegram 本地模式：无需 Relay 也能在 Telegram 使用，但没有手机/PWA。"
+                    "需要手机请先部署 Relay，再回「设备」页配对。",
+                    "warning",
+                )
+            else:
+                self._ob_pair_msg.set_message(
+                    "还没有配置 Relay，暂时不能生成配对码。可以先跳过此步："
+                    "在「设置 → 连接」填写 Relay 地址后，再到「设备」页配对手机。",
+                    "warning",
+                )
             return
         self._ob_pair_msg.clear()
         self._pairing_panel.update_status(self._status)
@@ -1348,11 +1356,16 @@ class OnboardingWizard(QDialog):
         ffmpeg_ok = bool(self._ffmpeg_ok)
         relay_url = str(self.controller.config.relay_base_url or "").strip()
         relay_configured = bool(relay_url)
+        local_mode = bool(self.controller.config.telegram_local_mode())
         rows = [
             (
                 "Relay",
-                f"已配置：{relay_url}" if relay_configured else "未配置（设置页填写）",
-                "ok" if relay_configured else "warn",
+                (
+                    f"已配置：{relay_url}"
+                    if relay_configured
+                    else ("Telegram 本地模式（无需 Relay）" if local_mode else "未配置（设置页填写）")
+                ),
+                "ok" if relay_configured or local_mode else "warn",
             ),
             (
                 "ffmpeg",
@@ -1376,7 +1389,11 @@ class OnboardingWizard(QDialog):
             ),
             (
                 "手机配对",
-                "已配对" if paired else "稍后配对",
+                (
+                    "已配对"
+                    if paired
+                    else ("本地模式不支持手机" if local_mode else "稍后配对")
+                ),
                 "ok" if paired else "warn",
             ),
         ]
@@ -1406,10 +1423,14 @@ class OnboardingWizard(QDialog):
             value.setStyleSheet(f"QLabel {{ color: {color}; font-size: 12px; }}")
             row_layout.addWidget(value, 1)
             self._ob_summary_layout.addWidget(row_widget)
-        if not relay_configured:
+        if not relay_configured and local_mode:
+            self._ob_finish_note.setText(
+                "提示：当前为 Telegram 本地模式（无需 Relay）；手机/PWA 需要部署 Relay 后再配对。"
+            )
+        elif not relay_configured:
             self._ob_finish_note.setText(
                 "提示：还没有配置 Relay。请先按 docs/self-hosting.md 部署自己的 Relay，"
-                "再到「设置 → 连接」填写地址并配对手机。"
+                "再到「设置 → 连接」填写地址并配对手机；也可以启用 Telegram 使用本地模式。"
             )
         elif not ffmpeg_ok:
             self._ob_finish_note.setText(

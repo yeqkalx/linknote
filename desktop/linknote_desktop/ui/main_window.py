@@ -287,17 +287,28 @@ class MainWindow(QMainWindow):
         paired = bool(agent.get("paired"))
 
         issues: list[tuple[str, str, str]] = []
-        relay_configured = bool(str(getattr(config, "relay_base_url", "") or "").strip())
-        if not relay_configured:
+        relay_configured = bool(config.relay_configured())
+        local_mode = bool(config.telegram_local_mode())
+        if not relay_configured and not local_mode:
             issues.append(
                 (
                     "未配置 Relay",
                     "settings",
                     "先按 docs/self-hosting.md 用你自己的 Cloudflare 部署 Relay，"
-                    "再在设置页填写 https://你的域名。",
+                    "再在设置页填写 https://你的域名；或启用 Telegram 使用本地模式（无手机/PWA）。",
                 )
             )
-        if not paired:
+        if local_mode:
+            # Telegram 本地模式：不需要配对手机，但 Agent 仍需在后台运行
+            if not agent.get("running"):
+                issues.append(
+                    (
+                        "Agent 未运行",
+                        "devices",
+                        "Telegram 本地模式需要 Agent 在后台运行；进入设备页启动。",
+                    )
+                )
+        elif not paired:
             issues.append(
                 ("未配对手机", "devices", "生成配对码并用手机扫码；配对完成后就能接收视频。")
             )
@@ -323,9 +334,30 @@ class MainWindow(QMainWindow):
         if issues:
             label, target, detail = issues[0]
             extra = f" 等 {len(issues)} 项" if len(issues) > 1 else ""
-            level = "error" if (not paired or engine_state == "error") else "warn"
+            blocking = engine_state == "error" or (
+                not local_mode and (not relay_configured or not paired)
+            )
+            level = "error" if blocking else "warn"
             self._ready_banner.set_state(
                 level, f"需要处理：{label}{extra}", detail, "去处理 →", target
+            )
+            return
+
+        if local_mode:
+            current = tasks.get("current")
+            if current:
+                title = current.get("title") or current.get("url") or "Telegram 任务"
+                detail = (
+                    "Telegram 本地模式 · 正在处理："
+                    f"{utils.clip_text(title, 60)}；手机配对/PWA 需要 Relay。"
+                )
+            else:
+                detail = (
+                    "通过 Telegram 机器人收发视频链接；不需要 Relay。"
+                    "手机配对 / PWA 需要先部署 Relay。"
+                )
+            self._ready_banner.set_state(
+                "ready", "Telegram 本地模式（无需 Relay）", detail, "查看设置 →", "settings"
             )
             return
 

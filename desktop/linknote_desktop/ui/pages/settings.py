@@ -444,6 +444,10 @@ class SettingsPage(BasePage):
                 "请填写你自己部署的 Relay 地址（见 docs/self-hosting.md）。",
                 "warning",
             )
+        elif self.controller.config.telegram_local_mode():
+            self._connection_msg.set_message(
+                "当前为 Telegram 本地模式（无需 Relay）；手机/PWA 需要 Relay。", "info"
+            )
         else:
             self._connection_msg.set_message(
                 "还没有配置 Relay：请先按 docs/self-hosting.md 部署自己的 Relay，再填写地址。",
@@ -468,7 +472,13 @@ class SettingsPage(BasePage):
             switch._offset = 1.0 if value else 0.0
             switch.update()
 
-        if config.telegram_enabled:
+        if config.telegram_local_mode():
+            suffix = f" · @{self._telegram_username}" if self._telegram_username else ""
+            self._telegram_msg.set_message(
+                f"Telegram 本地模式已启用（无需 Relay；手机/PWA 需要 Relay）{suffix}",
+                "success",
+            )
+        elif config.telegram_enabled:
             if token:
                 suffix = f" · @{self._telegram_username}" if self._telegram_username else ""
                 self._telegram_msg.set_message(f"Telegram 入口已启用{suffix}", "success")
@@ -549,24 +559,38 @@ class SettingsPage(BasePage):
         config.telegram_allow_groups = self._telegram_allow_groups_switch.isChecked()
         self._bot_save_button.setEnabled(False)
         restarted = False
+        started_local = False
         try:
             self.controller.save_config()
+            local_mode = bool(config.telegram_local_mode())
             if getattr(self.controller.agent, "running", False):
                 self.controller.restart_agent()
                 restarted = True
+            elif local_mode:
+                # Telegram 本地模式：无需配对手机/Relay，保存后直接启动 Agent
+                self.controller.start_agent()
+                started_local = True
         except Exception as exc:  # noqa: BLE001 - 不把凭证拼进错误信息
             self._bot_save_button.setEnabled(True)
             self._bot_msg.set_message(f"保存失败：{exc}", "error")
             return
         self._bot_save_button.setEnabled(True)
         self._load_bot_channels()
-        if restarted:
+        local_mode = bool(config.telegram_local_mode())
+        if local_mode and (restarted or started_local):
+            self._bot_msg.set_message(
+                "已保存；Agent 已按 Telegram 本地模式启动（无需 Relay，手机/PWA 不可用）。",
+                "success",
+            )
+            self.toast("已启用 Telegram 本地模式", "success")
+        elif restarted:
             self._bot_msg.set_message(
                 "已保存；Agent 已重启，消息入口配置已生效。", "success"
             )
+            self.toast("消息入口已保存", "success")
         else:
             self._bot_msg.set_message("已保存；Agent 启动后生效。", "success")
-        self.toast("消息入口已保存", "success")
+            self.toast("消息入口已保存", "success")
 
     # ------------------------------------------------------------ 归档
     def _toggle_archive(self, checked: bool) -> None:
@@ -715,10 +739,18 @@ class SettingsPage(BasePage):
         else:
             restarted = False
         if not relay_url:
-            self._connection_msg.set_message(
-                "已保存，但还没有配置 Relay：配对手机与接收任务前请填写自己的 Relay 地址。",
-                "warning",
-            )
+            if self.controller.config.telegram_local_mode():
+                self._connection_msg.set_message(
+                    "已保存；当前为 Telegram 本地模式（无需 Relay），手机/PWA 仍需要 Relay。",
+                    "info",
+                )
+                if not self.controller.agent.running:
+                    self.controller.start_agent()
+            else:
+                self._connection_msg.set_message(
+                    "已保存，但还没有配置 Relay：配对手机与接收任务前请填写自己的 Relay 地址。",
+                    "warning",
+                )
         elif restarted:
             self._connection_msg.set_message("已保存，Agent 已按新设置重启。", "success")
         else:
@@ -727,8 +759,15 @@ class SettingsPage(BasePage):
 
     def _repair_pairing(self) -> None:
         if not str(self.controller.config.relay_base_url or "").strip():
-            self.toast("还没有配置 Relay：请先填写你自己部署的 Relay 地址", "warning")
-            self.goto("settings")
+            if self.controller.config.telegram_local_mode():
+                self.toast(
+                    "当前是 Telegram 本地模式，不支持手机配对；需要手机请先部署 Relay",
+                    "warning",
+                )
+                self.goto("devices")
+            else:
+                self.toast("还没有配置 Relay：请先填写你自己部署的 Relay 地址", "warning")
+                self.goto("settings")
             return
         answer = QMessageBox.question(
             self,

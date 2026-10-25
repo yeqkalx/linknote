@@ -338,6 +338,61 @@ async def cmd_pair(
 # ================================================================ run
 
 
+async def _run_local_bot_mode(
+    cfg_path: Path | None,
+    cfg: AgentConfig,
+    *,
+    bilinote_transport: httpx.AsyncBaseTransport | None,
+    stop_event: asyncio.Event | None,
+    bot_runner: Any | None,
+) -> int:
+    """Telegram 无 Relay 本地模式：Bot 直接调用本机 BiliNote，不碰 Relay。"""
+    verbose = bool(cfg.verbose)
+    log_path = setup_logging(verbose=verbose, log_dir=cfg.resolved_log_dir())
+    print("LinkNote PC Agent 本地模式启动中…")
+    print(f"  配置文件：{cfg_path or default_config_path()}")
+    print("  Telegram 本地模式（无 Relay）")
+    print(f"  BiliNote 后端：{cfg.backend_base_url}（exe：{cfg.backend_exe}）")
+    print(
+        f"  模型：{cfg.provider_id} / {cfg.model_name}"
+        f"（quality={cfg.quality} style={cfg.style}）"
+    )
+    print("  任务直接在本机 BiliNote 处理；不创建 Relay 任务、不需要配对手机。")
+    if log_path:
+        print(f"  日志：{log_path}")
+    print("按 Ctrl+C 退出。")
+
+    bilinote = BiliNoteClient(cfg.backend_base_url, transport=bilinote_transport)
+    backend = BackendSupervisor(cfg, bilinote=bilinote)
+    outbox = Outbox(cfg.resolved_outbox_dir(), notes_dir=cfg.resolved_notes_dir())
+    bot: Any = bot_runner or BotRunner(
+        cfg,
+        None,
+        local_mode=True,
+        bilinote=bilinote,
+        backend=backend,
+        outbox=outbox,
+    )
+    stop = stop_event or asyncio.Event()
+    bot_task: Optional[asyncio.Task] = None
+    try:
+        bot_task = asyncio.create_task(bot.run(stop), name="bot-local-runner")
+        await bot_task
+        return 0
+    finally:
+        stop.set()
+        if bot_task is not None:
+            with contextlib.suppress(asyncio.CancelledError, Exception):
+                bot_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError, Exception):
+                await bot_task
+        with contextlib.suppress(asyncio.CancelledError, Exception):
+            await bot.close()
+        with contextlib.suppress(asyncio.CancelledError, Exception):
+            await backend.close()
+        await bilinote.aclose()
+
+
 async def cmd_run(
     args: argparse.Namespace,
     *,
@@ -352,9 +407,22 @@ async def cmd_run(
     if getattr(args, "relay", None):
         cfg.relay_base_url = str(args.relay).rstrip("/")
 
-    if not cfg.relay_configured:
+    # v0.5+：Telegram 已配置但没配 Relay 时，进入「Telegram 本地模式」：
+    # Bot 直接调用本机 BiliNote，不创建 RelayClient、不连 WS、不需要配对手机。
+    local_bot_mode = (not cfg.relay_configured) and bool(
+        cfg.telegram_enabled and str(cfg.telegram_bot_token or "").strip()
+    )
+    if not cfg.relay_configured and not local_bot_mode:
         print(RELAY_NOT_CONFIGURED_MESSAGE, file=sys.stderr)
         return NEED_PAIR_EXIT
+    if local_bot_mode:
+        return await _run_local_bot_mode(
+            cfg_path,
+            cfg,
+            bilinote_transport=bilinote_transport,
+            stop_event=stop_event,
+            bot_runner=bot_runner,
+        )
 
     if not cfg.is_paired:
         cfg.require_paired()  # 抛 NotPairedError，由 main() 打印并返回 2

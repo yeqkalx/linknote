@@ -15,7 +15,7 @@ from urllib.parse import urlsplit
 
 APP_NAME = "LinkNote"
 APP_NAME_CN = "链记"
-APP_VERSION = "0.5.0"
+APP_VERSION = "0.5.1"
 # v0.5 起不再内置作者的生产 Relay：默认留空，必须由用户填写自己部署的 Relay。
 DEFAULT_RELAY_URL = ""
 DEFAULT_BACKEND_URL = "http://127.0.0.1:8483/api"
@@ -195,6 +195,20 @@ class DesktopConfig:
             return self.engine_workdir
         exe = self.resolved_engine_exe()
         return str(Path(exe).parent) if exe else ""
+
+    def relay_configured(self) -> bool:
+        """是否配置了可用的 Relay（旧作者域名视为未配置）。"""
+        return bool(normalize_relay_url(self.relay_base_url))
+
+    def telegram_configured(self) -> bool:
+        """Telegram 入口是否已启用且填了 Token。"""
+        return bool(
+            self.telegram_enabled and str(self.telegram_bot_token or "").strip()
+        )
+
+    def telegram_local_mode(self) -> bool:
+        """无 Relay + Telegram 已配置：Agent 以 Telegram 本地模式运行（无需手机/PWA）。"""
+        return (not self.relay_configured()) and self.telegram_configured()
 
     def to_agent_overrides(self) -> dict[str, Any]:
         return {

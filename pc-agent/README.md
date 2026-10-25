@@ -165,6 +165,21 @@ uv pip install --python .venv\Scripts\python.exe -e ".[dev]"
    - `getUpdates` offset 持久化（重启不重复/不漏），429 按 `retry_after` 退避。
    - **中国大陆直连 Telegram 通常不可用**，需用户自行解决网络。
 
+### Telegram 本地模式（无需 Relay）
+
+只用 Telegram、不需要手机配对时，可以不部署 Relay：`run` 检测到「Relay 为空 +
+`telegram_enabled=true` + `telegram_bot_token` 非空」会自动进入 **Telegram 本地模式**：
+
+- Bot 收到链接后直接在本机调用 BiliNote（TaskPipeline）生成笔记，保存到
+  `~/.linknote/notes/local-<id>.md` 后直接把笔记发回 Telegram；
+- **不创建 Relay 任务、不需要配对手机、不连接任何 Relay/WS**；启动横幅显示
+  `Telegram 本地模式（无 Relay）`；
+- `/status` 显示最近本地任务；`/last` 重发最近笔记；`/retry <task_id>` 重跑失败/完成的任务；
+  限流仍是 10 任务/小时/聊天；本地任务串行执行（一个处理完再下一个）；
+- Agent 重启时未完成的本地任务会标记失败（可 `/retry` 或重发链接）；
+- 限制：本地模式只提供 Telegram 入口，不提供手机 PWA/APK；如需手机端同时使用，
+  请部署 Relay 并完成配对。既没有 Relay 也没启用 Telegram 时，`run` 仍退出码 2 并提示先部署 Relay。
+
 ### 用环境变量联调（凭证不要进仓库）
 
 ```powershell
@@ -340,7 +355,7 @@ Agent 会把 BiliNote 的原始报错翻译成中文再回传 fail（手机端�
 .venv\Scripts\python.exe -m pytest -q
 ```
 
-当前 **248 passed**。测试**不依赖真实 Relay / BiliNote / Telegram**：REST 用
+当前 **257 passed**。测试**不依赖真实 Relay / BiliNote / Telegram**：REST 用
 `httpx.MockTransport` 在进程内模拟（`tests/conftest.py` 的 `FakeRelay` / `FakeBiliNote`）；
 WS 用注入的 fake connection + 本机 `websockets` fake server（真实握手，随机端口）验证。覆盖：
 
@@ -364,6 +379,9 @@ WS 用注入的 fake connection + 本机 `websockets` fake server（真实握手
   - Runner：链接→平台校验→bot device token 建任务→「已提交」→轮询→本机 notes 投递、
     失败通知、重启恢复 pending、device token 签发/保存/复用、10 任务/小时限流、
     `/help /status /last /retry`、CLI 并行启停；
+  - **本地模式（无 Relay）**：链接→本地 TaskPipeline→本机 notes 落盘→`send_note`、
+    失败回复、`/status` 本地任务、`/last`、`/retry`、限流、重启未完成任务标记失败、
+    CLI 进入条件（空 Relay + Telegram 启用时启动本地模式且不创建 RelayClient）；
 - BiliNote 请求体字段（与 `wecom_bot` 完全一致）、ResponseWrapper 解包、engine_health 探测；
 - CLI（`--help`、未配对拦截、`status --json`、`unpair`、`install-autostart` 命令拼装、
   `run --once`、`run --poll`、默认 WS 模式、Bot Runner 启停）。

@@ -1,4 +1,4 @@
-"""Inspect the built LinkNote.exe (PyInstaller onedir PYZ) for packaging regressions.
+﻿"""Inspect the built LinkNote.exe (PyInstaller onedir PYZ) for packaging regressions.
 
 Checks inside the *built* executable (not just the source tree):
   * linknote_desktop.services.ffmpeg contains the BtbN FFmpeg LGPL shared URL
@@ -8,7 +8,7 @@ Checks inside the *built* executable (not just the source tree):
   * linknote_agent.bots.* (base/telegram/runner/state/device_relay) plus the
     httpx/httpcore runtime deps used by the bots are frozen, while the removed
     QQ bot module must NOT be bundled (0.5.0 is Telegram-only)
-  * no author-operated relay domain literal is frozen (0.5.0) — the legacy
+  * no author-operated relay domain literal is frozen (0.5.x) — the legacy
     migration constant in linknote_desktop.config is reported explicitly and is
     allowed only in that one module (raw artifact grep remains clean because the
     PYZ is compressed)
@@ -143,6 +143,34 @@ def main() -> int:
         report["bots_extract_ok"] = not bot_extract_errors
         report["bots_extract_errors"] = bot_extract_errors
 
+        # ------------------------------------ 0.5.1 Telegram local mode (no Relay)
+        # The bot must be able to run without Relay/pairing: BotRunner(local_mode=True)
+        # and the CLI/state helpers are part of that feature.
+        local_mode_markers = {
+            "linknote_agent.bots.runner": "本地模式",
+            "linknote_agent.bots.state": "本地模式",
+            "linknote_agent.cli": "本地模式",
+        }
+        local_mode_detail: dict[str, dict[str, Any]] = {}
+        for module_name, marker in local_mode_markers.items():
+            detail: dict[str, Any] = {"module_present": module_name in names, "marker": marker}
+            if module_name in names:
+                try:
+                    code = pyz.extract(module_name)
+                    strings = list(_walk_strings(code)) if isinstance(code, CodeType) else []
+                    detail["marker_found"] = any(marker in text for text in strings)
+                except Exception as exc:  # noqa: BLE001
+                    detail["error"] = f"{type(exc).__name__}: {exc}"
+                    detail["marker_found"] = False
+            else:
+                detail["marker_found"] = False
+            local_mode_detail[module_name] = detail
+        report["local_mode_modules"] = local_mode_detail
+        report["local_mode_ok"] = all(
+            d["module_present"] and d.get("marker_found") for d in local_mode_detail.values()
+        )
+        report["cli_found"] = "linknote_agent.cli" in names
+
         # ------------------------------------- runtime deps used by the bots
         httpx_modules = [n for n in names if str(n) == "httpx" or str(n).startswith("httpx.")]
         report["httpx_module_count"] = len(httpx_modules)
@@ -190,6 +218,7 @@ def main() -> int:
             and report["httpx_ok"]
             and report["httpcore_ok"]
             and report["author_domain_ok"]
+            and report["local_mode_ok"]
         )
     except Exception as exc:  # noqa: BLE001
         report["error"] = f"{type(exc).__name__}: {exc}"
@@ -205,4 +234,5 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+
 

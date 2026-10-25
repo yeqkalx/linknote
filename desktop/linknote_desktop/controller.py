@@ -123,7 +123,7 @@ class DesktopController(QObject):
         if self.config.onboarding_done:
             if self.config.engine_auto_start:
                 self.start_engine_async(silent=True)
-            if self.agent.is_paired:
+            if self.agent.is_paired or self.config.telegram_local_mode():
                 self.start_agent()
         self._maybe_auto_archive()
 
@@ -133,7 +133,7 @@ class DesktopController(QObject):
         self.config.save()
         ensure_agent_config(self.config)
         self.start_engine_async(silent=True)
-        if self.agent.is_paired:
+        if self.agent.is_paired or self.config.telegram_local_mode():
             self.start_agent()
         self.refresh_status_async()
         self._maybe_auto_archive()
@@ -289,12 +289,25 @@ class DesktopController(QObject):
         self.start_agent()
 
     # ------------------------------------------------------------------ 配对
+    def relay_configured(self) -> bool:
+        return bool(self.config.relay_configured())
+
+    def telegram_local_mode(self) -> bool:
+        """无 Relay + Telegram 已配置：Agent 以本地模式运行，手机配对不可用。"""
+        return bool(self.config.telegram_local_mode())
+
     def create_pairing_async(self, agent_name: str | None = None) -> None:
-        if not str(self.config.relay_base_url or "").strip():
-            self.error.emit(
-                "还没有配置 Relay 地址。请先按 docs/self-hosting.md 部署自己的 Relay，"
-                "然后在设置页填写你的 Relay 地址，再配对手机。"
-            )
+        if not self.relay_configured():
+            if self.telegram_local_mode():
+                self.error.emit(
+                    "当前是 Telegram 本地模式（未配置 Relay），不支持手机配对。"
+                    "需要手机/PWA 请先按 docs/self-hosting.md 部署自己的 Relay 并填写地址。"
+                )
+            else:
+                self.error.emit(
+                    "还没有配置 Relay 地址。请先按 docs/self-hosting.md 部署自己的 Relay，"
+                    "然后在设置页填写你的 Relay 地址，再配对手机。"
+                )
             return
         name = agent_name or self.config.agent_name or "我的电脑"
         existing_token = self.agent.agent_token

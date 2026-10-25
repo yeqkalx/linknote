@@ -105,8 +105,14 @@ class TrayIcon(QSystemTrayIcon):
         agent = status.get("agent") or {}
         running = bool(agent.get("running"))
         paired = bool(agent.get("paired"))
-        self._agent_action.setText("暂停手机任务" if running else "继续手机任务")
-        self._agent_action.setEnabled(running or paired)
+        local_mode = bool(self.controller.config.telegram_local_mode())
+        if local_mode:
+            self._agent_action.setText(
+                "暂停 Telegram 本地模式" if running else "启动 Telegram 本地模式"
+            )
+        else:
+            self._agent_action.setText("暂停手机任务" if running else "继续手机任务")
+        self._agent_action.setEnabled(running or paired or local_mode)
         self._pair_action.setText("添加手机" if paired else "生成配对码")
 
     # ------------------------------------------------------------ 菜单动作
@@ -121,6 +127,13 @@ class TrayIcon(QSystemTrayIcon):
         show_page = getattr(self.window, "show_page", None)
         if callable(show_page):
             show_page("devices")
+        if self.controller.telegram_local_mode():
+            self.show_notification(
+                "本地模式不支持手机",
+                "当前为 Telegram 本地模式，没有手机/PWA；需要手机请先在设置里部署自己的 Relay。",
+                "warning",
+            )
+            return
         try:
             self.controller.create_pairing_async()
         except Exception as exc:  # noqa: BLE001
@@ -128,11 +141,17 @@ class TrayIcon(QSystemTrayIcon):
 
     def _toggle_agent(self) -> None:
         agent = self.controller.agent
+        local_mode = bool(self.controller.config.telegram_local_mode())
         if getattr(agent, "running", False):
             self.controller.stop_agent()
-            self.show_notification("已暂停手机任务", "Agent 已停止，恢复后手机会继续发送任务。", "info")
+            if local_mode:
+                self.show_notification(
+                    "已暂停 Telegram 本地模式", "Agent 已停止，恢复后会继续在 Telegram 接收链接。", "info"
+                )
+            else:
+                self.show_notification("已暂停手机任务", "Agent 已停止，恢复后手机会继续发送任务。", "info")
             return
-        if not getattr(self.controller, "agent", None) or not getattr(agent, "is_paired", False):
+        if not getattr(agent, "is_paired", False) and not local_mode:
             self.show_notification("还没有配对手机", "请先在主界面生成配对码并完成配对。", "warning")
             self._open_window()
             show_page = getattr(self.window, "show_page", None)
@@ -140,7 +159,14 @@ class TrayIcon(QSystemTrayIcon):
                 show_page("devices")
             return
         self.controller.start_agent()
-        self.show_notification("已恢复手机任务", "Agent 正在运行，手机会继续发送任务。", "success")
+        if local_mode:
+            self.show_notification(
+                "已启动 Telegram 本地模式",
+                "无需 Relay；在 Telegram 里给机器人发视频链接即可。手机/PWA 需要 Relay。",
+                "success",
+            )
+        else:
+            self.show_notification("已恢复手机任务", "Agent 正在运行，手机会继续发送任务。", "success")
 
     def _restart_engine(self) -> None:
         self.controller.restart_engine_async()

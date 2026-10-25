@@ -2,14 +2,15 @@
 
 面向普通用户的 LinkNote 桌面端：**安装后即用**，不需要命令行、不需要手动安装 BiliNote。
 
-- 安装包：`dist-desktop/LinkNote-Setup-0.5.0.exe`（per-user，免管理员）
+- 安装包：`dist-desktop/LinkNote-Setup-0.5.1.exe`（per-user，免管理员）
 - 主程序：`dist-desktop/LinkNote/LinkNote.exe`
 - 内置 BiliNote 引擎：安装包默认包含（约 300 MB，BiliNote MIT）
 - 系统托盘常驻、开机自启、状态绿/黄/红
 - **Relay 自托管**：v0.5 起不内置任何公共 Relay；先按 [`docs/self-hosting.md`](../docs/self-hosting.md) 用你自己的 Cloudflare 账号/域名部署，再在首次向导 / 设置页填写地址
+- **Telegram 本地模式**（v0.5.1）：不部署 Relay 也能用 Telegram 机器人——设置里启用 Telegram 后，Agent 以本地模式运行（直接处理 Telegram 链接），但没有手机/PWA
 - 首次启动 8 步配置向导：Relay → ffmpeg → 引擎 → AI Key → Whisper → 手机配对
 - 4 个主导航页：**笔记库 / 任务 / 设备 / 设置**（AI 模型、语音转写、引擎与诊断、日志收进设置页）
-- 顶部就绪横幅：绿色「已准备好接收视频」/ 黄红「需要处理：…」（含「未配置 Relay」阻塞项），点击直接跳到要处理的页面
+- 顶部就绪横幅：绿色「已准备好接收视频」/「Telegram 本地模式（无需 Relay）」/ 黄红「需要处理：…」，点击直接跳到要处理的页面
 - 消息入口：设置页填写**自己的** Telegram Bot Token，测试连接、启用开关；凭证只存本机 agent.json
 - AI 模型：保存或测试 API Key 后**自动拉取可用模型**，勾选即写回 Agent 生效（无需手动刷新/重启）
 - 配对常驻：配对成功后已配对设备一直显示，可添加/更换手机、逐个解除或解除本机配对
@@ -26,34 +27,36 @@
 |---|---|
 | ![笔记库](../assets/desktop-ui-library.png) | ![AI 模型](../assets/desktop-ui-ai.png) |
 
-| 连接 Relay（首次向导） | 消息入口（Telegram） |
+| 连接 Relay（首次向导） | 消息入口（Telegram 本地模式） |
 |---|---|
 | ![连接 Relay](../assets/desktop-ui-onboarding-relay.png) | ![消息入口](../assets/desktop-ui-settings-bots.png) |
 
-| 首次配对（向导） |
-|---|
-| ![配对](../assets/desktop-ui-onboarding-pair.png) |
+| Telegram 本地模式（无需 Relay） | 首次配对（向导） |
+|---|---|
+| ![本地模式](../assets/desktop-ui-local-mode.png) | ![配对](../assets/desktop-ui-onboarding-pair.png) |
 
 ## 1. 用户怎么用
 
-1. **先部署自己的 Relay**：按 [`docs/self-hosting.md`](../docs/self-hosting.md) 用你自己的 Cloudflare 账号创建 D1 + 部署 Worker + 绑定域名，得到一个 `https://你的域名`。桌面端不再连接作者的任何公共地址。
-2. 双击 `LinkNote-Setup-0.5.0.msi`（推荐；Windows Installer，免管理员）。
-   - 如果机器上装了联想电脑管家/火绒，它们可能拦截 Inno 版 `LinkNote-Setup-0.5.0.exe` 的临时解压；MSI 由 Windows Installer 服务创建目录，通常可通过。
+1. **（手机/PWA 需要）先部署自己的 Relay**：按 [`docs/self-hosting.md`](../docs/self-hosting.md) 用你自己的 Cloudflare 账号创建 D1 + 部署 Worker + 绑定域名，得到一个 `https://你的域名`。桌面端不再连接作者的任何公共地址。
+   - 只用 Telegram 的话可以跳过这一步，直接走下面的 **Telegram 本地模式**。
+2. 双击 `LinkNote-Setup-0.5.1.msi`（推荐；Windows Installer，免管理员）。
+   - 如果机器上装了联想电脑管家/火绒，它们可能拦截 Inno 版 `LinkNote-Setup-0.5.1.exe` 的临时解压；MSI 由 Windows Installer 服务创建目录，通常可通过。
 3. 首次打开按向导：
-   - **连接 Relay**：填写 `https://你的-relay域名`，点「测试连接」确认 `/api/v1/health` 返回 ok + realtime（也可以稍后配置，但配对前必须填好）
+   - **连接 Relay**：填写 `https://你的-relay域名`，点「测试连接」确认 `/api/v1/health` 返回 ok + realtime（只会用 Telegram 时可跳过此步）
    - 自动下载 FFmpeg **LGPL shared** 构建（BtbN，zip 约 82 MB / 解压约 177 MB，只需一次）
    - 启动内置 BiliNote 引擎
    - 选择 DeepSeek/OpenAI 等供应商，粘贴自己的 API Key 并测试
    - 选择 Whisper 模型并下载（默认 small，也可用 tiny/base）
-   - 生成配对码/二维码，手机 LinkNote 输入或扫码
+   - 生成配对码/二维码，手机 LinkNote 输入或扫码（仅 Telegram 本地模式可跳过）
 4. 之后程序常驻托盘；手机分享视频链接，电脑自动生成 Markdown 回传手机。
+   - **Telegram 本地模式（无需 Relay）**：跳过 Relay 后，在设置 → 消息入口启用 Telegram 并保存，Agent 会自动以本地模式启动；直接在 Telegram 私聊机器人发视频链接即可。此时就绪横幅显示「Telegram 本地模式（无需 Relay）」，配对手机入口禁用（提示：需要手机请先部署 Relay）。
 5. 主界面（4 个一级页面）：
    - **笔记库**：本机 `notes` 目录里的 Markdown（回传失败/过大的笔记会自动留档），支持按标题/平台搜索、Markdown 预览、打开原文件/目录、复制路径；
    - **任务**：Agent 正在处理的任务、引擎实时阶段/进度、Relay 队列、最近完成/失败；
-   - **设备**：配对面板常驻 + Relay/Agent/引擎连接状态卡；
+   - **设备**：配对面板常驻 + Relay/Agent/引擎连接状态卡；Telegram 本地模式下配对面板会提示不支持手机；
    - **设置**：连接（Relay 地址 + 测试 Relay）、消息入口、归档、启动行为、生成参数、本机路径；「高级功能」里可进入 AI 模型 / 语音转写 / 引擎与诊断 / 日志（页面右上角可返回）。
-   - 顶部横幅会提示「已准备好接收视频」或「需要处理：…」，点击直接跳到对应页面（未配置 Relay 时优先提示）。
-   - **消息入口**：设置 → 消息入口，填自己的 Telegram Bot Token（@BotFather → `/newbot`），测试连接后打开开关保存；保存会写本机 `agent.json` 并重启 Agent 生效。凭证在 UI 掩码显示、不写日志。
+   - 顶部横幅会提示「已准备好接收视频」/「Telegram 本地模式（无需 Relay）」或「需要处理：…」，点击直接跳到对应页面（未配置 Relay 且未启用 Telegram 时才会阻塞）。
+   - **消息入口**：设置 → 消息入口，填自己的 Telegram Bot Token（@BotFather → `/newbot`），测试连接后打开开关保存；保存会写本机 `agent.json` 并重启 Agent。未配置 Relay 时保存后会直接以 Telegram 本地模式启动 Agent；凭证在 UI 掩码显示、不写日志。
    - **Obsidian 自动归档**：设置 → 笔记自动归档，选择 Obsidian 仓库或任意本地目录后，新笔记会复制过去并补 `title/source_url/platform/created_at/model/app_version` frontmatter；已存在文件不会重复导出。
 
 关闭窗口默认最小化到托盘；右键托盘可打开主界面、暂停任务、重启引擎、退出。开机自启默认开启，可在设置关闭。
@@ -63,15 +66,16 @@
 | 功能 | 实现 |
 |---|---|
 | BiliNote 引擎 | 安装包内置 clean engine；桌面端启动/停止/探测/自动复用已运行实例 |
-| Relay（自托管） | 默认 Relay 为空；首次向导 / 设置页填写自己部署的地址，测试 `GET /api/v1/health`（ok + realtime）；保存写 `agent.json` 并重启 Agent；未配置时配对禁用、就绪横幅提示 |
+| Relay（自托管） | 默认 Relay 为空；首次向导 / 设置页填写自己部署的地址，测试 `GET /api/v1/health`（ok + realtime）；保存写 `agent.json` 并重启 Agent；未配置时配对禁用；无 Relay 但启用 Telegram 时进入本地模式 |
+| Telegram 本地模式 | 无 Relay + Telegram 已启用且 Token 非空：Agent 以本地模式启动（pc-agent 直接处理 Telegram 链接、笔记落本机 notes、发回 Telegram），不连 Relay、不需要配对手机；手机/PWA 仍需 Relay |
 | ffmpeg | 自动检测系统 ffmpeg；没有则从 **BtbN FFmpeg-Builds 下载 win64 LGPL shared 构建**（默认 `ffmpeg-master-latest-win64-lgpl-shared.zip`）解压到 `%LOCALAPPDATA%\LinkNote\ffmpeg`（保留同目录 DLL），通过 `FFMPEG_BIN_PATH` 注入引擎；也可手动指定本机 ffmpeg |
 | LLM 供应商/Key | 通过 BiliNote `/get_all_providers`、`/update_provider`、`/connect_test` 管理；Key 存在本机引擎数据库 |
 | 模型选择 | `/model_list` + `/model_list/{provider}`（动态可用模型 + 内置回退）；UI 勾选后写 `config.provider_id/model_name`，Agent 运行时自动重启生效 |
 | 当前任务 | controller 后台快照：Agent 日志任务事件 + Relay `/agent/me` 队列 + BiliNote `/task_status` 实时进度；3 秒自动刷新 |
 | 笔记库 / 历史笔记 | 扫 `%LOCALAPPDATA%\LinkNote\notes\*.md` 与 outbox 待回传记录；标题/平台搜索、只读预览、打开/复制 |
 | 自动归档 | 扫描 notes 新 Markdown → 复制到 `archive_dir`（Obsidian vault 或本地目录），补 YAML frontmatter（title/source_url/platform/created_at/model/app_version）；目标已存在则跳过，幂等 |
-| 消息入口 | 设置页配置用户自己的 Telegram Bot Token；controller 提供 getMe 连通性测试（不打印 token）；保存写 `agent.json` 并重启 Agent 生效 |
-| 就绪横幅 | 由 Relay 配置、Agent 运行、引擎、ffmpeg、模型配置与任务快照计算；绿色「已准备好接收视频」/ 黄红「需要处理：…」并可点击跳转 |
+| 消息入口 | 设置页配置用户自己的 Telegram Bot Token；controller 提供 getMe 连通性测试（不打印 token）；保存写 `agent.json` 并重启 Agent；无 Relay 时保存后以本地模式启动 Agent |
+| 就绪横幅 | 由 Relay/Telegram 配置、Agent 运行、引擎、ffmpeg、模型配置与任务快照计算；绿色「已准备好接收视频」/「Telegram 本地模式（无需 Relay）」/ 黄红「需要处理：…」并可点击跳转 |
 | Whisper | `/transcriber_config`、`/transcriber_download`、`/transcriber_models_status`；默认 HF 镜像 `hf-mirror.com`，可改 |
 | 手机配对 | 桌面端创建配对码/二维码，Agent 自动轮询 Relay 直到手机领取；成功后设备列表常驻，可添加/更换/解除 |
 | 常驻 | PySide6 QSystemTrayIcon + 独立 Agent 子进程 + HKCU Run 自启 |
@@ -92,8 +96,8 @@
 - Windows 10/11 x64
 - 安装包约 127 MB，安装后约 430 MB（不含 Whisper 模型）
 - 首次配置另需下载：ffmpeg 约 100 MB + Whisper small 约 460 MB（可选 tiny 约 75 MB）
-- 需要网络访问**你自己部署的 Relay 域名**、`api.deepseek.com`（或你选的 LLM）、`hf-mirror.com`/HuggingFace
-- 需要一个自己的 Cloudflare 账号 + 域名来部署 Relay（免费套餐即可，见 [`docs/self-hosting.md`](../docs/self-hosting.md)）
+- 需要网络访问 `api.deepseek.com`（或你选的 LLM）、`hf-mirror.com`/HuggingFace；手机/PWA 还需要**你自己部署的 Relay 域名**
+- 手机/PWA 需要一个自己的 Cloudflare 账号 + 域名来部署 Relay（免费套餐即可，见 [`docs/self-hosting.md`](../docs/self-hosting.md)）；只用 Telegram 本地模式则不需要 Relay/Cloudflare
 - 电脑需要保持开机/不休眠，手机才能随时发任务
 
 ## 5. 开发运行
@@ -135,7 +139,7 @@ LinkNote.exe (PySide6)
 ├── MainWindow / TrayIcon        # 4 一级页 + 4 二级页 + 就绪横幅 + 向导 + 托盘
 ├── DesktopController            # Qt 信号 + 后台线程池
 │   ├── EngineManager            # BiliNoteBackend.exe 启停/探测
-│   ├── AgentProcess             # LinkNote.exe --agent-worker 子进程（现有 linknote_agent）
+│   ├── AgentProcess             # LinkNote.exe --agent-worker 子进程（Telegram 本地模式也由此启动）
 │   ├── FFmpegManager            # 检测/下载/解压
 │   ├── RelayService             # 配对/设备状态（复用 RelayClient）
 │   ├── 数据快照（任务/笔记库）    # Agent 日志解析 + notes/outbox 扫描，后台线程，不阻塞 GUI
@@ -160,6 +164,7 @@ LinkNote.exe (PySide6)
 - 安装包内引擎来自本地 BiliNote 构建；公开分发前需确认上游版本/许可与更新策略。
 - Markdown 不落 Relay 数据库；转发瞬间 Relay 可见明文，端到端加密为后续项。
 - Telegram 消息会经过 Telegram 平台云（非端到端加密）；Telegram 在中国大陆通常需自备代理。
+- Telegram 本地模式只支持 Telegram，没有手机/PWA；需要手机请先部署 Relay 并配对。本地任务不会出现在手机队列里。
 ## 9. 第三方许可与 FFmpeg
 
 - 安装目录内 `LICENSE`（LinkNote MIT）、`NOTICE`（第三方组件说明）、

@@ -473,7 +473,7 @@ def main() -> int:
     }
     controller.test_relay = lambda url=None: {  # type: ignore[method-assign]
         "ok": True,
-        "version": "0.5.0",
+        "version": "0.5.1",
         "realtime": True,
         "status": "ok",
     }
@@ -514,7 +514,7 @@ def main() -> int:
         "二级页面不在侧栏",
         all(key not in window._nav_buttons for key in ("ai", "transcription", "engine", "logs")),
     )
-    check("版本号为 0.5.0", ui_utils.APP_VERSION == "0.5.0")
+    check("版本号为 0.5.1", ui_utils.APP_VERSION == "0.5.1")
     check("默认 Relay 为空", default_relay_url == "")
     # v0.5 迁移：作者旧 Relay / 旧 workers.dev 默认必须清空，自定义地址保留
     legacy_host = sorted(config_module._LEGACY_RELAY_HOSTS)[0]
@@ -728,10 +728,10 @@ def main() -> int:
                 )
             ),
         )
-        check("归档 frontmatter 版本 0.5.0", 'app_version: "0.5.0"' in archive_text)
+        check("归档 frontmatter 版本 0.5.1", 'app_version: "0.5.1"' in archive_text)
     else:
         check("归档 frontmatter 字段完整", False)
-        check("归档 frontmatter 版本 0.5.0", False)
+        check("归档 frontmatter 版本 0.5.1", False)
     second_archive = controller.archive_notes()
     check(
         "归档幂等（重复导出 0 篇）",
@@ -869,6 +869,82 @@ def main() -> int:
     except Exception as exc:  # noqa: BLE001
         errors.append(f"消息入口截图异常: {exc}")
         print("[error] 消息入口截图异常:", exc)
+
+    # ---- Telegram 本地模式（无 Relay，v0.5.1）
+    saved_relay = str(controller.config.relay_base_url or "")
+    controller.config.relay_base_url = ""
+    controller.save_config()
+    window.refresh_ready_banner()
+    _pump(app, 250)
+    check("Telegram 本地模式判定", controller.config.telegram_local_mode() is True)
+    check(
+        "本地模式就绪横幅",
+        "Telegram 本地模式（无需 Relay）" in window._ready_banner._title.text(),
+    )
+    check("本地模式横幅跳转设置", window._ready_banner.target_key == "settings")
+    # 本地模式是「未配对」场景：清掉模拟 status 里的已配对/设备
+    local_status = _fake_status()
+    local_status["agent"]["paired"] = False
+    local_status["relay"]["devices"] = []
+    controller._on_status(local_status)  # noqa: SLF001
+    window.show_page("devices")
+    _pump(app, 250)
+    devices_page = window._pages["devices"]
+    local_panel = devices_page._pairing_panel
+    local_panel.refresh()
+    _pump(app, 150)
+    check("本地模式配对按钮禁用", not local_panel._generate_button.isEnabled())
+    check("本地模式配对提示", "本地模式" in local_panel._idle_msg._label.text())
+    check("本地模式 Agent 可启动", devices_page._agent_button.isEnabled())
+
+    window.show_page("settings")
+    _pump(app, 250)
+    settings_page._load_bot_channels()
+    _pump(app, 120)
+    check(
+        "设置页提示本地模式",
+        "本地模式" in settings_page._telegram_msg._label.text()
+        or "本地模式" in settings_page._connection_msg._label.text(),
+    )
+    # 本地模式下的「消息入口」截图（Telegram 本地模式提示）
+    try:
+        scroll = settings_page.verticalScrollBar()
+        scroll.setValue(max(0, settings_page._bot_card.y() - 8))
+        _pump(app, 200)
+        bots_local_path = REPO_ROOT / "assets" / "desktop-ui-settings-bots.png"
+        check(
+            "截图 desktop-ui-settings-bots.png（本地模式）",
+            _grab_widget(window, bots_local_path),
+        )
+        scroll.setValue(0)
+        _pump(app, 120)
+    except Exception as exc:  # noqa: BLE001
+        errors.append(f"本地模式设置截图异常: {exc}")
+
+    # 本地模式横幅 + 设备页截图
+    window.show_page("devices")
+    _pump(app, 250)
+    local_path = REPO_ROOT / "assets" / "desktop-ui-local-mode.png"
+    check("截图 desktop-ui-local-mode.png", _grab_widget(window, local_path))
+
+    # 无 Relay 且 Telegram 未启用 → 仍然阻塞
+    controller.config.telegram_enabled = False
+    window.refresh_ready_banner()
+    _pump(app, 200)
+    check(
+        "无 Relay 且无 Telegram 仍阻塞",
+        "未配置 Relay" in window._ready_banner._title.text(),
+    )
+    controller.config.telegram_enabled = True
+    controller.config.relay_base_url = saved_relay
+    controller.save_config()
+    controller._on_status(_fake_status())  # noqa: SLF001 - 恢复配对状态
+    window.refresh_ready_banner()
+    _pump(app, 200)
+    check(
+        "恢复 Relay 后横幅恢复已准备好",
+        "已准备好接收视频" in window._ready_banner._title.text(),
+    )
 
     # ---- 配对成功态（设备页 PairingPanel）
     controller.pairingChanged.emit(_fake_claimed_pairing())

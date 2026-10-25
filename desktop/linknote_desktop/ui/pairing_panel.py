@@ -282,10 +282,20 @@ class PairingPanel(Card):
         # Relay 地址以 config 为准：v0.5 起没有默认地址，未配置时禁止生成配对码。
         return bool(str(self.controller.config.relay_base_url or "").strip())
 
+    def _local_mode(self) -> bool:
+        """无 Relay + Telegram 已配置：Telegram 本地模式（不支持手机配对）。"""
+        try:
+            return bool(self.controller.config.telegram_local_mode())
+        except (AttributeError, TypeError):
+            return False
+
     def _device_count(self) -> int:
         return len(self._devices) if self._devices else 0
 
     def _paired(self) -> bool:
+        if self._local_mode():
+            # Telegram 本地模式不支持手机配对：旧的配对 token 也不展示配对/设备 UI
+            return False
         agent = (self._status or {}).get("agent") or {}
         if agent.get("paired"):
             return True
@@ -356,7 +366,11 @@ class PairingPanel(Card):
             )
             self._countdown_label.setText("")
 
-        show_code = bool(code) and state not in ("expired", "claimed")
+        show_code = (
+            bool(code)
+            and state not in ("expired", "claimed")
+            and self._relay_configured()
+        )
         self._code_box.setVisible(show_code)
         self._expired_box.setVisible(bool(code) and state == "expired")
         # 未生成配对码且未配对时才显示「生成配对码」引导；已配对/刚成功时
@@ -404,14 +418,24 @@ class PairingPanel(Card):
     def _render_idle(self) -> None:
         self._idle_msg.clear()
         if not self._relay_configured():
-            self._idle_title.setText("还没有配置 Relay")
-            self._idle_text.setText(
-                "先按 docs/self-hosting.md 用你自己的 Cloudflare 部署 Relay，"
-                "再到「设置 → 连接」填写 Relay 地址，才能生成配对码。"
-            )
-            self._idle_msg.set_message(
-                "未配置 Relay：暂时无法生成配对码。", "warning"
-            )
+            if self._local_mode():
+                self._idle_title.setText("Telegram 本地模式不支持手机配对")
+                self._idle_text.setText(
+                    "当前未配置 Relay，Agent 以 Telegram 本地模式运行：可以直接在 Telegram 里发链接。"
+                    "手机 / PWA 需要 Relay，请先按 docs/self-hosting.md 部署后填写 Relay 地址。"
+                )
+                self._idle_msg.set_message(
+                    "本地模式不支持手机，需要手机请先部署 Relay。", "warning"
+                )
+            else:
+                self._idle_title.setText("还没有配置 Relay")
+                self._idle_text.setText(
+                    "先按 docs/self-hosting.md 用你自己的 Cloudflare 部署 Relay，"
+                    "再到「设置 → 连接」填写 Relay 地址，才能生成配对码。"
+                )
+                self._idle_msg.set_message(
+                    "未配置 Relay：暂时无法生成配对码。", "warning"
+                )
             self._generate_button.setText("生成配对码")
             return
         self._idle_title.setText("还没有配对手机")
@@ -431,7 +455,12 @@ class PairingPanel(Card):
         self._cancel_button.setEnabled(not self._inflight)
         self._unpair_button.setVisible(self._paired())
         self._add_device_button.setVisible(self._paired())
-        tip = "" if configured else "请先在设置页填写你自己的 Relay 地址"
+        if configured:
+            tip = ""
+        elif self._local_mode():
+            tip = "本地模式不支持手机，需要手机请先部署 Relay"
+        else:
+            tip = "请先在设置页填写你自己的 Relay 地址"
         for widget in (
             self._generate_button,
             self._regenerate_button,
@@ -477,6 +506,10 @@ class PairingPanel(Card):
                     + (f"（{utils.clip_text(relay_error, 60)}）" if relay_error else "（Relay 离线）")
                     + "。恢复网络后会自动刷新。"
                 )
+            elif self._local_mode():
+                self._devices_empty.setText(
+                    "Telegram 本地模式不支持手机配对；需要手机/PWA 请先在设置里部署自己的 Relay。"
+                )
             else:
                 self._devices_empty.setText(
                     "还没有配对设备。生成配对码并在手机上完成配对后，会在这里显示手机名称、平台与连接时间。"
@@ -487,10 +520,16 @@ class PairingPanel(Card):
         if self._inflight:
             return
         if not self._relay_configured():
-            self._msg.set_message(
-                "还没有配置 Relay：请先在设置页填写你自己的 Relay 地址（见 docs/self-hosting.md）。",
-                "warning",
-            )
+            if self._local_mode():
+                self._msg.set_message(
+                    "本地模式不支持手机，需要手机请先部署 Relay（见 docs/self-hosting.md）。",
+                    "warning",
+                )
+            else:
+                self._msg.set_message(
+                    "还没有配置 Relay：请先在设置页填写你自己的 Relay 地址（见 docs/self-hosting.md）。",
+                    "warning",
+                )
             return
         self._inflight = True
         self._success_device = {}
