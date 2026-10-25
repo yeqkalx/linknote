@@ -15,19 +15,19 @@
 - Obsidian/本地目录自动归档：把 notes 里的 Markdown 复制到 Obsidian 仓库并补 YAML frontmatter（可开关、选目录、立即导出）
 - 任务/笔记库：手机任务的实时进度与最近结果、本机留档 Markdown 的搜索/预览
 
-![桌面端](C:/yeqkalx/code/bilinote-to-android/assets/desktop-ui.png)
+![桌面端](../assets/desktop-ui.png)
 
 | 任务 | 设备 |
 |---|---|
-| ![任务](C:/yeqkalx/code/bilinote-to-android/assets/desktop-ui-tasks.png) | ![设备](C:/yeqkalx/code/bilinote-to-android/assets/desktop-ui-devices.png) |
+| ![任务](../assets/desktop-ui-tasks.png) | ![设备](../assets/desktop-ui-devices.png) |
 
 | 笔记库 | AI 模型（设置 → 高级功能） |
 |---|---|
-| ![笔记库](C:/yeqkalx/code/bilinote-to-android/assets/desktop-ui-library.png) | ![AI 模型](C:/yeqkalx/code/bilinote-to-android/assets/desktop-ui-ai.png) |
+| ![笔记库](../assets/desktop-ui-library.png) | ![AI 模型](../assets/desktop-ui-ai.png) |
 
 | 消息入口（Telegram / QQ） | 首次配对（向导） |
 |---|---|
-| ![消息入口](C:/yeqkalx/code/bilinote-to-android/assets/desktop-ui-settings-bots.png) | ![配对](C:/yeqkalx/code/bilinote-to-android/assets/desktop-ui-onboarding-pair.png) |
+| ![消息入口](../assets/desktop-ui-settings-bots.png) | ![配对](../assets/desktop-ui-onboarding-pair.png) |
 
 ## 1. 用户怎么用
 

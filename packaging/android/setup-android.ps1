@@ -33,7 +33,7 @@
   powershell -ExecutionPolicy Bypass -File packaging\android\setup-android.ps1
 
 .EXAMPLE
-  powershell -ExecutionPolicy Bypass -File C:\yeqkalx\code\bilinote-to-android\packaging\android\setup-android.ps1
+  powershell -ExecutionPolicy Bypass -File packaging\android\setup-android.ps1
   # PowerShell 7+ 也可用 pwsh 替代 powershell
 #>
 [CmdletBinding()]

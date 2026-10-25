@@ -1,4 +1,4 @@
-﻿# LinkNote Desktop Windows 打包（PyInstaller + Inno Setup）
+# LinkNote Desktop Windows 打包（PyInstaller + Inno Setup）
 
 本目录负责把 `desktop/linknote_desktop` 打成 Windows 桌面端 EXE，并生成
 per-user（免管理员）安装包。所有中间产物和大文件都在 `desktop/build/` 与
@@ -56,7 +56,7 @@ powershell -ExecutionPolicy Bypass -File desktop\packaging\msi\verify-msi-ui.ps1
 
 ### 当前 MSI 产物（2026-10-24 20:4x +08:00，0.4.0）
 
-- 路径：`dist-desktop/LinkNote-Setup-0.4.0.msi`（副本：`C:\Users\yeqkalx\Desktop\LinkNote-Setup-0.4.0.msi`）
+- 路径：`dist-desktop/LinkNote-Setup-0.4.0.msi`（副本：`%USERPROFILE%\Desktop\LinkNote-Setup-0.4.0.msi`）
 - 大小：151,518,605 字节（144.5 MB）
 - SHA256：`0C29888AA763FA364424D4E58C15EE5DFC670005A86E2A69E19A0F7276AF5B30`
 - 验收：`verify-msi.ps1` 安装/卸载全 PASS；`verify-msi-ui.ps1` 真实点击 Finish 后
@@ -243,7 +243,7 @@ BiliNoteBackend.exe + _internal/ + static/
 | 安装包（Inno EXE，备用） | `dist-desktop/LinkNote-Setup-0.4.0.exe` | 133,618,566 | 127.4 MB | `BF73841162C1A4506A3CA74A43ACC67B58693555099A742D8668B17BDBF08BE2` |
 | 内置引擎（默认包含） | `desktop/build/engine/`（1903 文件） | — | 300.4 MB | `BiliNoteBackend.exe` = `59689B1C…6E8C608` |
 
-MSI/EXE 已复制到 `C:\Users\yeqkalx\Desktop\`（0.4.0）。
+MSI/EXE 已复制到 `%USERPROFILE%\Desktop\`（0.4.0）。
 
 验收清单（证据：`desktop/build/final-040/*`、`desktop/build/msi/msi-contents-verify-0.4.0.json`）：
 

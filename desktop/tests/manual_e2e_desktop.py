@@ -25,7 +25,7 @@ from PySide6.QtWidgets import QApplication
 from linknote_desktop.config import DesktopConfig
 from linknote_desktop.controller import DesktopController
 
-RELAY = os.environ.get("E2E_RELAY", "https://linknote-relay.496863749.workers.dev").rstrip("/")
+RELAY = os.environ.get("E2E_RELAY", "https://relay.xykong.xyz").rstrip("/")
 URL = os.environ.get("E2E_VIDEO_URL", "https://www.youtube.com/watch?v=jNQXAC9IVRw")
 TASK_TIMEOUT = 240
 

@@ -1,4 +1,4 @@
-﻿APK: C:\yeqkalx\code\bilinote-to-android\release\LinkNote-debug.apk
+APK: release/LinkNote-debug.apk
 SIZE: 4687552 B (4.47 MiB)
 TIME: 2026-10-24 16:32:04
 SHA256: C3C3229DDC46CA18BADC86AA1F15AB960A38BFC4F344222AA85619E7CF6F2D06

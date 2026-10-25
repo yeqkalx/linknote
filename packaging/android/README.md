@@ -88,7 +88,8 @@ powershell -ExecutionPolicy Bypass -File packaging\android\build-android.ps1
 > 手动构建前记得先执行第 3 步的图标复制，或直接使用 `build-android.ps1`（推荐）。
 
 ```powershell
-$root = 'C:\yeqkalx\code\bilinote-to-android'
+# 在仓库根目录执行
+$root = (Get-Location).Path
 $env:JAVA_HOME    = "$root\tools\jdk"
 $env:ANDROID_HOME = "$root\tools\android-sdk"
 $env:ANDROID_SDK_ROOT = $env:ANDROID_HOME
@@ -113,7 +114,7 @@ cd android
 
 | 项 | 值 |
 | --- | --- |
-| 交付路径 | `C:\yeqkalx\code\bilinote-to-android\release\LinkNote-debug.apk` |
+| 交付路径 | `release\LinkNote-debug.apk` |
 | 构建时间 | 2026-10-24 19:14:09（Asia/Shanghai, UTC+08:00） |
 | app/www 冻结时间 | 2026-10-24 19:03:10（PWA v0.3，31 个文件；此后未再改动） |
 | 大小 | 4,700,200 字节（4.48 MiB / 约 4.70 MB） |
