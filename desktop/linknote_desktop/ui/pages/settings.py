@@ -15,14 +15,13 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from ...config import APP_VERSION, DEFAULT_RELAY_URL, mask_secret
+from ...config import APP_VERSION, mask_secret
 from .. import style, utils
 from ..widgets import (
     Card,
     InlineMessage,
     ToggleSwitch,
     button,
-    divider,
     field_label,
     hint_label,
     switch_row,
@@ -69,7 +68,7 @@ class SettingsPage(BasePage):
         self._bot_card = card
         card.add_header(
             "消息入口",
-            "用自己的 Telegram / QQ 机器人在聊天里发视频链接。凭证只保存在本机 agent.json，"
+            "用自己的 Telegram 机器人在聊天里发视频链接。凭证只保存在本机 agent.json，"
             "不会上传 Relay；保存后 Agent 会自动重启生效。",
         )
 
@@ -122,60 +121,6 @@ class SettingsPage(BasePage):
         )
         self._telegram_msg = InlineMessage()
         card.body.addWidget(self._telegram_msg)
-        card.body.addWidget(divider())
-
-        # ---- QQ
-        qq_title = QLabel("QQ 机器人")
-        qq_title.setStyleSheet(
-            f"QLabel {{ color: {style.INK}; font-size: 13px; font-weight: bold; }}"
-        )
-        card.body.addWidget(qq_title)
-        self._qq_enable_switch = ToggleSwitch()
-        self._qq_enable_switch.setChecked(bool(self.controller.config.qq_enabled))
-        self._qq_enable_switch.toggled.connect(self._on_bot_field_changed)
-        card.body.addWidget(
-            switch_row(
-                "启用 QQ 入口",
-                "在 QQ 单聊或群里 @机器人 发视频链接。",
-                self._qq_enable_switch,
-            )
-        )
-        self._qq_app_id_edit = QLineEdit()
-        self._qq_app_id_edit.setPlaceholderText("QQ 开放平台 AppID")
-        self._qq_app_id_edit.textEdited.connect(self._on_bot_field_changed)
-        card.body.addWidget(
-            _field("AppID", self._qq_app_id_edit, "QQ 开放平台 → 机器人 → 开发设置里获取。")
-        )
-        self._qq_app_secret_edit = _SecretLineEdit()
-        self._qq_app_secret_edit.setPlaceholderText("QQ 开放平台 AppSecret")
-        self._qq_app_secret_edit.textEdited.connect(self._on_bot_field_changed)
-        self._qq_test_button = button("测试连接", "", self._test_qq)
-        secret_row = QHBoxLayout()
-        secret_row.setContentsMargins(0, 0, 0, 0)
-        secret_row.setSpacing(8)
-        secret_row.addWidget(self._qq_app_secret_edit, 1)
-        secret_row.addWidget(self._qq_test_button, 0)
-        card.body.addWidget(
-            _field(
-                "AppSecret",
-                _wrap_row(secret_row),
-                "已有 AppSecret 会以掩码显示；测试连接只校验凭证，不会保存 access token。",
-            )
-        )
-        card.body.addWidget(
-            InlineMessage(
-                "个人主体暂不支持公开使用：只能加自己的群，或使用官方 20 个内部体验号码；"
-                "公开给普通用户需要企业/个体户认证。",
-                "warning",
-            )
-        )
-        self._qq_msg = InlineMessage()
-        card.body.addWidget(self._qq_msg)
-        card.body.addWidget(
-            hint_label(
-                "QQ 开放平台创建机器人 → 获取 AppID / AppSecret → 把机器人拉进自己的群或加为好友。"
-            )
-        )
 
         action_row = QHBoxLayout()
         action_row.setContentsMargins(0, 4, 0, 0)
@@ -286,17 +231,18 @@ class SettingsPage(BasePage):
         card = Card()
         card.add_header(
             "连接",
-            "Relay 负责在手机和这台电脑之间中转配对与任务，并保存最终生成的 Markdown 笔记以便手机读取；"
-            "视频、音频与 API Key 不会上传。",
+            "Relay 负责在手机和这台电脑之间中转配对与任务。v0.5 起不再提供公共 Relay："
+            "请先按 docs/self-hosting.md 用你自己的 Cloudflare 账号/域名部署，再填写到下面。",
         )
         self._relay_edit = QLineEdit()
-        self._relay_edit.setText(self.controller.config.relay_base_url or DEFAULT_RELAY_URL)
-        self._relay_edit.setPlaceholderText(DEFAULT_RELAY_URL)
+        self._relay_edit.setText(str(self.controller.config.relay_base_url or ""))
+        self._relay_edit.setPlaceholderText("https://your-relay.example.com")
         card.body.addWidget(
             _field(
                 "Relay 地址",
                 self._relay_edit,
-                "一般无需修改；自建 Relay 时填写自己的地址（https 开头）。",
+                "填你自己部署的 Relay（https 开头）；未配置时无法生成配对码。"
+                "部署步骤见 docs/self-hosting.md。",
             )
         )
         self._agent_name_edit = QLineEdit()
@@ -311,6 +257,8 @@ class SettingsPage(BasePage):
         action_row.setSpacing(8)
         self._save_connection_button = button("保存连接设置", "Primary", self._save_connection)
         action_row.addWidget(self._save_connection_button, 0)
+        self._relay_test_button = button("测试 Relay", "", self._test_relay)
+        action_row.addWidget(self._relay_test_button, 0)
         self._repair_button = button("重新配对手机", "Danger", self._repair_pairing)
         action_row.addWidget(self._repair_button, 0)
         action_row.addStretch(1)
@@ -482,6 +430,25 @@ class SettingsPage(BasePage):
         self._autostart_switch.update()
         self._refresh_archive_status()
         self._load_bot_channels()
+        current_relay = str(self.controller.config.relay_base_url or "")
+        if not self._relay_edit.hasFocus() and self._relay_edit.text() != current_relay:
+            self._relay_edit.setText(current_relay)
+        if current_relay:
+            self._connection_msg.set_message(
+                f"Relay 已配置：{current_relay}", "info"
+            )
+        elif getattr(self.controller.config, "_legacy_relay_cleared", False):
+            # v0.5 升级迁移：作者旧 Relay 已自动清空，提示用户重填自己的地址
+            self._connection_msg.set_message(
+                "检测到旧版作者 Relay 地址（已停止提供），已自动清空。"
+                "请填写你自己部署的 Relay 地址（见 docs/self-hosting.md）。",
+                "warning",
+            )
+        else:
+            self._connection_msg.set_message(
+                "还没有配置 Relay：请先按 docs/self-hosting.md 部署自己的 Relay，再填写地址。",
+                "warning",
+            )
 
     # ------------------------------------------------------------ 消息入口（Bot）
     def _load_bot_channels(self) -> None:
@@ -489,17 +456,11 @@ class SettingsPage(BasePage):
         config = self.controller.config
         self._telegram_username = str(config.telegram_bot_username or "")
         token = str(config.telegram_bot_token or "")
-        secret = str(config.qq_app_secret or "")
         self._set_secret_edit(self._telegram_token_edit, token)
-        self._set_secret_edit(self._qq_app_secret_edit, secret)
-        app_id = str(config.qq_app_id or "")
-        if self._qq_app_id_edit.text() != app_id:
-            self._qq_app_id_edit.setText(app_id)
 
         for switch, value in (
             (self._telegram_enable_switch, bool(config.telegram_enabled)),
             (self._telegram_allow_groups_switch, bool(config.telegram_allow_groups)),
-            (self._qq_enable_switch, bool(config.qq_enabled)),
         ):
             previous = switch.blockSignals(True)
             switch.setChecked(value)
@@ -519,17 +480,6 @@ class SettingsPage(BasePage):
             self._telegram_msg.set_message("Bot Token 已保存，开启开关后生效。", "info")
         else:
             self._telegram_msg.clear()
-        if config.qq_enabled:
-            if app_id and secret:
-                self._qq_msg.set_message("QQ 入口已启用。", "success")
-            else:
-                self._qq_msg.set_message(
-                    "QQ 入口已启用，但 AppID / AppSecret 还没填完整。", "warning"
-                )
-        elif app_id or secret:
-            self._qq_msg.set_message("QQ 凭证已保存，开启开关后生效。", "info")
-        else:
-            self._qq_msg.clear()
         self._bot_msg.clear()
 
     def _set_secret_edit(self, edit: QLineEdit, value: str) -> None:
@@ -547,12 +497,6 @@ class SettingsPage(BasePage):
         return self._resolve_secret(
             self._telegram_token_edit,
             str(self.controller.config.telegram_bot_token or ""),
-        )
-
-    def _qq_secret_value(self) -> str:
-        return self._resolve_secret(
-            self._qq_app_secret_edit,
-            str(self.controller.config.qq_app_secret or ""),
         )
 
     @staticmethod
@@ -596,34 +540,6 @@ class SettingsPage(BasePage):
             on_error=on_error,
         )
 
-    def _test_qq(self) -> None:
-        app_id = self._qq_app_id_edit.text().strip()
-        secret = self._qq_secret_value()
-        if not app_id or not secret:
-            self._qq_msg.set_message("请先填写 QQ AppID 和 AppSecret。", "warning")
-            return
-        self._qq_test_button.setEnabled(False)
-        self._qq_msg.set_message("正在连接 QQ 开放平台…", "info")
-
-        def on_result(data: Any) -> None:
-            self._qq_test_button.setEnabled(True)
-            result = data if isinstance(data, dict) else {}
-            expires = int(result.get("expires_in") or 0)
-            suffix = f"（access token 有效期约 {expires} 秒，不保存）" if expires else ""
-            self._qq_msg.set_message(f"连接成功，机器人凭证可用{suffix}。", "success")
-
-        def on_error(message: str) -> None:
-            self._qq_test_button.setEnabled(True)
-            self._qq_msg.set_message(f"测试失败：{message}", "error")
-
-        self.run_bg(
-            self.controller.test_qq_bot,
-            app_id,
-            secret,
-            on_result=on_result,
-            on_error=on_error,
-        )
-
     def _save_bot_channels(self) -> None:
         config = self.controller.config
         config.telegram_enabled = self._telegram_enable_switch.isChecked()
@@ -631,9 +547,6 @@ class SettingsPage(BasePage):
         if self._telegram_username:
             config.telegram_bot_username = self._telegram_username
         config.telegram_allow_groups = self._telegram_allow_groups_switch.isChecked()
-        config.qq_enabled = self._qq_enable_switch.isChecked()
-        config.qq_app_id = self._qq_app_id_edit.text().strip()
-        config.qq_app_secret = self._qq_secret_value()
         self._bot_save_button.setEnabled(False)
         restarted = False
         try:
@@ -759,27 +672,68 @@ class SettingsPage(BasePage):
         self.run_bg(self.controller.archive_notes, on_result=on_result, on_error=on_error)
 
     # ------------------------------------------------------------ 动作
+    def _test_relay(self) -> None:
+        url = self._relay_edit.text().strip().rstrip("/")
+        if not url:
+            self._connection_msg.set_message(
+                "请先填写你自己部署的 Relay 地址（见 docs/self-hosting.md）。", "warning"
+            )
+            return
+        self._relay_test_button.setEnabled(False)
+        self._connection_msg.set_message("正在连接 Relay…", "info")
+
+        def on_result(data: Any) -> None:
+            self._relay_test_button.setEnabled(True)
+            result = data if isinstance(data, dict) else {}
+            version = str(result.get("version") or "")
+            self._connection_msg.set_message(
+                f"Relay 连接成功（版本 {version or '未知'}，realtime 已启用）。", "success"
+            )
+
+        def on_error(message: str) -> None:
+            self._relay_test_button.setEnabled(True)
+            self._connection_msg.set_message(f"Relay 测试失败：{message}", "error")
+
+        self.run_bg(self.controller.test_relay, url, on_result=on_result, on_error=on_error)
+
     def _save_connection(self) -> None:
         relay_url = self._relay_edit.text().strip().rstrip("/")
         agent_name = self._agent_name_edit.text().strip() or "我的电脑"
-        if not relay_url.startswith(("http://", "https://")):
+        if relay_url and not relay_url.startswith(("http://", "https://")):
             self._connection_msg.set_message("Relay 地址需要以 http:// 或 https:// 开头。", "error")
             return
         self.controller.config.relay_base_url = relay_url
         self.controller.config.agent_name = agent_name
-        self.controller.save_config()
+        try:
+            self.controller.save_config()
+        except Exception as exc:  # noqa: BLE001
+            self._connection_msg.set_message(f"保存失败：{exc}", "error")
+            return
         if self.controller.agent.running:
             self.controller.restart_agent()
+            restarted = True
+        else:
+            restarted = False
+        if not relay_url:
+            self._connection_msg.set_message(
+                "已保存，但还没有配置 Relay：配对手机与接收任务前请填写自己的 Relay 地址。",
+                "warning",
+            )
+        elif restarted:
             self._connection_msg.set_message("已保存，Agent 已按新设置重启。", "success")
         else:
             self._connection_msg.set_message("已保存。Agent 正在运行时生效。", "success")
         self.toast("连接设置已保存", "success")
 
     def _repair_pairing(self) -> None:
+        if not str(self.controller.config.relay_base_url or "").strip():
+            self.toast("还没有配置 Relay：请先填写你自己部署的 Relay 地址", "warning")
+            self.goto("settings")
+            return
         answer = QMessageBox.question(
             self,
             "重新配对手机",
-            "将取消当前待领取的配对码，并回到状态页重新生成配对码。\n"
+            "将取消当前待领取的配对码，并回到设备页重新生成配对码。\n"
             "已经配对的手机不受影响。是否继续？",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             QMessageBox.StandardButton.No,

@@ -47,11 +47,30 @@ def test_version(capsys):
     assert "0.1.0" in capsys.readouterr().out
 
 
-def test_run_without_pair_returns_2(capsys):
+def test_run_without_relay_returns_2(capsys):
+    """v0.5：默认 Relay 为空，run 不得连接任何公共地址。"""
     rc = main(["run"])
     assert rc == 2
     err = capsys.readouterr().err
-    assert "pair" in err and "还没有配对" in err
+    assert "还没有配置 Relay" in err
+    assert "self-hosting.md" in err
+
+
+def test_run_with_relay_but_without_pair_returns_2(capsys):
+    cfg = AgentConfig()
+    cfg.relay_base_url = RELAY_BASE
+    cfg.save()
+    rc = main(["run"])
+    assert rc == 2
+    err = capsys.readouterr().err
+    assert "还没有配对" in err
+
+
+def test_pair_without_relay_returns_2(capsys):
+    rc = main(["pair"])
+    assert rc == 2
+    err = capsys.readouterr().err
+    assert "还没有配置 Relay" in err
 
 
 def test_status_without_pair(isolated_home, capsys, fake_bilinote, fake_relay):
@@ -63,11 +82,23 @@ def test_status_without_pair(isolated_home, capsys, fake_bilinote, fake_relay):
     assert rc == 0
     data = json.loads(capsys.readouterr().out)
     assert data["paired"] is False
+    assert data["relay_configured"] is False
+    assert data["relay_base_url"] == ""
+    assert data["relay"] is None
     assert data["backend_alive"] is True
     assert data["config_path"].endswith("agent.json")
-    assert data["transport_mode"] == "websocket"
-    assert data["ws_url"].startswith("ws") and data["ws_url"].endswith("/api/v1/agent/ws")
+    assert data["transport_mode"] == "unconfigured"
+    assert data["ws_url"] == ""
     assert data["notes_pending_ack"] == 0
+
+
+def test_status_unconfigured_human_output(isolated_home, capsys, fake_bilinote):
+    rc = main(["status"], bilinote_transport=fake_bilinote.transport)
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "Relay：未配置" in out
+    assert "self-hosting.md" in out
+    assert "传输模式：未配置" in out
 
 
 def test_status_paired_shows_relay_info(capsys, fake_relay, fake_bilinote):

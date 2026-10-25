@@ -1,0 +1,14 @@
+﻿APK: C:\yeqkalx\code\bilinote-to-android\release\LinkNote-debug.apk
+SIZE: 4701320 B (4.48 MiB)
+TIME: 2026-10-25 17:39:41
+SHA256: 05F5B84E6902A1D51BB78CF712C96D774AA2A8F48DA9EAEA6C3FDA0985670F49
+versionCode/versionName: 4 / 1.3
+assets/public: 33 files (www 31 + cordova.js,cordova_plugins.js); byteDiffs=none
+config.js APP_VERSION='0.4.0': True
+NATIVE_DEFAULT_RELAY empty: True
+sw.js SW_VERSION='0.4.0': True
+author domain scan (whole APK): none
+js/realtime.js exists: True
+icons: 15 entries, mismatch=none
+adaptive bg: () #fffdfeff
+signed: v2 debug cert

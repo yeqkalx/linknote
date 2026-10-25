@@ -6,10 +6,10 @@
  * - 页面导航：网络优先；离线回退到缓存的 index.html（hash 路由只有一个入口）。
  * - API（/api/）：不拦截、不缓存，永远走网络；离线由页面的本地队列兜底。
  */
-const SW_VERSION = '0.3.0';
+const SW_VERSION = '0.4.0';
 // 同一版本号下改资源时递增 CACHE_REVISION：新 SW 会建新的壳缓存并清掉旧壳，
-// 保证已安装用户升级后拿到 v0.3 的新 JS/CSS，而不是旧的缓存脚本。
-const CACHE_REVISION = 2;
+// 保证已安装用户升级后拿到 v0.4 的新 JS/CSS，而不是旧的缓存脚本。
+const CACHE_REVISION = 3;
 const SHELL_CACHE = `linknote-shell-v${SW_VERSION}-r${CACHE_REVISION}`;
 const SCOPE = self.registration.scope;
 const toUrl = (path) => new URL(path, SCOPE).href;

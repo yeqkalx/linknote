@@ -23,18 +23,18 @@
      9719 B  assets/public/js/api.js
      7406 B  assets/public/js/app.js
      3938 B  assets/public/js/bridge.js
-     4901 B  assets/public/js/config.js
+     5230 B  assets/public/js/config.js
      2319 B  assets/public/js/markdown.js
      3434 B  assets/public/js/pwa.js
      6455 B  assets/public/js/queue.js
     19859 B  assets/public/js/realtime.js
      6902 B  assets/public/js/router.js
-    29108 B  assets/public/js/store.js
+    29139 B  assets/public/js/store.js
     17400 B  assets/public/js/ui.js
     15861 B  assets/public/js/util.js
     39997 B  assets/public/js/views/home.js
-    15625 B  assets/public/js/views/pair.js
-    25315 B  assets/public/js/views/settings.js
+    18494 B  assets/public/js/views/pair.js
+    25811 B  assets/public/js/views/settings.js
     38812 B  assets/public/js/views/task.js
      1329 B  assets/public/manifest.webmanifest
      2445 B  assets/public/share.html

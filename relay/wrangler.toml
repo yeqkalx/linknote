@@ -1,13 +1,21 @@
+# LinkNote Relay（自托管模板）
+#
+# v0.5 起作者不再提供公共 Relay。每个用户在自己的 Cloudflare 账号 + 自己的域名部署一套。
+# 部署步骤见 docs/self-hosting.md。部署前必须替换本文件里的占位符：
+#   1) database_id = REPLACE_WITH_YOUR_D1_DATABASE_ID  → 你自己的 D1 id（wrangler d1 create linknote-db）
+#   2) PUBLIC_BASE_URL / ALLOWED_ORIGINS 里的 https://your-relay.example.com → 你自己的域名
+#      （只想先用 workers.dev 也可以：部署后把实际 https://<worker>.<account>.workers.dev 填进去）
+#   3) 设置两个 secret：npx wrangler secret put INTERNAL_SECRET / npx wrangler secret put TICKET_SECRET
 name = "linknote-relay"
 main = "src/index.ts"
 compatibility_date = "2026-10-01"
 workers_dev = true
 preview_urls = false
 
-# 生产自定义域名（xykong.xyz 已托管在 Cloudflare）
-routes = [
-  { pattern = "relay.xykong.xyz", custom_domain = true }
-]
+# v0.5：不再内置作者的自定义域名。绑定自己的域名时取消注释并替换：
+# routes = [
+#   { pattern = "relay.example.com", custom_domain = true }
+# ]
 
 # PWA 静态文件由 Worker 一起托管：一个域名、同源、免 CORS。
 # app/www 会由 `npm --prefix app run sync` 复制到 relay/public。
@@ -18,11 +26,12 @@ binding = "ASSETS"
 [[d1_databases]]
 binding = "DB"
 database_name = "linknote-db"
-database_id = "e1ec0b6c-acd7-4248-9cd5-d9e18e5f9ba8"
+# 换成你自己 Cloudflare 账号里创建的 D1 database id（`wrangler d1 create linknote-db` 会输出）。
+database_id = "REPLACE_WITH_YOUR_D1_DATABASE_ID"
 migrations_dir = "migrations"
 
 # 实时通道：每个 agent 一个 Durable Object（SQLite 后端 + WebSocket Hibernation）。
-# 空闲连接不计时长，alarm 只在有 socket 时每 30s 唤醒一次。
+# 空闲连接不计时长，只有手机在线时才每 30s 唤醒一次。
 [durable_objects]
 bindings = [{ name = "AGENT_ROOM", class_name = "AgentRoom" }]
 
@@ -31,8 +40,11 @@ tag = "v1"
 new_sqlite_classes = ["AgentRoom"]
 
 [vars]
-PUBLIC_BASE_URL = "https://relay.xykong.xyz"
-ALLOWED_ORIGINS = "http://localhost:5173,http://127.0.0.1:8787,http://127.0.0.1:8798,http://localhost:8798,http://localhost:8787,https://relay.xykong.xyz,capacitor://localhost,https://localhost"
+# 你实际访问 Relay 的基地址（改成自己的域名或 workers.dev 地址）。
+PUBLIC_BASE_URL = "https://your-relay.example.com"
+# 允许的浏览器 Origin：保留本地开发地址 + 你自己的 Relay 域名。
+# 原生 App/Agent 不发 Origin，不受此限制；PWA 与 Relay 同源部署时请把该域名加进来。
+ALLOWED_ORIGINS = "http://localhost:5173,http://localhost:8787,http://127.0.0.1:8787,http://localhost:8798,http://127.0.0.1:8798,https://your-relay.example.com,capacitor://localhost,https://localhost"
 PAIRING_TTL_SECONDS = "600"
 TASK_LEASE_SECONDS = "1800"
 TICKET_TTL_SECONDS = "60"
@@ -44,7 +56,7 @@ TICKET_TTL_SECONDS = "60"
 #
 # INTERNAL_SECRET / TICKET_SECRET 是机密，不写进本文件：
 # - 本地：`npm run dev`（脚本里带 dev 值）或 relay/.dev.vars
-# - 生产：`npx wrangler secret put INTERNAL_SECRET` / `npx wrangler secret put TICKET_SECRET`
+# - 自托管部署：`npx wrangler secret put INTERNAL_SECRET` / `npx wrangler secret put TICKET_SECRET`
 
 [observability]
 enabled = true

@@ -32,7 +32,9 @@
     <MediaTemplate EmbedCab="yes" CompressionLevel="high" />
 
     <Property Id="ARPPRODUCTICON" Value="LinkNoteIcon" />
-    <Property Id="ARPHELPLINK" Value="https://relay.xykong.xyz" />
+    <!-- Neutral placeholder for self-hosted builds; the release owner replaces it with the
+       project repository/docs URL. Must not contain any author-operated domain. -->
+    <Property Id="ARPHELPLINK" Value="https://github.com/" />
     <Property Id="ARPNOREPAIR" Value="1" />
     <Icon Id="LinkNoteIcon" SourceFile="$(var.IconPath)" />
 
@@ -143,5 +145,9 @@
     <WixVariable Id="WixUILicenseRtf" Value="$(var.LicenseRtf)" />
   </Product>
 </Wix>
+
+
+
+
 
 

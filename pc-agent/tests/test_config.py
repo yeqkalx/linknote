@@ -21,11 +21,21 @@ def test_defaults_and_paths(isolated_home):
     cfg = AgentConfig.load()
     assert default_home() == isolated_home
     assert default_config_path() == isolated_home / "agent.json"
-    assert cfg.relay_base_url.startswith("http")
+    assert cfg.relay_base_url == ""  # v0.5：不再内置任何公共 Relay 地址
+    assert cfg.relay_configured is False
     assert cfg.is_paired is False
     assert cfg.provider_id == "deepseek"
     assert cfg.style == "minimal"
     assert cfg.backend_base_url == "http://127.0.0.1:8483/api"
+
+
+def test_relay_configured(isolated_home, monkeypatch):
+    cfg = AgentConfig()
+    assert cfg.relay_configured is False
+    cfg.relay_base_url = "https://my-relay.example.com/"
+    assert cfg.relay_configured is True
+    monkeypatch.setenv("LINKNOTE_RELAY_BASE_URL", "https://env-relay.example.com")
+    assert AgentConfig.load().relay_configured is True
 
 
 def test_save_and_load_roundtrip(isolated_home):

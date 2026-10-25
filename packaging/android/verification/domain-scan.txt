@@ -1,0 +1,6 @@
+﻿APK: C:\yeqkalx\code\bilinote-to-android\release\LinkNote-debug.apk
+scan time: 2026-10-25 17:47:28
+scope: 解包 APK 全部条目（471 个文件），逐文件二进制 ASCII 扫描；另对 APK 原始字节做同样扫描
+patterns: 作者旧域名 / 生产域名 及其 relay 子域（按文档规范隐去字面量，扫描时使用内存中的真实模式串）
+raw APK hits: none
+extracted-entry hits: 0

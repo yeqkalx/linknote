@@ -3,14 +3,17 @@
 > 本文件是 Relay（Cloudflare Worker）、PC Agent（Python）、移动端（PWA/Capacitor）三方共同遵守的唯一约定。
 > 任何一方要改字段，先改这里，再改实现。
 >
+> **v0.5.0（自托管）**：作者不再提供公共 Relay。每个用户在自己的 Cloudflare 账号部署 Relay，
+> 客户端配置自己的 Relay 地址；下文示例域名统一用 `https://your-relay.example.com`。
+>
 > **v0.2.0（2026-10）实时架构**：Relay 新增 Durable Objects（SQLite 后端）+ WebSocket Hibernation 推送，
 > 用于替换 3–5 秒轮询。WS 消息格式以 [`docs/realtime-protocol.md`](./realtime-protocol.md) 为准，
 > 本文第 11 节列出 Relay 的实现补充（均为增量字段/消息，不破坏已冻结字段）。
 > REST 全部保留兼容；**笔记正文不再保存到 D1**，改用 WebSocket 转发 + 手机本地缓存。
 
 - Base URL（本地）：`http://127.0.0.1:8787`（本仓库 `npm run dev` 起的实例带本地 dev secret）
-- Base URL（生产示例）：`https://relay.xykong.xyz`
-- WS Base（本地）：`ws://127.0.0.1:8787/api/v1`；生产：`wss://relay.xykong.xyz/api/v1`
+- Base URL（自托管示例）：`https://your-relay.example.com`（替换成你自己部署的 Relay 地址）
+- WS Base（本地）：`ws://127.0.0.1:8787/api/v1`；自托管示例：`wss://your-relay.example.com/api/v1`
 - 所有路径以 `/api/v1` 开头。
 - 请求/响应均为 UTF-8 JSON；除特别说明外，`Content-Type: application/json`。
 - 时间统一为 ISO 8601 UTC 字符串，例如 `2026-10-24T04:30:00.000Z`。
@@ -214,11 +217,11 @@ Agent 每 30 秒调用一次；`busy=true` 表示正在处理任务。
 
 设备 token 立即失效（后续 401）。返回 `{ "ok": true }`。
 
-### 4.4 签发 Bot 专用设备（v0.4.0 增量）
+### 4.4 签发 Bot 专用设备（v0.4.0 增量，v0.5.0 起只保留 telegram）
 
 `POST /api/v1/agent/devices`，Agent 认证（`Authorization: Bearer agt_...`）。
 
-用于本机 Bot Runner（用户自己的 Telegram / QQ bot）申请独立 device token，无需用户扫码配对
+用于本机 Bot Runner（用户自己的 Telegram bot）申请独立 device token，无需用户扫码配对
 （设计见 `docs/bot-channels.md` §2）。请求：
 
 ```json
@@ -226,7 +229,8 @@ Agent 每 30 秒调用一次；`busy=true` 表示正在处理任务。
 ```
 
 - `name`：必填，1–40 字符（去首尾空格后非空）。
-- `platform`：必填，`android` | `ios` | `web` | `telegram` | `qq`；其它值返回 `400 invalid_platform`。
+- `platform`：必填，`android` | `ios` | `web` | `telegram`；其它值返回 `400 invalid_platform`。
+  （v0.5.0 起移除 `qq`；QQ Bot 已删除，只保留 Telegram。）
 
 返回 `201`（明文 token **只出现这一次**，Relay 只存 SHA-256，不写日志、响应不含 `token_hash`）：
 
@@ -531,7 +535,8 @@ App 文案建议：
 ## 9. CORS 与 WS Origin
 
 - Worker 读取环境变量 `ALLOWED_ORIGINS`（逗号分隔）；`*` 表示全部允许。
-- 默认允许：`http://localhost:5173`、`http://127.0.0.1:8787`、`http://127.0.0.1:8798`、`http://localhost:8787`、`http://localhost:8798`、`https://relay.xykong.xyz`、`capacitor://localhost`、`https://localhost`。
+- 自托管默认允许：`http://localhost:5173`、`http://127.0.0.1:8787`、`http://localhost:8787`、`http://127.0.0.1:8798`、`http://localhost:8798`、`https://your-relay.example.com`、`capacitor://localhost`、`https://localhost`。
+  （`https://your-relay.example.com` 需要替换成你自己部署的 Relay 域名，见 `relay/wrangler.toml` 注释。）
 - 预检 `OPTIONS` 返回 204 + CORS 头；不允许的 Origin 返回 403。
 - 原生 App / Python Agent 不发送 Origin，无需 CORS。
 - WebSocket 握手同样校验 Origin：浏览器/WebView 带了不在白名单的 Origin 会被 403 拒绝；Node/Python 客户端不带 Origin。

@@ -1,10 +1,11 @@
 # LinkNote Relay 实时通道交接（agent-dev / app-dev）
 
-> 状态（2026-10-24）：Relay **v0.4.0** 已在本地实现并通过契约/实时测试 **53/53**
-> （v0.3 增量见第 7 节、v0.4 Bot 设备签发见第 8 节；生产当前部署的是 v0.3.0，v0.4 等 Lead 统一部署）。
+> 状态（2026-10-25）：Relay **v0.5.0** —— 自托管模板，**作者不再提供公共 relay/域名**。
+> 每个用户在自己的 Cloudflare 账号部署（见 `docs/self-hosting.md` + `relay/wrangler.toml` 顶部注释）。
+> 本地契约/实时测试 **53/53**（v0.3 见第 7 节、v0.4 Bot 设备签发见第 8 节、v0.5 见第 9 节）。
 > Durable Objects（SQLite 后端）+ WebSocket Hibernation + REST 兼容。
 > 协议基础以 `docs/realtime-protocol.md` / `docs/v0.3-protocol-delta.md` / `docs/bot-channels.md` 为准，
-> 接口细节与增量字段见 `docs/api-contract.md`。本文件给 PC Agent / PWA / Bot Runner 的具体接入信息。
+> 接口细节与增量字段见 `docs/api-contract.md`。
 
 ## 1. URL
 
@@ -12,11 +13,12 @@
 |---|---|---|---|---|
 | 本地（默认） | `http://127.0.0.1:8787/api/v1` | `ws://127.0.0.1:8787/api/v1/agent/ws` | `POST /api/v1/realtime/ticket` | `ws://127.0.0.1:8787/api/v1/ws?ticket=...` |
 | 本地（多人联调用） | `http://127.0.0.1:8798/api/v1` | `ws://127.0.0.1:8798/api/v1/agent/ws` | 同上 | `ws://127.0.0.1:8798/api/v1/ws?ticket=...` |
-| 生产 | `https://relay.xykong.xyz/api/v1` | `wss://relay.xykong.xyz/api/v1/agent/ws` | 同上 | `wss://relay.xykong.xyz/api/v1/ws?ticket=...` |
+| 自托管示例 | `https://your-relay.example.com/api/v1` | `wss://your-relay.example.com/api/v1/agent/ws` | 同上 | `wss://your-relay.example.com/api/v1/ws?ticket=...` |
 
+- **自托管示例域名不是可用的公共服务**：请替换成你自己部署的 Relay 域名。
 - 本地启动：`cd relay && npm install && npm run db:local && npm run dev`
   （`dev`/`dev:realtime` 脚本已带本地 `INTERNAL_SECRET`/`TICKET_SECRET`，不需要 `.dev.vars`）。
-- 生产 secrets 用 `wrangler secret put` 管理，不在源码/仓库里。
+- 自托管部署的 secrets 用 `wrangler secret put` 管理，不在源码/仓库里。
 
 ## 2. Agent（PC）接入要点
 
@@ -140,55 +142,28 @@ const ws = new WebSocket('ws://127.0.0.1:8798/api/v1/agent/ws', {
 ws.on('message', (raw) => console.log(JSON.parse(String(raw))));
 ```
 
-## 6. 部署与回滚（2026-10-24 已上线）
+## 6. 部署（v0.5：自托管；作者不再提供公共 relay）
 
-- 生产域名：`https://relay.xykong.xyz`（Worker `linknote-relay`，D1 `linknote-db`）。
-- 当前生产 version：`c312b769-1f5f-454c-b17e-f888de32cb9a`（**relay v0.3.0**，2026-10-24T11:14Z 部署，
-  含 PWA 0.3.0 静态资源；health `version: 0.3.0`）。
-- 历史版本：`b37623dd-7284-4c12-8757-6ce61a4bbc14`（relay v0.2.2/PWA 0.3.0）、
-  `3620d7fc-6a8f-4aaf-9510-3b2a613b63ae`（relay v0.2.0 首部署，旧 PWA）、
-  `18db4628-d4ff-4389-be29-9c31daa86ee9`（旧 relay REST-only）。
-- 回滚：
-  ```powershell
-  cd relay
-  npx wrangler rollback b37623dd-7284-4c12-8757-6ce61a4bbc14
-  ```
-  ⚠️ `wrangler rollback` 会连同静态资源一起回退（即回到旧 PWA）。若只是 relay 代码回归，更推荐用
-  当前源码重新 `npx wrangler deploy`（静态资源由 Lead 统一 sync，避免 PWA 回退）。
-  DO 实例 / secrets / D1 迁移都会保留（旧代码不感知 DO，安全）。
-- 生产 secrets（已设置，随 Worker 保留；不在仓库/源码里）：
-  `INTERNAL_SECRET`、`TICKET_SECRET`（`npx wrangler secret put <NAME>`，64 hex）。
-- D1 迁移：`0001_init.sql`、`0002_realtime.sql` 均已 apply（`npm run db:remote`）。
-  生产 D1 已清理全部 E2E 测试数据（保留真实 `我的电脑` 数据），`tasks.markdown` 全 NULL。
-- DO migration：`v1 new_sqlite_classes=["AgentRoom"]` 已随 deploy 创建（`wrangler.toml`）。
-- 生产验证（2026-10-24，`node .wrangler/prod-smoke.mjs` / `prod-close-probe.mjs` / `final-verify.mjs`，PASS；
-  这些临时脚本在收尾时已随 `.wrangler` 一起清理，可按本文件第 5 节方法重建）：
-  - `GET /api/v1/health` → `version 0.2.0, realtime true`；
-  - Agent WS（Header token）/ 手机 WS（ticket）均握手 101，invalid token/ticket 握手 401；
-  - hello/presence 正常；REST 建任务 → Agent WS 秒收 `task`；
-  - `task_update(running 42%)` / `task_update(completed)` → 手机 `task_updated`；
-  - `task_note` → 手机 `note`（正文一致）；手机 `ack_note` → Agent 收到；
-  - REST detail 无 markdown 字段、`has_note=true`；`GET /tasks/:id/note` → 410 `note_not_stored`；
-  - Agent 断开 → 手机 presence false。
-  - 服务端主动 close（生产已验证）：新 Agent 连接顶掉旧连接 → 旧连接 **4001**；撤销设备 → 手机 **4003**。
-  - 端到端：PC Agent（真实客户端）202+ 项测试 + 生产 REST/WS 全链路通过；PWA 生产 16/16 通过。
-- **v0.3.0 已部署（2026-10-24T11:14Z，version `c312b769`），生产冒烟 PASS**：
-  - health `version 0.3.0, realtime true`；Agent WS Header token / 手机 ticket WS 均握手 101 并收到 hello；
-  - Agent 发 `agent_ready ready:true` → 手机 hello/presence `ready:true, issues:[]`；静置 >15s 后手机连接触发 `probe`，
-    Agent 回 `probe_ack`+`pong`，presence 保持 online；
-  - **无手机 35s：服务端 ping = 0**；**手机在线 66s：2 次 alarm ping（30.0s / 59.9s，间隔 29.93s）**，
-    修复前 v0.2 约为 1s/次；
-  - 任务链路：REST 建任务 → Agent 收 `task` → `task_update` → 手机 `task_updated` → `task_note` → 手机 `note` 一致；
-    `ack_note persisted=false` → Agent 收到 false；`persisted=true` → Agent 收到 true；
-  - REST detail `succeeded/has_note=true` 且无 markdown 字段；`GET /tasks/:id/note` → 410 `note_not_stored`；
-    `GET /agent/me` → `ready:true, online:true`；
-  - 测试后已清理生产 D1 测试数据（保留用户 2 个 `我的电脑` agent/device），`tasks.markdown` 非空 = 0。
-- v0.3 只新增 WS 消息/字段与内部实现，没有 D1 schema 变更、没有新 secrets、没有新 DO migration
-  （沿用 `v1 new_sqlite_classes=["AgentRoom"]`），「旧代码 ← 回滚」安全、旧客户端仍可用。
+> ⚠️ v0.5 起作者**不再提供公共 relay，也不再维护任何公共域名**。每个用户在自己的 Cloudflare 账号 +
+> 自己的域名部署一套。客户端默认 Relay 为空，必须由用户填写自己的 Relay 地址。
+> 完整步骤见 `docs/self-hosting.md`，`relay/wrangler.toml` 顶部也有占位符说明。
+
+1. 创建 D1：`npx wrangler d1 create linknote-db`，把输出的 database_id 填进 `relay/wrangler.toml`。
+2. 修改 `relay/wrangler.toml`：
+   - `PUBLIC_BASE_URL` / `ALLOWED_ORIGINS` 里的 `https://your-relay.example.com` → 你自己的域名（或 workers.dev 地址）；
+   - 如需自定义域名，取消注释 `routes` 并替换成自己的域名。
+3. 设置 secrets：`npx wrangler secret put INTERNAL_SECRET`、`npx wrangler secret put TICKET_SECRET`（64 hex）。
+4. 应用 D1 迁移 `npm run db:remote`，然后 `npx wrangler deploy`。
+5. 客户端（Desktop 向导/设置、PWA、APK）填自己的 Relay 地址；不要连接别人的实例。
+
+- D1 schema：`0001_init.sql`、`0002_realtime.sql`；DO migration `v1 new_sqlite_classes=["AgentRoom"]`。
+- 回滚/升级：直接重新 deploy 目标版本代码即可；无 D1 schema 变更时数据兼容，DO 实例/secrets/迁移保留。
+- 本文件历史版本中的「作者公共实例 version id / 生产冒烟记录」已在 v0.5 移除（公共实例下线），
+  技术验证结论（WS 握手、presence、4001/4003、成本数字等）仍适用于任何自托管部署。
 
 > 已知本地环境差异：Miniflare `wrangler dev` 下「Durable Object 主动 close 的 WS 帧」不一定会转发给客户端
-> （客户端可能看到 1006 或收不到 close 帧），但服务端状态（离线/presence/踢下线）已生效；**生产 Cloudflare
-> 已验证 4001/4003 正常下发**。契约测试对本地这一差异做了宽容断言，功能用 presence/REST 状态验证。
+> （客户端可能看到 1006 或收不到 close 帧），但服务端状态（离线/presence/踢下线）已生效；Cloudflare
+> 线上环境（历史验证）4001/4003 正常下发。契约测试对本地这一差异做了宽容断言，功能用 presence/REST 状态验证。
 
 ## 7. v0.3.0 变更（Relay 侧）
 
@@ -249,7 +224,7 @@ ws.on('message', (raw) => console.log(JSON.parse(String(raw))));
 
 ## 8. v0.4.0 增量：Agent 签发 Bot 专用 device token
 
-> 依据 `docs/bot-channels.md` §2。用户在自己的电脑跑 Telegram/QQ bot，bot 不需要扫码配对，
+> 依据 `docs/bot-channels.md` §2。用户在自己的电脑跑 Telegram bot（v0.5 起 QQ Bot 已删除），bot 不需要扫码配对，
 > 由本机 Agent 向 Relay 申请一个独立 device token。**不新增 D1 表、不改现有端点行为、无新 secrets/迁移。**
 
 `POST /api/v1/agent/devices`（Agent 认证，`Authorization: Bearer agt_...`）
@@ -267,10 +242,26 @@ ws.on('message', (raw) => console.log(JSON.parse(String(raw))));
 }
 ```
 
-- `name` 必填 1–40 字符；`platform` ∈ `android|ios|web|telegram|qq`，非法值 → `400 invalid_platform`。
+- `name` 必填 1–40 字符；`platform` ∈ `android|ios|web|telegram`（v0.5 起移除 `qq`），非法值 → `400 invalid_platform`。
 - D1 `devices` 只存 `sha256(token)`；响应不返回 `token_hash`，不写日志；丢失只能重新签发。
 - Bot 用该 token 调普通 device 接口：`POST /tasks`、`GET /tasks`、`GET /tasks/{id}`、`GET /me` 等；
   任务按 `device_id` 与手机隔离，但与该 Agent 的任务队列/处理链路共享（同一台电脑处理）。
 - 撤销：Agent 用 `DELETE /api/v1/agent/devices/{device_id}`；被撤销后 bot token 立即 401。
-- 版本：Relay `RELAY_VERSION = 0.4.0`（health 的 `data.version`）；测试 53/53；typecheck 通过。
+- 版本：v0.5 起 `RELAY_VERSION = 0.5.0`（health 的 `data.version`）；测试 53/53；typecheck 通过。
   部署：仅需 `npx wrangler deploy`，无 schema/secrets/DO migration 变更。
+
+## 9. v0.5.0 变更：自托管 + 只保留 Telegram Bot
+
+> 依据 `docs/v0.5-selfhost.md`。用户决定 Release 不再使用作者域名/Cloudflare，改为每人自托管 Relay；
+> 同时删除 QQ Bot，只保留 Telegram（本机长轮询）。
+
+- **作者不再提供公共 relay**：`relay/wrangler.toml` 改为自托管模板 ——
+  无作者自定义域名 routes、`database_id = REPLACE_WITH_YOUR_D1_DATABASE_ID`、
+  `PUBLIC_BASE_URL = https://your-relay.example.com`、`ALLOWED_ORIGINS` 只保留 localhost + 示例域名；
+  部署前必须替换成自己的 D1/域名并设置 secrets（见第 6 节与 `docs/self-hosting.md`）。
+- **删除 qq 设备平台**：`DevicePlatform` / `/agent/devices` 只接受 `android|ios|web|telegram`；
+  传 `platform:"qq"` 返回 `400 invalid_platform`（契约测试已覆盖）。
+- `RELAY_VERSION = "0.5.0"`（health 的 `data.version`）；REST/WS 其余契约不变；
+  无 D1 schema / secrets / DO migration 变更，任何 v0.3/v0.4 实例可直接升级。
+- 本地验证：`cd relay && npm test` → **53/53 PASS**；`npm run typecheck` 通过；不部署到任何旧域名。
+- 客户端侧（由对应负责人改）：Desktop/PWA/APK 默认 Relay 为空、首次配置填自己的 Relay；QQ Bot 移除。

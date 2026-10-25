@@ -70,6 +70,13 @@ $c.per_user_allusers = ($props['ALLUSERS'] -eq '2')
 $c.per_user_msiinstallperuser = ($props['MSIINSTALLPERUSER'] -eq '1')
 $c.exit_checkbox_text = ($props['WIXUI_EXITDIALOGOPTIONALCHECKBOXTEXT'] -eq 'Launch LinkNote')
 $c.exit_checkbox_default = ($props['WIXUI_EXITDIALOGOPTIONALCHECKBOX'] -eq '1')
+# 0.5.0: no author-operated domain in the package properties (neutral placeholder only).
+$arpHelpLink = [string]$props['ARPHELPLINK']
+$c.arphelplink_value = $arpHelpLink
+$c.arphelplink_neutral = ($arpHelpLink -notmatch ('xy' + 'kong')) -and ($arpHelpLink -match '^https?://')
+$authorDomainProps = @($props.Keys | Where-Object { ([string]$props[$_]) -match ('xy' + 'kong') })
+$c.author_domain_props = ($authorDomainProps -join ',')
+$c.author_domain_absent = ($authorDomainProps.Count -eq 0)
 
 # ----------------------------------------------------- launch action / autostart
 $c.launch_custom_action = [bool](@((Read-MsiTable 'SELECT * FROM CustomAction') | Where-Object { $_[0] -eq 'LaunchLinkNote' }).Count)
@@ -121,7 +128,8 @@ $hardChecks = @(
     'product_version', 'product_name', 'per_user_allusers', 'per_user_msiinstallperuser',
     'exit_checkbox_text', 'exit_checkbox_default', 'launch_custom_action', 'exit_finish_doaction',
     'autostart_registry', 'app_exe_in_msi', 'app_exe_version_ok', 'app_exe_size_ok',
-    'license', 'notice', 'license_gpl_text', 'license_lgpl_text', 'engine_backend', 'engine_notice', 'payload_file_count_ok'
+    'license', 'notice', 'license_gpl_text', 'license_lgpl_text', 'engine_backend', 'engine_notice', 'payload_file_count_ok',
+    'arphelplink_neutral', 'author_domain_absent'
 )
 $failed = @($hardChecks | Where-Object { -not $c[$_] })
 $result.verified = ($failed.Count -eq 0)
@@ -139,5 +147,6 @@ if ($result.verified) {
 }
 Write-Host ("MSI CONTENTS VERIFY FAIL: {0}" -f ($failed -join ', ')) -ForegroundColor Red
 exit 1
+
 
 

@@ -1,4 +1,4 @@
-﻿# 端到端验证报告（2026-10-24）
+# 端到端验证报告（2026-10-24）
 
 > 目的：证明「手机/浏览器 → Relay → PC Agent → 本机 BiliNote → Markdown 回手机」真实链路可用，而不是只跑 mock。
 > 环境：Windows、本机 BiliNote 安装版 `C:\app\bilinote\BiliNoteBackend.exe`，LLM `deepseek / deepseek-v4-flash`，转写 fast-whisper small，本地 wrangler D1。
@@ -115,6 +115,6 @@ node scripts\ui-smoke.mjs
 
 - Relay：`npm --prefix relay test` → 46/46 PASS（REST + agent/phone WS、ticket、presence、task_updated、task_note、ack_note、note_request、多租户隔离、正文不落 D1/DO 的文件 marker 扫描）。
 - PC Agent：`pytest` → 206 passed（旧 161 + 新增 WS/重连/outbox/ack 45）；生产 relay 实测 Agent WS 101 + hello、手机建任务 1.3s 收到 note、ack 清 outbox、`/note` 410、手机离线重发、close 4001。
-- PWA：生产域 `https://relay.xykong.xyz` 真实链路 16/16 PASS（ticket→WS、presence、task_updated、note 本地缓存、ack、无轮询、断线重连）；mock WS 33/33 + 兜底 9/9 + 官方 UI smoke 10/10。
+- PWA：生产域 `<self-hosted-relay>` 真实链路 16/16 PASS（ticket→WS、presence、task_updated、note 本地缓存、ack、无轮询、断线重连）；mock WS 33/33 + 兜底 9/9 + 官方 UI smoke 10/10。
 - Relay 生产版本：`b37623dd-7284-4c12-8757-6ce61a4bbc14`；remote D1 migration 0002 已 apply；`tasks.markdown` 非空计数 0；E2E 测试 agent 已清理，保留真实 `我的电脑`。
 - 桌面端：0.2.2 MSI 安装版真实启动 → Agent WS hello + 持续 ping/pong；57 项 UI smoke / 8 项 pytest。

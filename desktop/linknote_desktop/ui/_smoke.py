@@ -241,7 +241,7 @@ def _fake_status() -> dict[str, Any]:
         },
         "agent": {"running": True, "pid": 5150, "paired": True, "error": ""},
         "relay": {
-            "url": "https://relay.xykong.xyz",
+            "url": "https://relay.example.com",
             "online": True,
             "agent": dict(FAKE_RELAY_ME["agent"]),
             "queue": dict(FAKE_RELAY_ME["queue"]),
@@ -264,7 +264,7 @@ def _fake_pairing() -> dict[str, Any]:
         "code": "K7M4-9QXB",
         "expires_at": expires.isoformat().replace("+00:00", "Z"),
         "status": "pending",
-        "relay_url": "https://relay.xykong.xyz",
+        "relay_url": "https://relay.example.com",
     }
 
 
@@ -449,6 +449,7 @@ def main() -> int:
     from linknote_desktop.controller import DesktopController
     from linknote_desktop.ui import MainWindow, OnboardingWizard, TrayIcon
     from linknote_desktop.ui import utils as ui_utils
+    from linknote_desktop import config as config_module
 
     controller = DesktopController()
     controller.config.onboarding_done = True  # 主窗口不自动弹出向导，单独测试
@@ -470,10 +471,16 @@ def main() -> int:
         "ok": True,
         "username": "abclinknote_bot",
     }
-    controller.test_qq_bot = lambda app_id, app_secret: {  # type: ignore[method-assign]
+    controller.test_relay = lambda url=None: {  # type: ignore[method-assign]
         "ok": True,
-        "expires_in": 7200,
+        "version": "0.5.0",
+        "realtime": True,
+        "status": "ok",
     }
+    # v0.5：默认 Relay 必须为空（用于冒烟断言），随后再填示例地址让主界面就绪
+    default_relay_url = str(controller.config.relay_base_url or "")
+    controller.config.relay_base_url = "https://relay.example.com"
+    controller.save_config()
 
     # 冒烟里没有真实 Agent 子进程：把快照里的 Agent 运行态伪装成运行中，
     # 让「当前任务」页展示和真实场景一致的运行中样式。
@@ -507,7 +514,27 @@ def main() -> int:
         "二级页面不在侧栏",
         all(key not in window._nav_buttons for key in ("ai", "transcription", "engine", "logs")),
     )
-    check("版本号为 0.4.0", ui_utils.APP_VERSION == "0.4.0")
+    check("版本号为 0.5.0", ui_utils.APP_VERSION == "0.5.0")
+    check("默认 Relay 为空", default_relay_url == "")
+    # v0.5 迁移：作者旧 Relay / 旧 workers.dev 默认必须清空，自定义地址保留
+    legacy_host = sorted(config_module._LEGACY_RELAY_HOSTS)[0]
+    legacy_path = Path(temp_root) / "legacy-settings.json"
+    config_module.DesktopConfig(relay_base_url=f"https://{legacy_host}").save(legacy_path)
+    loaded_legacy = config_module.DesktopConfig.load(legacy_path)
+    check("旧 Relay 域名迁移清空", loaded_legacy.relay_base_url == "")
+    workers_legacy = (
+        f"https://{config_module._LEGACY_WORKERS_DEV_PREFIX}.demo"
+        f"{config_module._LEGACY_WORKERS_DEV_SUFFIX}"
+    )
+    workers_path = Path(temp_root) / "legacy-workers-settings.json"
+    config_module.DesktopConfig(relay_base_url=workers_legacy).save(workers_path)
+    loaded_workers = config_module.DesktopConfig.load(workers_path)
+    check("旧 workers.dev Relay 迁移清空", loaded_workers.relay_base_url == "")
+    custom_path = Path(temp_root) / "custom-relay-settings.json"
+    config_module.DesktopConfig(relay_base_url="https://relay.example.com").save(custom_path)
+    loaded_custom = config_module.DesktopConfig.load(custom_path)
+    check("自定义 Relay 迁移保留", loaded_custom.relay_base_url == "https://relay.example.com")
+    check("自定义 Relay 不标记迁移", getattr(loaded_custom, "_legacy_relay_cleared", True) is False)
     check("就绪横幅-已准备好接收视频", "已准备好接收视频" in window._ready_banner._title.text())
 
     tray = None
@@ -579,6 +606,20 @@ def main() -> int:
     controller._on_status(_fake_status())  # noqa: SLF001 - 恢复正常状态
     _pump(app, 200)
     check("就绪横幅恢复已准备好", "已准备好接收视频" in window._ready_banner._title.text())
+
+    # ---- 未配置 Relay 是阻塞项：横幅提示并跳转设置页
+    configured_relay = str(controller.config.relay_base_url or "")
+    controller.config.relay_base_url = ""
+    window.refresh_ready_banner()
+    _pump(app, 200)
+    check("未配置 Relay 进入就绪横幅", "未配置 Relay" in window._ready_banner._title.text())
+    check("未配置 Relay 跳转设置页", window._ready_banner.target_key == "settings")
+    window._ready_banner.clicked.emit()
+    _pump(app, 200)
+    check("点击未配置 Relay 横幅跳到设置页", window.current_page_key() == "settings")
+    controller.config.relay_base_url = configured_relay
+    window.refresh_ready_banner()
+    _pump(app, 200)
 
     # ---- 数据加载验证（走真实的 controller.run_async 回调链路）
     window.show_page("ai")
@@ -687,10 +728,10 @@ def main() -> int:
                 )
             ),
         )
-        check("归档 frontmatter 版本 0.4.0", 'app_version: "0.4.0"' in archive_text)
+        check("归档 frontmatter 版本 0.5.0", 'app_version: "0.5.0"' in archive_text)
     else:
         check("归档 frontmatter 字段完整", False)
-        check("归档 frontmatter 版本 0.4.0", False)
+        check("归档 frontmatter 版本 0.5.0", False)
     second_archive = controller.archive_notes()
     check(
         "归档幂等（重复导出 0 篇）",
@@ -716,20 +757,59 @@ def main() -> int:
     archive_msg = settings_page._archive_msg._label.text()
     check("设置页立即导出有结果提示", ("跳过" in archive_msg) or ("导出" in archive_msg))
 
-    # ---- 消息入口（Telegram / QQ Bot 凭证）
+    # ---- Relay 设置（默认空 + 校验 URL + 测试连接 + 旧配置迁移提示）
+    saved_relay = str(controller.config.relay_base_url or "")
+    controller.config.relay_base_url = ""
+    controller.config._legacy_relay_cleared = True
+    settings_page.on_show()
+    _pump(app, 150)
+    check(
+        "设置页提示旧 Relay 已清空",
+        "旧版" in settings_page._connection_msg._label.text(),
+    )
+    controller.config.relay_base_url = saved_relay
+    controller.config._legacy_relay_cleared = False
+    settings_page.on_show()
+    _pump(app, 150)
+    check(
+        "设置页 Relay 地址已回填",
+        settings_page._relay_edit.text() == "https://relay.example.com",
+    )
+    check(
+        "Relay 占位符是示例域名",
+        "your-relay.example.com" in settings_page._relay_edit.placeholderText(),
+    )
+    settings_page._test_relay()
+    _pump(app, 400)
+    check("设置页 Relay 测试成功", "连接成功" in settings_page._connection_msg._label.text())
+    settings_page._relay_edit.setText("ftp://invalid-relay")
+    settings_page._save_connection()
+    _pump(app, 150)
+    check("设置页校验 Relay URL", "http" in settings_page._connection_msg._label.text())
+    settings_page._relay_edit.setText("https://relay.example.com")
+    settings_page._save_connection()
+    _pump(app, 300)
+    check(
+        "设置页保存 Relay",
+        str(controller.config.relay_base_url) == "https://relay.example.com",
+    )
+
+    # ---- 消息入口（仅 Telegram；QQ 已删除）
     check(
         "设置页有消息入口卡",
         hasattr(settings_page, "_bot_card")
-        and hasattr(settings_page, "_telegram_token_edit")
-        and hasattr(settings_page, "_qq_app_secret_edit"),
+        and hasattr(settings_page, "_telegram_token_edit"),
+    )
+    check(
+        "QQ 入口已删除",
+        not hasattr(controller, "test_qq_bot")
+        and not hasattr(settings_page, "_qq_app_secret_edit")
+        and not hasattr(controller.config, "qq_enabled"),
     )
     controller.config.telegram_enabled = True
     controller.config.telegram_bot_token = "1234567890:AAH-smoke-telegram-token"
-    controller.config.telegram_bot_username = ""
+    controller.config.telegram_bot_username = "abclinknote_bot"
     controller.config.telegram_allow_groups = True
-    controller.config.qq_enabled = True
-    controller.config.qq_app_id = "1020304050"
-    controller.config.qq_app_secret = "smoke-qq-app-secret-abcdef"
     settings_page._load_bot_channels()
     _pump(app, 120)
     telegram_mask = settings_page._telegram_token_edit.text()
@@ -738,13 +818,9 @@ def main() -> int:
         "Telegram Token 未明文显示",
         telegram_mask != controller.config.telegram_bot_token,
     )
-    qq_mask = settings_page._qq_app_secret_edit.text()
-    check("QQ AppSecret 显示掩码", bool(qq_mask) and "…" in qq_mask)
-    check("QQ AppSecret 未明文显示", qq_mask != controller.config.qq_app_secret)
     check(
         "消息入口开关已回填",
         settings_page._telegram_enable_switch.isChecked()
-        and settings_page._qq_enable_switch.isChecked()
         and settings_page._telegram_allow_groups_switch.isChecked(),
     )
 
@@ -753,24 +829,19 @@ def main() -> int:
     _pump(app, 400)
     telegram_test_msg = settings_page._telegram_msg._label.text()
     check("Telegram 测试连接显示 @username", "@abclinknote_bot" in telegram_test_msg)
-    settings_page._test_qq()
-    _pump(app, 400)
-    qq_test_msg = settings_page._qq_msg._label.text()
-    check("QQ 测试连接成功提示", "连接成功" in qq_test_msg)
 
     # 修改字段 + 保存：写 config 并同步 agent.json
     new_telegram_token = "9999999999:AAH-new-smoke-token"
-    new_qq_secret = "new-smoke-qq-secret-123456"
     settings_page._telegram_token_edit.setText(new_telegram_token)
-    settings_page._qq_app_id_edit.setText("5566778899")
-    settings_page._qq_app_secret_edit.setText(new_qq_secret)
     settings_page._save_bot_channels()
     _pump(app, 500)
     check("消息入口保存写入 config", controller.config.telegram_bot_token == new_telegram_token)
-    check("消息入口保存 QQ 配置", controller.config.qq_app_id == "5566778899")
     agent_json = controller.agent.read_config()
     check("消息入口同步到 agent.json", agent_json.get("telegram_bot_token") == new_telegram_token)
-    check("QQ 凭证同步到 agent.json", agent_json.get("qq_app_secret") == new_qq_secret)
+    check(
+        "agent.json 不含 QQ 字段",
+        not any(str(key).startswith("qq_") for key in agent_json),
+    )
     check(
         "agent.json 保留既有 bot 字段",
         "telegram_device_token" in agent_json or "agent_token" in agent_json,
@@ -847,20 +918,56 @@ def main() -> int:
     window.show_page("history")
     _pump(app, 120)
 
-    # ---- 首次配置向导：ffmpeg / AI / 配对 / 完成 步骤
+    # ---- 首次配置向导：Relay / ffmpeg / AI / 配对 / 完成 步骤
     wizard = None
     try:
         wizard = OnboardingWizard(controller)
         wizard.show()
         _pump(app, 120)
-        wizard._go(wizard.FFMPEG)  # noqa: SLF001 - 冒烟脚本直接驱动步骤
+        wizard._go(wizard.RELAY)  # noqa: SLF001 - 冒烟脚本直接驱动步骤
+        _pump(app, 220)
+        check("向导新增「连接 Relay」步骤", wizard._step == wizard.RELAY)
+        check(
+            "向导 Relay 占位符是示例域名",
+            "your-relay.example.com" in wizard._ob_relay_edit.placeholderText(),
+        )
+        wizard._ob_relay_edit.setText("https://relay.example.com")
+        wizard._test_relay()
         _pump(app, 500)
-        check("向导当前为第 2 步（安装 ffmpeg）", wizard._step == wizard.FFMPEG)
+        check("向导 Relay 测试连接成功", "连接成功" in wizard._ob_relay_msg._label.text())
+        relay_path = assets / "desktop-ui-onboarding-relay.png"
+        ok = _save(wizard, relay_path)
+        screenshots.append((relay_path, ok))
+        check("向导 Relay 步骤截图", ok)
+        print(f"[ok] OnboardingWizard Relay 步骤渲染正常，截图: {relay_path}")
+
+        wizard._go(wizard.FFMPEG)  # noqa: SLF001
+        _pump(app, 500)
+        check("向导当前为第 3 步（安装 ffmpeg）", wizard._step == wizard.FFMPEG)
         wizard_path = assets / "desktop-ui-onboarding.png"
         ok = _save(wizard, wizard_path)
         screenshots.append((wizard_path, ok))
         check("向导截图", ok)
-        print(f"[ok] OnboardingWizard 第 2 步渲染正常，截图: {wizard_path}")
+        print(f"[ok] OnboardingWizard ffmpeg 步骤渲染正常，截图: {wizard_path}")
+
+        # 未配置 Relay 时：配对步骤禁用生成按钮并提示
+        saved_relay = str(controller.config.relay_base_url or "")
+        controller.config.relay_base_url = ""
+        wizard._go(wizard.PAIR)  # noqa: SLF001
+        _pump(app, 300)
+        check(
+            "未配置 Relay 时向导配对按钮禁用",
+            not wizard._pairing_panel._generate_button.isEnabled(),
+        )
+        check(
+            "未配置 Relay 时向导有提示",
+            "Relay" in wizard._ob_pair_msg._label.text(),
+        )
+        controller.config.relay_base_url = saved_relay
+        wizard._go(wizard.RELAY)  # noqa: SLF001
+        _pump(app, 150)
+        wizard._ob_relay_edit.setText(saved_relay)
+        wizard._save_relay_config()
 
         wizard._go(wizard.AI)  # noqa: SLF001
         _pump(app, 500)
@@ -936,8 +1043,9 @@ def main() -> int:
     try:
         code = ui_utils.normalize_pair_code("k7m49qxb")
         check("配对码格式化", code == "K7M4-9QXB")
-        pixmap = ui_utils.pairing_qr_pixmap(code)
+        pixmap = ui_utils.pairing_qr_pixmap(code, 136, "https://relay.example.com")
         check("二维码生成", not pixmap.isNull() and pixmap.width() > 100)
+        check("未配置 Relay 时不生成二维码", ui_utils.pairing_qr_pixmap(code).isNull())
         remaining, expired = ui_utils.format_remaining(_fake_pairing()["expires_at"])
         check("配对码倒计时", (not expired) and "剩余" in remaining)
         tray_text = ui_utils.tray_status_text(status)
@@ -973,3 +1081,4 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+

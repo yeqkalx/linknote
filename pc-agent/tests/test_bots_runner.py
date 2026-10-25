@@ -1,4 +1,4 @@
-"""Bot Runner：链接→任务→本机笔记→投递、重启恢复、device token、限流、命令、窗口关闭补发。"""
+"""Bot Runner：链接→任务→本机笔记→投递、重启恢复、device token、限流、命令。"""
 
 from __future__ import annotations
 
@@ -7,7 +7,7 @@ import json
 import time
 
 from bot_helpers import build_env, make_message, wait_until
-from linknote_agent.bots.state import STATUS_WINDOW_CLOSED, PendingTask
+from linknote_agent.bots.state import PendingTask
 from linknote_agent.cli import build_parser, cmd_run
 from linknote_agent.config import AgentConfig, default_config_path
 
@@ -34,7 +34,9 @@ async def test_link_creates_task_and_replies(tmp_path):
     env = build_env(tmp_path)
     adapter = await _start(env)
     try:
-        message = make_message(text="看看这个 https://www.bilibili.com/video/BV1xx411c7mD 不错", message_id="msg-9")
+        message = make_message(
+            text="看看这个 https://www.bilibili.com/video/BV1xx411c7mD 不错", message_id="msg-9"
+        )
         await adapter.emit(message)
         await wait_until(lambda: len(env.bot_relay.created) == 1)
         created = env.bot_relay.created[0]
@@ -50,10 +52,10 @@ async def test_link_creates_task_and_replies(tmp_path):
 
 async def test_delivery_success_reads_local_note(tmp_path):
     env = build_env(tmp_path)
-    task = env.bot_relay.add_task("task-0001", status="succeeded", title="视频标题")
+    env.bot_relay.add_task("task-0001", status="succeeded", title="视频标题")
     env.seed_note("task-0001", title="本地笔记", markdown="# 本地笔记\n\n内容")
     env.state.add_pending(
-        PendingTask(task_id="task-0001", channel="telegram", chat_id="chat-1", reply_msg_id="m1")
+        PendingTask(task_id="task-0001", channel="telegram", chat_id="chat-1")
     )
     adapter = await _start(env)
     try:
@@ -71,9 +73,7 @@ async def test_delivery_success_reads_local_note(tmp_path):
 async def test_failed_task_notifies_error(tmp_path):
     env = build_env(tmp_path)
     env.bot_relay.add_task("task-fail", status="failed", error_message="模型余额不足")
-    env.state.add_pending(
-        PendingTask(task_id="task-fail", channel="telegram", chat_id="chat-1")
-    )
+    env.state.add_pending(PendingTask(task_id="task-fail", channel="telegram", chat_id="chat-1"))
     adapter = await _start(env)
     try:
         await wait_until(lambda: len(adapter.sent_text) == 1, timeout=5)
@@ -106,18 +106,16 @@ async def test_restart_recovery_delivers_pending(tmp_path):
 
 
 async def test_device_token_minted_saved_and_reused(tmp_path):
-    env = build_env(tmp_path, channels=("telegram", "qq"))
+    env = build_env(tmp_path)
     await env.runner.start()
     try:
-        assert [call["platform"] for call in env.agent_relay.device_calls] == ["telegram", "qq"]
+        assert [call["platform"] for call in env.agent_relay.device_calls] == ["telegram"]
         assert env.cfg.telegram_device_token == "dev_bot_0001"
-        assert env.cfg.qq_device_token == "dev_bot_0002"
         saved = json.loads(default_config_path().read_text(encoding="utf-8"))
         assert saved["telegram_device_token"] == "dev_bot_0001"
-        assert saved["qq_device_token"] == "dev_bot_0002"
         # 已存在 token 时不重复签发
         assert await env.runner.ensure_device_token("telegram") == "dev_bot_0001"
-        assert len(env.agent_relay.device_calls) == 2
+        assert len(env.agent_relay.device_calls) == 1
     finally:
         await env.runner.close()
 
@@ -162,33 +160,6 @@ async def test_retry_command_creates_new_pending(tmp_path):
         await env.runner.close()
 
 
-async def test_qq_window_closed_pending_then_flushed_on_next_message(tmp_path):
-    env = build_env(tmp_path, channels=("qq",))
-    adapter = env.adapters["qq"]
-    env.seed_note("task-window", title="窗口笔记", markdown="# 窗口笔记")
-    env.bot_relay.add_task("task-window", status="succeeded", title="t")
-    env.state.add_pending(
-        PendingTask(task_id="task-window", channel="qq", chat_id="u1", reply_msg_id="e1")
-    )
-    adapter.window_closed = True
-    await env.runner.start()
-    try:
-        await wait_until(
-            lambda: env.state.find("task-window") is not None
-            and env.state.find("task-window").status == STATUS_WINDOW_CLOSED,
-            timeout=5,
-        )
-        assert adapter.sent_notes == []
-        # 用户下一条消息带来新回复窗口：先补发积压笔记
-        adapter.window_closed = False
-        await adapter.emit(make_message(channel="qq", chat_id="u1", text="/help", message_id="e2"))
-        await wait_until(lambda: len(adapter.sent_notes) == 1, timeout=5)
-        assert adapter.sent_notes[0]["title"] == "窗口笔记"
-        assert env.state.find("task-window") is None
-    finally:
-        await env.runner.close()
-
-
 # ---------------------------------------------------------------- CLI 集成
 
 
@@ -229,8 +200,6 @@ class _FakeBotRunner:
 
 
 async def test_cmd_run_starts_and_stops_bot_runner(tmp_path, monkeypatch, fake_relay, fake_bilinote):
-    import bot_helpers
-
     cfg = AgentConfig()
     cfg.relay_base_url = "http://relay.test"
     cfg.agent_token = "agt_test_token_0123456789"

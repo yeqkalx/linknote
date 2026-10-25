@@ -34,7 +34,9 @@
 #define MyAppNameCN "链记"
 #define MyAppPublisher "LinkNote"
 #define MyAppExeName "LinkNote.exe"
-#define MyAppURL "https://relay.xykong.xyz"
+; Neutral placeholder for self-hosted builds: release owner replaces this with the
+; project repository/docs URL. Must not contain any author-operated domain.
+#define MyAppURL "https://github.com/"
 
 [Setup]
 ; Keep this AppId stable forever: upgrades and uninstall depend on it.
@@ -136,6 +138,10 @@ function InitializeSetup(): Boolean;
 begin
   Result := True;
 end;
+
+
+
+
 
 
 

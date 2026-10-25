@@ -1,7 +1,6 @@
 """Bot 测试公共设施：fake 适配器 / fake Relay / fake 助手。
 
-测试不触网：Telegram 用 httpx.MockTransport，QQ 用 mock HTTP + 注入 fake WebSocket，
-Runner 用 fake BotRelayClient/适配器。
+测试不触网：Telegram 用 httpx.MockTransport；Runner 用 fake BotRelayClient/适配器。
 """
 
 from __future__ import annotations
@@ -14,7 +13,7 @@ from typing import Any, Optional
 
 import httpx
 
-from linknote_agent.bots.base import BotAdapter, IncomingMessage, ReplyWindowClosed
+from linknote_agent.bots.base import BotAdapter, IncomingMessage
 from linknote_agent.bots.device_relay import BotRelayError
 from linknote_agent.bots.runner import BotRunner
 from linknote_agent.bots.state import BotState
@@ -29,7 +28,6 @@ def make_message(
     chat_type: str = "private",
     text: str = "https://www.bilibili.com/video/BV1xx411c7mD",
     message_id: str = "msg-1",
-    reply_msg_id: str = "",
 ) -> IncomingMessage:
     return IncomingMessage(
         channel=channel,
@@ -37,7 +35,6 @@ def make_message(
         chat_type=chat_type,
         message_id=message_id,
         text=text,
-        reply_msg_id=reply_msg_id,
     )
 
 
@@ -58,7 +55,7 @@ class FakeAdapter(BotAdapter):
         self.callback = None
         self.sent_text: list[dict[str, Any]] = []
         self.sent_notes: list[dict[str, Any]] = []
-        self.window_closed = False
+        self.fail_send = False
 
     async def start(self, on_message) -> None:
         self.started = True
@@ -68,13 +65,13 @@ class FakeAdapter(BotAdapter):
         self.stopped = True
 
     async def send_text(self, message: IncomingMessage, text: str) -> None:
-        if self.window_closed:
-            raise ReplyWindowClosed()
+        if self.fail_send:
+            raise BotError("fake send failure")
         self.sent_text.append({"message": message, "text": text})
 
     async def send_note(self, message, title, markdown, note_path=None) -> None:
-        if self.window_closed:
-            raise ReplyWindowClosed()
+        if self.fail_send:
+            raise BotError("fake send failure")
         self.sent_notes.append(
             {"message": message, "title": title, "markdown": markdown, "path": note_path}
         )
@@ -157,7 +154,6 @@ class BotTestEnv:
         self.cfg.bot_task_poll_seconds = 0.01
         self.cfg.bot_task_timeout_seconds = 5.0
         self.cfg.bot_telegram_preview_chars = 120
-        self.cfg.bot_qq_chunk_chars = 40
         self.outbox = Outbox(tmp_path / "outbox", notes_dir=tmp_path / "notes")
         self.state = BotState(tmp_path / "bot-state.json")
         self.agent_relay = FakeAgentRelay()
@@ -177,13 +173,11 @@ class BotTestEnv:
 
     def seed_note(self, task_id: str, title: str = "测试标题", markdown: str = "# 笔记\n正文") -> Path:
         self.outbox.add_note(task_id, title, markdown)
-        path = self.outbox.note_path(task_id)
-        return path
+        return self.outbox.note_path(task_id)
 
 
-def build_env(tmp_path: Path, channels: tuple[str, ...] = ("telegram",)) -> BotTestEnv:
-    adapters = {channel: FakeAdapter(channel) for channel in channels}
-    return BotTestEnv(tmp_path, adapters=adapters)
+def build_env(tmp_path: Path) -> BotTestEnv:
+    return BotTestEnv(tmp_path, adapters={"telegram": FakeAdapter("telegram")})
 
 
 class FakeTelegram:

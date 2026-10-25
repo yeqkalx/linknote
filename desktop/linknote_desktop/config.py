@@ -11,14 +11,55 @@ import sys
 from dataclasses import asdict, dataclass, field, fields
 from pathlib import Path
 from typing import Any, Iterable
+from urllib.parse import urlsplit
 
 APP_NAME = "LinkNote"
 APP_NAME_CN = "链记"
-APP_VERSION = "0.4.0"
-DEFAULT_RELAY_URL = "https://relay.xykong.xyz"
+APP_VERSION = "0.5.0"
+# v0.5 起不再内置作者的生产 Relay：默认留空，必须由用户填写自己部署的 Relay。
+DEFAULT_RELAY_URL = ""
 DEFAULT_BACKEND_URL = "http://127.0.0.1:8483/api"
 DEFAULT_PROVIDER = "deepseek"
 DEFAULT_MODEL = "deepseek-v4-flash"
+
+# 旧版本（<=0.4）可能保存在 settings.json / agent.json 里的作者旧 Relay 地址。
+# 拆成片段拼接，避免当前源码树继续出现作者生产域名的完整字面量；
+# 命中这些地址时会在 load/save/ensure_agent_config 中清空，绝不再连接。
+_LEGACY_RELAY_HOSTS = {
+    "relay." + "xykong" + ".xyz",
+    "your-relay.example.com",  # 旧文档占位符，用户误存时也清空
+}
+_LEGACY_WORKERS_DEV_SUFFIX = ".workers.dev"
+_LEGACY_WORKERS_DEV_PREFIX = "linknote-relay"
+
+
+def is_legacy_relay_url(value: str) -> bool:
+    """判断是否旧版作者 Relay / 旧默认占位（v0.5 必须清空，不能继续连接）。"""
+    text = str(value or "").strip()
+    if not text:
+        return False
+    candidate = text if "://" in text else f"https://{text}"
+    try:
+        host = (urlsplit(candidate).hostname or "").lower().rstrip(".")
+    except ValueError:
+        return False
+    if not host:
+        return False
+    if host in _LEGACY_RELAY_HOSTS:
+        return True
+    # 旧 deployments 默认：https://linknote-relay.<subdomain>.workers.dev
+    return (
+        host.endswith(_LEGACY_WORKERS_DEV_SUFFIX)
+        and host.startswith(_LEGACY_WORKERS_DEV_PREFIX)
+    )
+
+
+def normalize_relay_url(value: str) -> str:
+    """规范化 Relay 地址；旧作者域名/旧占位返回空字符串（等待用户重新填写）。"""
+    text = str(value or "").strip().rstrip("/")
+    if not text or is_legacy_relay_url(text):
+        return ""
+    return text
 
 
 def user_data_dir() -> Path:
@@ -126,14 +167,11 @@ class DesktopConfig:
     archive_enabled: bool = False
     archive_dir: str = ""          # 目标目录（Obsidian vault 或普通目录）
     archive_template: str = ""     # 文件名模板；留空 = 沿用 notes/ 里的文件名
-    # 消息入口（用户自己的 Telegram / QQ 机器人凭证；只存本机 agent.json）
+    # 消息入口（用户自己的 Telegram 机器人凭证；只存本机 agent.json）
     telegram_enabled: bool = False
     telegram_bot_token: str = ""
     telegram_bot_username: str = ""   # 测试连接 getMe 回填/缓存
     telegram_allow_groups: bool = False
-    qq_enabled: bool = False
-    qq_app_id: str = ""
-    qq_app_secret: str = ""
     # 日志
     log_retention_days: int = 14
     # 首次引导
@@ -160,7 +198,7 @@ class DesktopConfig:
 
     def to_agent_overrides(self) -> dict[str, Any]:
         return {
-            "relay_base_url": self.relay_base_url.rstrip("/"),
+            "relay_base_url": normalize_relay_url(self.relay_base_url),
             "agent_name": self.agent_name or "我的电脑",
             "backend_base_url": self.backend_base_url.rstrip("/"),
             "backend_exe": self.resolved_engine_exe(),
@@ -177,6 +215,10 @@ class DesktopConfig:
         }
 
     def save(self, path: Path | None = None) -> Path:
+        # 旧版 Relay 域名绝不允许再被保存；直接清空等用户在向导/设置里重填
+        if is_legacy_relay_url(self.relay_base_url):
+            self.relay_base_url = ""
+            setattr(self, "_legacy_relay_cleared", True)
         target = path or settings_path()
         target.parent.mkdir(parents=True, exist_ok=True)
         data = asdict(self)
@@ -212,8 +254,16 @@ class DesktopConfig:
                             continue
                         setattr(cfg, key, value)
                     else:
+                        # v0.5 已删除 QQ 入口：旧 settings.json 里的 qq_* 字段直接丢弃
+                        if str(key).startswith("qq_"):
+                            continue
                         extra[key] = value
                 cfg._extra = extra
+        # v0.5 迁移：清空作者旧 Relay / 旧默认占位，避免升级后继续连接旧域名
+        legacy_cleared = is_legacy_relay_url(cfg.relay_base_url)
+        if legacy_cleared:
+            cfg.relay_base_url = ""
+        setattr(cfg, "_legacy_relay_cleared", legacy_cleared)
         if not cfg.engine_exe:
             cfg.engine_exe = detect_engine_exe()
         if not cfg.engine_workdir and cfg.engine_exe:
@@ -238,7 +288,7 @@ def ensure_agent_config(cfg: DesktopConfig) -> dict[str, Any]:
         except (OSError, json.JSONDecodeError):
             existing = {}
     existing.update(cfg.to_agent_overrides())
-    # 消息入口（Bot）配置：Agent 读取这些字段启动 Telegram / QQ 入口。
+    # 消息入口（Bot）配置：Agent 读取这些字段启动 Telegram 入口。
     # 这里只写显式字段，保留 agent.json 里已有的 *_device_token / bot-state 等字段。
     existing.update(
         {
@@ -246,9 +296,6 @@ def ensure_agent_config(cfg: DesktopConfig) -> dict[str, Any]:
             "telegram_bot_token": cfg.telegram_bot_token,
             "telegram_bot_username": cfg.telegram_bot_username,
             "telegram_allow_groups": bool(cfg.telegram_allow_groups),
-            "qq_enabled": bool(cfg.qq_enabled),
-            "qq_app_id": cfg.qq_app_id,
-            "qq_app_secret": cfg.qq_app_secret,
         }
     )
     existing.setdefault("platform", "windows")

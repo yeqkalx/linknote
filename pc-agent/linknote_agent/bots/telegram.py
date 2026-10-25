@@ -274,7 +274,6 @@ class TelegramBot(BotAdapter):
             chat_type="group" if chat_type != "private" else "private",
             message_id=message_id,
             text=text,
-            reply_msg_id="",
             sender_id=str(sender.get("id") or ""),
             raw=raw,
         )

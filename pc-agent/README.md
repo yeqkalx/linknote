@@ -28,7 +28,10 @@ BiliNote 后端（已安装，配置好 LLM Key / 转写引擎 / ffmpeg）
    （先用 BiliNote 网页界面成功生成过一篇笔记）。
    打包版默认后端路径为 `C:\app\bilinote\BiliNoteBackend.exe`，如不同请在配置里改。
 2. Windows 10/11，已安装 [uv](https://docs.astral.sh/uv/)（Python 3.11 可由 uv 自动下载）。
-3. 一个 Relay 地址：生产 `https://relay.xykong.xyz`，本地开发 `http://127.0.0.1:8787`。
+3. **一个你自己部署的 Relay 地址**（v0.5 起不再提供公共 Relay，默认值为空）：
+   按 [../docs/self-hosting.md](../docs/self-hosting.md) 用自己的 Cloudflare 账号部署，
+   然后在桌面「设置/首次向导 → Relay」填入 `https://你的域名`；本地开发可用
+   `http://127.0.0.1:8787`。未配置 Relay 时 `run`/`pair`/`status` 会给出明确中文提示。
 
 ## 安装
 
@@ -45,8 +48,8 @@ uv pip install --python .venv\Scripts\python.exe -e ".[dev]"
 ## 配对（第一次使用）
 
 ```powershell
-# 生产 Relay（默认）
-.venv\Scripts\python.exe -m linknote_agent pair
+# v0.5 默认 Relay 为空：必须用 --relay 指定自己的 Relay
+.venv\Scripts\python.exe -m linknote_agent pair --relay https://your-relay.example.com
 
 # 本地开发 Relay
 .venv\Scripts\python.exe -m linknote_agent pair --relay http://127.0.0.1:8787
@@ -127,19 +130,20 @@ uv pip install --python .venv\Scripts\python.exe -e ".[dev]"
 - 超过 `note_retention_days`（默认 7 天）仍未 ack 的 outbox 记录会被清理（本地 md 不删）；
 - 手机端 `note_request` 即使 outbox 已清理，也会从 `notes/*.md` 读取并重发。
 
-## Bot 入口（v0.4：Telegram / QQ）
+## Bot 入口（v0.5：Telegram）
 
-除了手机 PWA/APK，本机 Agent 还能同时跑 **自己的** Telegram Bot / QQ 机器人作为链接入口。
+除了手机 PWA/APK，本机 Agent 还能跑 **自己的** Telegram Bot 作为链接入口。
 设计见 [../docs/bot-channels.md](../docs/bot-channels.md)。
 
-- Bot 与 WS/REST runner **并行启动**（`run` 时自动拉起，任一个 channel 启用即启动），不阻塞任务处理；
+- Bot 与 WS/REST runner **并行启动**（`run` 时自动拉起），不阻塞任务处理；
 - Bot 用 Relay 签发的**专用 device token**（`POST /api/v1/agent/devices`）建任务/查任务，
   不碰手机 token；任务仍由同一台电脑的 Agent 生成；
 - 完成后从本机 `notes/<task_id>.md` 读笔记回发；pending 持久化在 `~/.linknote/bot-state.json`，
-  重启恢复；QQ 回复窗口关闭时转 pending，等 `/last` 或用户下一条消息补发；
+  重启后自动补投递；
 - 命令：`/start`、`/help`、`/status`（最近 5 个任务）、`/last`（重发最近笔记）、
   `/retry <task_id>`（重试失败任务）；其他文本提取第一个支持平台的链接建任务；
-- 本地限流：同一聊天每小时最多 10 个任务。
+- 本地限流：同一聊天每小时最多 10 个任务；
+- **前置条件**：必须先配置好自己的 Relay（见上文 / `docs/self-hosting.md`），Bot 依赖它建任务。
 
 ### Telegram（长轮询，无需公网/Webhook）
 
@@ -161,46 +165,16 @@ uv pip install --python .venv\Scripts\python.exe -e ".[dev]"
    - `getUpdates` offset 持久化（重启不重复/不漏），429 按 `retry_after` 退避。
    - **中国大陆直连 Telegram 通常不可用**，需用户自行解决网络。
 
-### QQ（官方开放平台 WebSocket 网关）
-
-1. 在 QQ 开放平台创建机器人，拿 AppID/AppSecret；
-2. 配置：
-
-```jsonc
-{
-  "qq_enabled": true,
-  "qq_app_id": "102000001",
-  "qq_app_secret": "***",                   // 只存本机
-  "bot_qq_chunk_chars": 1500                // 长笔记分片
-}
-```
-
-3. 重启 `run`：Agent 会用 `getAppAccessToken`（缓存 7200s）→ `GET /gateway` →
-   WSS 连接 → op10 hello → op2 Identify（`QQBot <token>`、`intents=1<<25`）→ 心跳/Resume，
-   日志出现 `QQ Bot 已就绪（READY）` 即连接成功。
-   - 收 `C2C_MESSAGE_CREATE` / `GROUP_AT_MESSAGE_CREATE`；链接取 `content`，否则取
-     `ark_data.fields.jump_url`（QQ 会把 B 站链接转成卡片）；
-   - 被动回复带原消息 `msg_id` + 递增 `msg_seq`（C2C 60 分钟内最多 4 次、群 5 分钟最多 5 次）；
-     长笔记按 `bot_qq_chunk_chars` 分片，末尾提示完整笔记在电脑/手机；
-   - 超窗口/无权限 → 笔记转 pending，用户发 `/last` 或下一条消息时用新的被动窗口补发；
-   - **个人主体限制**：QQ 开放平台个人认证暂不支持公开使用，只能加自己当群主/管理员的群，
-     或使用 20 个「内部体验号码」；要公开需企业/个体户认证；
-   - `intents 1<<25` 需在开放平台申请单聊/群事件权限，否则 Identify 失败。
-
 ### 用环境变量联调（凭证不要进仓库）
 
 ```powershell
-# Telegram
 $env:LINKNOTE_TELEGRAM_ENABLED = "true"
 $env:LINKNOTE_TELEGRAM_BOT_TOKEN = "<BotFather token>"
-# QQ
-$env:LINKNOTE_QQ_ENABLED = "true"
-$env:LINKNOTE_QQ_APP_ID = "<AppID>"
-$env:LINKNOTE_QQ_APP_SECRET = "<AppSecret>"
+$env:LINKNOTE_RELAY_BASE_URL = "https://your-relay.example.com"
 .venv\Scripts\python.exe -m linknote_agent run
 ```
 
-> Bot token/AppSecret 只存本机 `agent.json`；日志/异常/`status --json` 导出都经过 mask。
+> Bot token 只存本机 `agent.json`；日志/异常/`status --json` 导出都经过 mask。
 > 任何能给这个 bot 发消息的人都能用你的电脑生成笔记，**不要把 bot 公开给陌生人**。
 
 ## 登录自启（可选）
@@ -247,7 +221,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\packaging\install_autostar
 
 | 字段 | 默认值 | 说明 |
 |---|---|---|
-| `relay_base_url` | `https://relay.xykong.xyz` | Relay 地址（不带 `/api/v1`） |
+| `relay_base_url` | `""`（**未配置**） | 你自己的 Relay 地址（不带 `/api/v1`）；v0.5 起默认空，未配置时 `run` 拒绝启动（退出码 2） |
 | `agent_token` | `""` | 配对得到，**只在本机，勿外传**；丢失只能重新配对 |
 | `agent_id` / `agent_name` / `platform` / `version` | pair 写入 | 展示用 |
 | `backend_base_url` | `http://127.0.0.1:8483/api` | BiliNote 后端地址 |
@@ -287,13 +261,9 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\packaging\install_autostar
 | `telegram_bot_username` | `""` | getMe 回填/缓存 |
 | `telegram_device_token` | `""` | Relay 为 Bot 签发的专用 device token（只存本机） |
 | `telegram_allow_groups` | `false` | 默认只处理私聊；开启后群聊只处理 @bot/命令 |
-| `qq_enabled` | `false` | 是否启用 QQ 官方 Bot 入口 |
-| `qq_app_id` / `qq_app_secret` | `""` | QQ 开放平台凭证（secret 日志/导出 mask，只存本机） |
-| `qq_device_token` | `""` | Relay 为 QQ Bot 签发的专用 device token |
 | `bot_task_poll_seconds` | `3.0` | Bot 轮询 Relay 任务状态间隔 |
 | `bot_task_timeout_seconds` | `3600.0` | Bot 端单任务最长等待 |
 | `bot_telegram_preview_chars` | `3500` | Telegram 预览正文字符数（完整笔记走附件） |
-| `bot_qq_chunk_chars` | `1500` | QQ 长笔记分片字符数（受被动回复次数限制） |
 | `outbox_dir` / `notes_dir` / `log_dir` | `""`（用 `~/.linknote/` 下默认子目录） | 可自定义 |
 | `verbose` | `false` | 是否输出 DEBUG 日志 |
 
@@ -370,7 +340,7 @@ Agent 会把 BiliNote 的原始报错翻译成中文再回传 fail（手机端�
 .venv\Scripts\python.exe -m pytest -q
 ```
 
-当前 **254 passed**。测试**不依赖真实 Relay / BiliNote / Telegram / QQ**：REST 用
+当前 **248 passed**。测试**不依赖真实 Relay / BiliNote / Telegram**：REST 用
 `httpx.MockTransport` 在进程内模拟（`tests/conftest.py` 的 `FakeRelay` / `FakeBiliNote`）；
 WS 用注入的 fake connection + 本机 `websockets` fake server（真实握手，随机端口）验证。覆盖：
 
@@ -386,22 +356,19 @@ WS 用注入的 fake connection + 本机 `websockets` fake server（真实握手
   `note_request` 重发、**`ack_note persisted` 语义与 3 次重试（30s/2min/10min）**、
   **`agent_ready` 首次上报/变化重发/健康探测 30s 缓存/引擎探测回退**、
   重连补发、REST 兜底、旧 outbox 迁移；
-- **Bot 入口（v0.4，全部 mock，不触网）**：
-  - `bot-state.json` 原子读写、Telegram offset、QQ session/event seq、pending、限流持久化；
+- **Bot 入口（v0.5，全部 mock，不触网）**：
+  - `bot-state.json` 原子读写、Telegram offset、pending、限流持久化；
   - Telegram：`getMe` username、`getUpdates` 长轮询 + offset 持久化、私聊/群聊（@bot/命令）
     过滤、bot 消息忽略、预览截断 + `sendDocument` multipart、401/409/429 处理、
     错误信息不含 token；
-  - QQ：access_token 缓存、Identify（`QQBot <token>` / `intents=1<<25` / `shard`）、
-    心跳 op1、READY session、C2C/群事件与 `ark_data.fields.jump_url`、按事件 id 去重、
-    被动回复 `msg_id`+`msg_seq`、长笔记分片上限、回复窗口关闭抛 `ReplyWindowClosed`；
   - Runner：链接→平台校验→bot device token 建任务→「已提交」→轮询→本机 notes 投递、
     失败通知、重启恢复 pending、device token 签发/保存/复用、10 任务/小时限流、
-    `/help /status /last /retry`、QQ 窗口关闭转 pending 后由下条消息补发、CLI 并行启停；
+    `/help /status /last /retry`、CLI 并行启停；
 - BiliNote 请求体字段（与 `wecom_bot` 完全一致）、ResponseWrapper 解包、engine_health 探测；
 - CLI（`--help`、未配对拦截、`status --json`、`unpair`、`install-autostart` 命令拼装、
   `run --once`、`run --poll`、默认 WS 模式、Bot Runner 启停）。
 
-> 真实 Telegram / QQ / Bot 凭证的端到端验证**未在本机执行**（省钱/无需真实凭证），
+> 真实 Telegram Bot 凭证的端到端验证**未在本机执行**（省钱/无需真实凭证），
 > 由用户在桌面 UI 填入自己的凭证后自行验证；mock 单测覆盖协议与业务分支。
 
 真实链路验证（2026-10-24，fake BiliNote + fake phone，节选）：
@@ -419,32 +386,6 @@ WS 用注入的 fake connection + 本机 `websockets` fake server（真实握手
 - relay 修复 `intVar` 缺省值 bug 后复测 alarm 频率：**只有 Agent（无手机）35s 内 0 次服务端
   JSON ping**；手机连接后 65s 仅 **30.1s / 60.1s 两次 ping**（30s 口径），Agent/手机均保持连接。
   该 bug 会让缺省 alarm/ping 变成 1s（v0.2 线上曾中招），v0.3 修复后符合降本目标。
-
-**生产 relay v0.3.0（`wss://relay.xykong.xyz`，worker `c312b769…`）**
-- health `version: 0.3.0`；Agent WSS 握手 101 → `agent_ready` → `/agent/me` 顶层
-  `ready:true`、手机 hello/presence `ready:true, issues:[]`；
-- 静置 17s 后手机连接触发 `probe`/`ping`，Agent 回 `probe_ack`/`pong`，presence 保持 online；
-- 手机建任务 → `note`；`ack persisted=false` → Agent 保留 outbox 并重发 `task_note` 3 次 →
-  手机 `persisted=true` → outbox 清空、`notes/` 保留；D1 无 markdown、`/note` 410；
-- alarm 频率：无手机 35s **0 次 ping**；手机在线 65s **2 次 ping（29.9s / 59.8s）**，
-  Agent 与手机全程在线（手机按契约回 pong）；
-- 部署后边缘传播期偶发 SSL EOF/401：Agent 的重连退避会自动恢复（本次 E2E 脚本对边缘请求
-  也做了退避重试，生产最终链路零人工干预跑通）。
-
-**新 Agent + 旧 Relay 兼容（生产 `wss://relay.xykong.xyz`，relay v0.2.0）**
-- 完整任务链路（pair/claim → hello → task → task_update → task_note → note → ack → 清理）通过，
-  Agent 的 `agent_ready` 被旧 Relay 忽略但**不断连**；
-- 旧 Relay 每 ~1s 发 JSON `ping`，新 Agent 回 `pong`，持续 70s **零断线**
-  （旧 Relay 的 JSON 心跳仍可用，新 Agent 不再主动发 JSON ping）。
-
-**生产 relay v0.2.0 任务链路**：Agent WSS 握手 **HTTP 101**（`Authorization: Bearer agt_…`）、
-首帧 hello；手机建任务 1.3s 收到 note；`task_updated` 序列 `parsing→downloading→transcribing→
-summarizing→succeeded 100`；ack 后 outbox 清空、`notes/` 保留；`/note` 410。
-同 token 第二条连接顶替：旧连接收 **close 4001**，Agent 日志提示「可能重复启动」并自动重连成功。
-
-> 注意：Relay v0.3 会按 `phone_stale` 关闭「长时间没有任何消息」的手机 socket（close 4002），
-> 手机端必须响应服务端 JSON `ping`（回 `pong`）并/或每 25s 发 `ping`，否则会被判 stale
-> （本 E2E 的 fake phone 一开始没回 pong 就复现了 4002；PWA 需保证该行为）。
 
 ## 与契约相关的重要说明（实现选择）
 
@@ -505,19 +446,16 @@ summarizing→succeeded 100`；ack 后 outbox 清空、`notes/` 保留；`/note`
 - BiliNote 后端无鉴权、只有本机用；Agent 不把它暴露到公网。
 - 自动拉起的后端进程在 Agent 退出后**不杀**（那是用户自己的 BiliNote），下次直接复用。
 
-### Bot 入口（v0.4）风险
+### Bot 入口（v0.5）风险
 
 - **Telegram**：中国大陆直连通常不可用，需用户自行解决网络；同一 bot 若设置了 Webhook
   或另有一个实例在 `getUpdates`，会返回 409（单消费者）。
-- **QQ**：个人主体认证暂不支持公开使用（只能自建群/内部体验号）；`intents 1<<25` 需在开放
-  平台申请单聊/群事件权限，未授权时 Identify 失败；被动回复窗口 C2C 60 分钟/群 5 分钟，
-  超窗会转 pending 等 `/last`；长笔记受被动回复次数限制会截断并提示。
 - **Bot 安全**：任何能给 bot 发消息的人都能用你的电脑生成笔记（消耗你的 LLM Key/算力），
   不要把 bot 公开给陌生人；Bot 凭证只存本机，但 Relay 与 Bot 平台仍能看到链接/状态/笔记。
 - **Relay 依赖**：Bot 建任务依赖 `POST /api/v1/agent/devices` 端点（v0.4 新增）；
   Relay 未部署该端点时会启动失败并记录日志（不影响手机 PWA/WS 主链路）。
-- **未真实验证**：本机未用真实 Telegram token / QQ AppID 做端到端（按 Lead 要求省钱），
-  由用户用桌面 UI 自行验证 getMe / READY / 链接→笔记回传。
+- **未真实验证**：本机未用真实 Telegram token 做端到端（按 Lead 要求省钱），
+  由用户用自己的 bot token 验证 getMe / 链接→笔记回传。
 
 ## License
 

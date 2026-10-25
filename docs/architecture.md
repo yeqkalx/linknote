@@ -25,7 +25,7 @@
                │ WSS ticket 推送 + REST 快照
                ▼
 ┌─────────────────────────────┐
-│ Cloudflare Worker            │  relay.xykong.xyz
+│ Cloudflare Worker            │  relay.example.com
 │ + Durable Object (SQLite)    │  WebSocket Hibernation
 │ + D1 任务元数据               │  presence/task/note 转发
 │ （同时托管 PWA 静态文件）     │  不存 Markdown 正文
@@ -79,7 +79,7 @@
 - 单任务串行：BiliNote 后端本身是串行执行器（`task_serial_executor`），多任务无意义；WS 在线时不空闲轮询，断线期间 REST 兜底。
 - 配置存 `~/.linknote/agent.json`（token 明文仅在本机；Windows 建议后续接 DPAPI）。
 - CLI：
-  - `python -m linknote_agent pair --relay https://relay.xykong.xyz`
+  - `python -m linknote_agent pair --relay https://relay.example.com`
   - `python -m linknote_agent run`
   - `python -m linknote_agent status`
   - `python -m linknote_agent install-autostart`（可选，写启动文件夹快捷方式）
@@ -167,7 +167,7 @@ bilinote-to-android/
 ## 7. 已知风险与后续
 
 1. **电脑必须常开 + 装 Agent**：产品最大漏斗；先服务 BiliNote 现有用户/团队，不做大众。
-2. **国内访问 Cloudflare**：`*.workers.dev` 不可靠；用自定义域名 `relay.xykong.xyz`，4G 实测。不行则同一套 API 迁香港/新加坡 VPS（README 记录迁移点）。
+2. **国内访问 Cloudflare**：`*.workers.dev` 不可靠；用自定义域名 `relay.example.com`，4G 实测。不行则同一套 API 迁香港/新加坡 VPS（README 记录迁移点）。
 3. **成本边界**：免费计划 DO 10 万请求/天 + 10 万行写/天，超限**硬失败**；v0.2.x 约 32 台常在线触顶。v0.3.0 改为手机在线才心跳 + 协议 ping，估算 1,000 台可留在免费额度内；生产建议 Workers Paid $5/月兜底。见 [成本模型](cost-model.md)。
 4. **无系统推送**：App 不在前台时没有 OS 级提醒；项目内 WS 推送已实现，后续可接邮件/服务号/厂商推送。
 5. **合规**：B 站/YouTube ToS、版权、生成式 AI 备案/标识、应用商店。MVP 只做自用/小范围测试，不公开分发 APK。

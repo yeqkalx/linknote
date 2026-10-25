@@ -1,6 +1,6 @@
 """首次配置向导（Onboarding）：让普通用户不碰命令行也能把客户端配好。
 
-步骤：欢迎 → ffmpeg → 启动引擎 → AI 模型 → 语音转写 → 配对手机 → 完成。
+步骤：欢迎 → 连接 Relay → ffmpeg → 启动引擎 → AI 模型 → 语音转写 → 配对手机 → 完成。
 """
 from __future__ import annotations
 
@@ -37,6 +37,7 @@ from .widgets import (
 
 STEP_TITLES = [
     "欢迎使用",
+    "连接 Relay",
     "安装 ffmpeg",
     "启动引擎",
     "AI 模型",
@@ -56,12 +57,13 @@ class OnboardingWizard(QDialog):
     """首次配置向导，窗口 760×560，暖纸 / 白卡片 / 珊瑚主按钮。"""
 
     WELCOME = 0
-    FFMPEG = 1
-    ENGINE = 2
-    AI = 3
-    TRANSCRIBE = 4
-    PAIR = 5
-    FINISH = 6
+    RELAY = 1
+    FFMPEG = 2
+    ENGINE = 3
+    AI = 4
+    TRANSCRIBE = 5
+    PAIR = 6
+    FINISH = 7
 
     def __init__(self, controller, parent: Optional[QWidget] = None):
         super().__init__(parent)
@@ -113,7 +115,7 @@ class OnboardingWizard(QDialog):
         brand = QLabel("linknote 配置向导")
         brand.setObjectName("WizardTitle")
         header_row.addWidget(brand, 1, Qt.AlignmentFlag.AlignVCenter)
-        self._step_counter = QLabel("第 1 / 7 步")
+        self._step_counter = QLabel("第 1 / 8 步")
         self._step_counter.setObjectName("Help")
         header_row.addWidget(self._step_counter, 0, Qt.AlignmentFlag.AlignVCenter)
         root.addWidget(header)
@@ -184,6 +186,7 @@ class OnboardingWizard(QDialog):
     def _build_pages(self) -> None:
         self._pages = [
             self._build_welcome_page(),
+            self._build_relay_page(),
             self._build_ffmpeg_page(),
             self._build_engine_page(),
             self._build_ai_page(),
@@ -269,6 +272,62 @@ class OnboardingWizard(QDialog):
             "使用在线 AI 时，必要的文本会发送给你选择的模型服务商；API Key 由你直连模型商鉴权，不经链记中继。",
         )
         layout.addWidget(privacy)
+        layout.addStretch(1)
+        return page
+
+    def _build_relay_page(self) -> QWidget:
+        page, layout = self._page()
+        layout.addWidget(
+            self._page_title(
+                "连接 Relay",
+                "Relay 在手机和这台电脑之间中转配对与任务。v0.5 起不再提供公共 Relay，"
+                "需要先用你自己的 Cloudflare 账号/域名部署一个。",
+            )
+        )
+        card = Card()
+        card.add_header(
+            "你自己的 Relay",
+            "先按仓库里的 docs/self-hosting.md 用你自己的 Cloudflare 账号部署 Relay"
+            "（免费套餐即可），再把地址填到这里。部署好之前可以先跳过，稍后在设置页配置。",
+        )
+        self._ob_relay_edit = QLineEdit()
+        self._ob_relay_edit.setPlaceholderText("https://your-relay.example.com")
+        self._ob_relay_edit.setText(str(self.controller.config.relay_base_url or ""))
+        self._ob_relay_edit.textEdited.connect(self._on_relay_edited)
+        relay_row = QHBoxLayout()
+        relay_row.setContentsMargins(0, 0, 0, 0)
+        relay_row.setSpacing(8)
+        relay_row.addWidget(self._ob_relay_edit, 1)
+        self._ob_relay_test_button = button("测试连接", "Primary", self._test_relay)
+        relay_row.addWidget(self._ob_relay_test_button, 0)
+        card.body.addLayout(relay_row)
+        card.body.addWidget(
+            hint_label(
+                "测试会请求 GET /api/v1/health，并校验 ok + realtime。"
+                "填错误地址时不会影响本机其它配置。"
+            )
+        )
+
+        status_row = QHBoxLayout()
+        status_row.setContentsMargins(0, 2, 0, 0)
+        status_row.setSpacing(9)
+        self._ob_relay_dot = StatusDot(style.IDLE, 8)
+        status_row.addWidget(self._ob_relay_dot, 0, Qt.AlignmentFlag.AlignVCenter)
+        self._ob_relay_status_label = QLabel("还没有配置 Relay")
+        self._ob_relay_status_label.setObjectName("Body")
+        status_row.addWidget(self._ob_relay_status_label, 1)
+        self._ob_relay_badge = StatusBadge("未配置", "neutral")
+        status_row.addWidget(self._ob_relay_badge, 0)
+        card.body.addLayout(status_row)
+        self._ob_relay_msg = InlineMessage()
+        card.body.addWidget(self._ob_relay_msg)
+        layout.addWidget(card)
+        layout.addWidget(
+            hint_label(
+                "也可以稍后配置：完成向导后，在「设置 → 连接」填写 Relay 地址，"
+                "再回「设备」页配对手机。未配置前配对按钮会保持禁用。"
+            )
+        )
         layout.addStretch(1)
         return page
 
@@ -501,7 +560,7 @@ class OnboardingWizard(QDialog):
         layout.addWidget(self._pairing_panel)
         layout.addWidget(self._ob_pair_msg)
         layout.addWidget(
-            hint_label("也可以稍后配对：完成向导后，随时可以在「状态」页生成配对码。")
+            hint_label("也可以稍后配对：完成向导后，随时可以在「设备」页生成配对码。")
         )
         layout.addStretch(1)
         return page
@@ -585,6 +644,8 @@ class OnboardingWizard(QDialog):
 
     def _go_next(self) -> None:
         step = self._step
+        if step == self.RELAY and not self._save_relay_config():
+            return
         if step == self.FFMPEG and not self._ffmpeg_ok:
             self._ffmpeg_msg.set_message(
                 "还没有安装 ffmpeg。请点击「下载 ffmpeg」，或点击「跳过此步」稍后处理。",
@@ -640,7 +701,9 @@ class OnboardingWizard(QDialog):
     def _on_enter_step(self, step: int) -> None:
         self._stop_engine_wait()
         self._stop_trans_poll()
-        if step == self.FFMPEG:
+        if step == self.RELAY:
+            self._enter_relay_step()
+        elif step == self.FFMPEG:
             self._check_ffmpeg()
         elif step == self.ENGINE:
             self._enter_engine_step()
@@ -652,6 +715,107 @@ class OnboardingWizard(QDialog):
             self._enter_pair_step()
         elif step == self.FINISH:
             self._refresh_summary()
+
+    # ------------------------------------------------------------ Relay
+    def _relay_configured(self) -> bool:
+        return bool(str(self.controller.config.relay_base_url or "").strip())
+
+    def _enter_relay_step(self) -> None:
+        url = str(self.controller.config.relay_base_url or "").strip()
+        if not self._ob_relay_edit.text().strip() and url:
+            self._ob_relay_edit.setText(url)
+        if url:
+            self._ob_relay_dot.set_state(style.OK)
+            self._ob_relay_badge.set_state("ok", "已配置")
+            self._ob_relay_status_label.setText(f"已保存：{url}")
+            self._ob_relay_msg.set_message(
+                "Relay 地址已保存；如果没有测试过，建议先点「测试连接」确认 realtime 可用。",
+                "info",
+            )
+        else:
+            self._ob_relay_dot.set_state(style.IDLE)
+            self._ob_relay_badge.set_state("neutral", "未配置")
+            self._ob_relay_status_label.setText("还没有配置 Relay")
+            if getattr(self.controller.config, "_legacy_relay_cleared", False):
+                self._ob_relay_msg.set_message(
+                    "检测到旧版作者 Relay 地址（已停止提供），已自动清空。"
+                    "请填写你自己部署的 Relay 地址（见 docs/self-hosting.md）。",
+                    "warning",
+                )
+
+    def _on_relay_edited(self, _text: str) -> None:
+        self._ob_relay_dot.set_state(style.WARN)
+        self._ob_relay_badge.set_state("warn", "未测试")
+        self._ob_relay_status_label.setText("地址已修改，请点「测试连接」验证")
+        self._ob_relay_msg.set_message(
+            "地址有修改：点「测试连接」验证，或点「下一步」直接保存。", "info"
+        )
+
+    def _test_relay(self) -> None:
+        url = self._ob_relay_edit.text().strip().rstrip("/")
+        if not url:
+            self._ob_relay_msg.set_message(
+                "请先填写你自己部署的 Relay 地址（见 docs/self-hosting.md）。", "warning"
+            )
+            return
+        self._ob_relay_test_button.setEnabled(False)
+        self._ob_relay_dot.set_state(style.WARN, busy=True)
+        self._ob_relay_badge.set_state("warn", "测试中")
+        self._ob_relay_status_label.setText("正在连接 Relay…")
+        self._ob_relay_msg.set_message("正在请求 /api/v1/health…", "info")
+
+        def on_result(data: Any) -> None:
+            self._ob_relay_test_button.setEnabled(True)
+            result = data if isinstance(data, dict) else {}
+            version = str(result.get("version") or "")
+            self.controller.config.relay_base_url = url
+            try:
+                self.controller.save_config()
+            except Exception as exc:  # noqa: BLE001
+                self._ob_relay_msg.set_message(f"保存 Relay 失败：{exc}", "error")
+                return
+            self._ob_relay_dot.set_state(style.OK)
+            self._ob_relay_badge.set_state("ok", "连接成功")
+            self._ob_relay_status_label.setText(
+                f"Relay 可用（版本 {version or '未知'}，realtime 已启用）"
+            )
+            self._ob_relay_msg.set_message(
+                f"连接成功：{url}（版本 {version or '未知'}）", "success"
+            )
+
+        def on_error(message: str) -> None:
+            self._ob_relay_test_button.setEnabled(True)
+            self._ob_relay_dot.set_state(style.DANGER)
+            self._ob_relay_badge.set_state("error", "失败")
+            self._ob_relay_status_label.setText("Relay 连接失败")
+            self._ob_relay_msg.set_message(f"测试失败：{message}", "error")
+
+        self.controller.run_async(
+            self.controller.test_relay, url, on_result=on_result, on_error=on_error
+        )
+
+    def _save_relay_config(self) -> bool:
+        """离开 Relay 步骤时保存（允许留空稍后配置）。返回是否通过校验。"""
+        url = self._ob_relay_edit.text().strip().rstrip("/")
+        if not url:
+            self._ob_relay_msg.set_message(
+                "已跳过 Relay 配置：未配置前无法配对手机，可稍后在设置页填写。", "info"
+            )
+            return True
+        if not url.startswith(("http://", "https://")):
+            self._ob_relay_msg.set_message(
+                "Relay 地址需要以 http:// 或 https:// 开头。", "error"
+            )
+            return False
+        if url != str(self.controller.config.relay_base_url or "").strip().rstrip("/"):
+            self.controller.config.relay_base_url = url
+            try:
+                self.controller.save_config()
+            except Exception as exc:  # noqa: BLE001
+                self._ob_relay_msg.set_message(f"保存 Relay 失败：{exc}", "error")
+                return False
+            self._ob_relay_msg.set_message(f"Relay 地址已保存：{url}", "success")
+        return True
 
     # ------------------------------------------------------------ ffmpeg
     def _check_ffmpeg(self) -> None:
@@ -1153,7 +1317,15 @@ class OnboardingWizard(QDialog):
 
     # ------------------------------------------------------------ 配对
     def _enter_pair_step(self) -> None:
-        """配对步骤始终可用：即使引擎/Agent 没起来也能生成配对码。"""
+        if not self._relay_configured():
+            self._pairing_panel.refresh()
+            self._ob_pair_msg.set_message(
+                "还没有配置 Relay，暂时不能生成配对码。可以先跳过此步："
+                "在「设置 → 连接」填写 Relay 地址后，再到「设备」页配对手机。",
+                "warning",
+            )
+            return
+        self._ob_pair_msg.clear()
         self._pairing_panel.update_status(self._status)
         self._pairing_panel.ensure_pairing_code()
 
@@ -1174,7 +1346,14 @@ class OnboardingWizard(QDialog):
         engine = (self._status or {}).get("engine") or {}
         paired = bool(getattr(self.controller.agent, "is_paired", False))
         ffmpeg_ok = bool(self._ffmpeg_ok)
+        relay_url = str(self.controller.config.relay_base_url or "").strip()
+        relay_configured = bool(relay_url)
         rows = [
+            (
+                "Relay",
+                f"已配置：{relay_url}" if relay_configured else "未配置（设置页填写）",
+                "ok" if relay_configured else "warn",
+            ),
             (
                 "ffmpeg",
                 "已安装" if ffmpeg_ok else "未安装（可在引擎页安装）",
@@ -1182,7 +1361,7 @@ class OnboardingWizard(QDialog):
             ),
             (
                 "BiliNote 引擎",
-                "运行中" if engine.get("state") == "running" else "未运行（可在状态页启动）",
+                "运行中" if engine.get("state") == "running" else "未运行（可在引擎页启动）",
                 "ok" if engine.get("state") == "running" else "warn",
             ),
             (
@@ -1227,13 +1406,18 @@ class OnboardingWizard(QDialog):
             value.setStyleSheet(f"QLabel {{ color: {color}; font-size: 12px; }}")
             row_layout.addWidget(value, 1)
             self._ob_summary_layout.addWidget(row_widget)
-        if not ffmpeg_ok:
+        if not relay_configured:
             self._ob_finish_note.setText(
-                "提示：ffmpeg 尚未安装，下载与转写会受影响；可在「引擎与 ffmpeg」页继续安装。"
+                "提示：还没有配置 Relay。请先按 docs/self-hosting.md 部署自己的 Relay，"
+                "再到「设置 → 连接」填写地址并配对手机。"
+            )
+        elif not ffmpeg_ok:
+            self._ob_finish_note.setText(
+                "提示：ffmpeg 尚未安装，下载与转写会受影响；可在「引擎与诊断」页继续安装。"
             )
         elif engine.get("state") != "running":
             self._ob_finish_note.setText(
-                "提示：引擎当前未运行；点击「完成」后 LinkNote 会尝试自动启动，也可以在状态页手动启动。"
+                "提示：引擎当前未运行；点击「完成」后 LinkNote 会尝试自动启动，也可以在引擎页手动启动。"
             )
         else:
             self._ob_finish_note.setText(

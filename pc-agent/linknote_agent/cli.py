@@ -27,6 +27,7 @@ from .backend import BackendSupervisor
 from .bilinote_client import BiliNoteClient
 from .bots.runner import BotRunner
 from .config import (
+    RELAY_NOT_CONFIGURED_MESSAGE,
     AgentConfig,
     ConfigError,
     NotPairedError,
@@ -57,7 +58,7 @@ def build_parser() -> argparse.ArgumentParser:
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=(
             "常用流程：\n"
-            "  1) 配对：python -m linknote_agent pair --relay https://relay.xykong.xyz\n"
+            "  1) 配对：python -m linknote_agent pair --relay https://your-relay.example.com\n"
             "  2) 启动：python -m linknote_agent run\n"
             "  3) 检查：python -m linknote_agent status\n"
             "\n"
@@ -76,7 +77,7 @@ def build_parser() -> argparse.ArgumentParser:
     pair.add_argument(
         "--relay",
         default=None,
-        help="Relay 地址（默认用配置文件里的值，首次为 https://relay.xykong.xyz）",
+        help="你自己的 Relay 地址（未配置时必须指定，例如 https://your-relay.example.com）",
     )
     pair.add_argument("--name", default="我的电脑", help="电脑显示名（1–40 字符，默认「我的电脑」）")
     pair.add_argument(
@@ -208,6 +209,9 @@ async def cmd_pair(
     cfg_path = Path(args.config) if getattr(args, "config", None) else None
     cfg = AgentConfig.load(cfg_path)
     relay_url = (args.relay or cfg.relay_base_url).strip()
+    if not relay_url:
+        print(RELAY_NOT_CONFIGURED_MESSAGE, file=sys.stderr)
+        return NEED_PAIR_EXIT
     agent_name = (args.name or cfg.agent_name or "我的电脑").strip()[:40] or "我的电脑"
     platform = args.platform or cfg.platform or current_platform()
     if cfg.is_paired:
@@ -227,7 +231,7 @@ async def cmd_pair(
             if "127.0.0.1" in relay_url or "localhost" in relay_url:
                 print(
                     "提示：本地 Relay 需要先启动（npm --prefix relay run dev），"
-                    "或改用生产地址 --relay https://relay.xykong.xyz",
+                    "或改用你自己的 Relay 地址 --relay https://your-relay.example.com",
                     file=sys.stderr,
                 )
             return 1
@@ -348,6 +352,10 @@ async def cmd_run(
     if getattr(args, "relay", None):
         cfg.relay_base_url = str(args.relay).rstrip("/")
 
+    if not cfg.relay_configured:
+        print(RELAY_NOT_CONFIGURED_MESSAGE, file=sys.stderr)
+        return NEED_PAIR_EXIT
+
     if not cfg.is_paired:
         cfg.require_paired()  # 抛 NotPairedError，由 main() 打印并返回 2
         return NEED_PAIR_EXIT
@@ -372,12 +380,8 @@ async def cmd_run(
     print(f"  模型：{cfg.provider_id} / {cfg.model_name}（quality={cfg.quality} style={cfg.style}）")
     bot_channels = cfg.bot_channels_enabled
     if bot_channels:
-        labels = []
-        if "telegram" in bot_channels:
-            labels.append("Telegram" + (f" (@{cfg.telegram_bot_username})" if cfg.telegram_bot_username else ""))
-        if "qq" in bot_channels:
-            labels.append("QQ")
-        print(f"  Bot 入口：{', '.join(labels)}")
+        label = "Telegram" + (f" (@{cfg.telegram_bot_username})" if cfg.telegram_bot_username else "")
+        print(f"  Bot 入口：{label}")
     else:
         print("  Bot 入口：未启用")
     if use_websocket:
@@ -469,6 +473,7 @@ async def cmd_status(
         "config_path": str(config_path),
         "version": __version__,
         "paired": cfg.is_paired,
+        "relay_configured": cfg.relay_configured,
         "relay_base_url": cfg.relay_base_url,
         "agent_id": cfg.agent_id,
         "agent_name": cfg.agent_name,
@@ -491,13 +496,17 @@ async def cmd_status(
         "outbox_dir": str(cfg.resolved_outbox_dir()),
         "outbox_pending": len(_status_outbox(cfg).pending()),
         "notes_pending_ack": len(_status_outbox(cfg).pending_notes()),
-        "transport_mode": "websocket" if cfg.use_websocket else "rest",
-        "ws_url": _safe_ws_url(cfg),
+        "transport_mode": (
+            "websocket"
+            if cfg.relay_configured and cfg.use_websocket
+            else ("rest" if cfg.relay_configured else "unconfigured")
+        ),
+        "ws_url": _safe_ws_url(cfg) if cfg.relay_configured else "",
         "relay": None,
         "relay_error": "",
     }
 
-    if cfg.is_paired:
+    if cfg.is_paired and cfg.relay_configured:
         relay = RelayClient(cfg.relay_base_url, cfg.agent_token, transport=transport)
         try:
             result["relay"] = await relay.me()
@@ -512,12 +521,17 @@ async def cmd_status(
 
     print("LinkNote PC Agent 状态")
     print(f"  版本：{result['version']}    配置文件：{result['config_path']}")
+    if not cfg.relay_configured:
+        print("  Relay：未配置")
+        print(f"  {RELAY_NOT_CONFIGURED_MESSAGE}")
     if not cfg.is_paired:
         print("  配对：未配对")
-        print(f"  下一步：python -m linknote_agent pair --relay {cfg.relay_base_url}")
+        pair_relay = cfg.relay_base_url or "https://your-relay.example.com"
+        print(f"  下一步：python -m linknote_agent pair --relay {pair_relay}")
     else:
         print("  配对：已配对")
-        print(f"    Relay：{cfg.relay_base_url}")
+        if cfg.relay_configured:
+            print(f"    Relay：{cfg.relay_base_url}")
         print(f"    Agent：{cfg.agent_name}（{cfg.agent_id or '未知 ID'}）")
         print(f"    Token：{cfg.masked_token}    配对时间：{cfg.paired_at or '未知'}")
         if cfg.device_name or cfg.device_id:
@@ -526,13 +540,16 @@ async def cmd_status(
     backend_state = "运行中" if backend_alive else "未运行（run 时会尝试自动拉起）"
     print(f"  BiliNote 后端：{cfg.backend_base_url} — {backend_state}")
     print(f"    程序路径：{cfg.backend_exe}")
-    transport_label = (
-        "WebSocket 推送" if result["transport_mode"] == "websocket" else "REST 轮询"
-    )
-    print(
-        f"  传输模式：{transport_label}"
-        + (f"  {result['ws_url']}" if result["transport_mode"] == "websocket" else "")
-    )
+    if result["transport_mode"] == "unconfigured":
+        print("  传输模式：未配置（配置 Relay 后由它决定）")
+    else:
+        transport_label = (
+            "WebSocket 推送" if result["transport_mode"] == "websocket" else "REST 轮询"
+        )
+        print(
+            f"  传输模式：{transport_label}"
+            + (f"  {result['ws_url']}" if result["transport_mode"] == "websocket" else "")
+        )
     print(
         f"  生成参数：{cfg.provider_id} / {cfg.model_name}  quality={cfg.quality} "
         f"style={cfg.style} screenshot={cfg.screenshot} link={cfg.insert_video_links}"
@@ -663,7 +680,8 @@ async def cmd_unpair(
     cfg.device_platform = ""
     path = cfg.save(cfg_path)
     print(f"已清除本机配对凭据：{path}")
-    print(f"重新配对：python -m linknote_agent pair --relay {cfg.relay_base_url}")
+    re_pair_relay = cfg.relay_base_url or "https://your-relay.example.com"
+    print(f"重新配对：python -m linknote_agent pair --relay {re_pair_relay}")
     return 0
 
 

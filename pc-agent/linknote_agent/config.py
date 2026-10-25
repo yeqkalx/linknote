@@ -21,8 +21,15 @@ from ._jsonio import atomic_write_json, read_json
 
 ENV_PREFIX = "LINKNOTE_"
 
-#: Relay 生产地址（契约里的生产示例）；本地开发用 ``--relay http://127.0.0.1:8787``。
-DEFAULT_RELAY_BASE_URL = "https://relay.xykong.xyz"
+#: v0.5 起**不再内置任何公共 Relay 地址**：用户必须部署自己的 Cloudflare Relay，
+#: 并在桌面「设置/首次向导 → Relay」填入自己的地址；未配置时 Agent 拒绝连接。
+DEFAULT_RELAY_BASE_URL = ""
+
+#: 未配置 Relay 时的统一中文指引（run/pair/status 共用）。
+RELAY_NOT_CONFIGURED_MESSAGE = (
+    "还没有配置 Relay 地址。请先按 docs/self-hosting.md 部署自己的 Cloudflare Relay，"
+    "然后在桌面「设置/首次向导 → Relay」填入 https://你的域名"
+)
 
 #: BiliNote 后端默认地址与可执行文件（打包版默认安装位置）。
 DEFAULT_BACKEND_BASE_URL = "http://127.0.0.1:8483/api"
@@ -128,20 +135,15 @@ class AgentConfig:
         default_factory=lambda: [30.0, 120.0, 600.0]
     )  # ack persisted=false 时最多重发 task_note 的 3 次延迟（30s / 2min / 10min）
 
-    # ---- v0.4 Bot 入口（Telegram / QQ，凭证只存本机、不上传 Relay）----
+    # ---- v0.4 Bot 入口（只保留 Telegram；凭证只存本机、不上传 Relay）----
     telegram_enabled: bool = False
     telegram_bot_token: str = field(default="", repr=False)  # BotFather token；日志/导出必须 mask
     telegram_bot_username: str = ""  # getMe 回填/cache
     telegram_device_token: str = field(default="", repr=False)  # Relay 签发的 dev_ token
     telegram_allow_groups: bool = False  # 默认只允许私聊
-    qq_enabled: bool = False
-    qq_app_id: str = ""
-    qq_app_secret: str = field(default="", repr=False)  # 日志/导出必须 mask
-    qq_device_token: str = field(default="", repr=False)  # Relay 签发的 dev_ token
     bot_task_poll_seconds: float = 3.0  # Bot 轮询 Relay 任务状态间隔
     bot_task_timeout_seconds: float = 3600.0  # Bot 端单任务最长等待
     bot_telegram_preview_chars: int = 3500  # Telegram 预览正文字符数
-    bot_qq_chunk_chars: int = 1500  # QQ 长笔记分片字符数
 
     # ---- 目录（留空 = ~/.linknote/ 下的默认子目录）----
     outbox_dir: str = ""
@@ -183,6 +185,11 @@ class AgentConfig:
         return bool(self.agent_token)
 
     @property
+    def relay_configured(self) -> bool:
+        """v0.5：是否已配置自己的 Relay 地址（空则不得连接任何公共地址）。"""
+        return bool((self.relay_base_url or "").strip())
+
+    @property
     def masked_token(self) -> str:
         token = self.agent_token or ""
         if not token:
@@ -197,7 +204,7 @@ class AgentConfig:
         raise NotPairedError(
             "本机还没有配对（~/.linknote/agent.json 里没有 agent_token）。\n"
             "请先运行：\n"
-            f'  .venv\\Scripts\\python.exe -m linknote_agent pair --relay {self.relay_base_url}\n'
+            f'  .venv\\Scripts\\python.exe -m linknote_agent pair --relay {self.relay_base_url or "https://your-relay.example.com"}\n'
             "然后用手机 App 输入终端里显示的 8 位配对码。"
         )
 
@@ -259,25 +266,15 @@ class AgentConfig:
         if not include_token:
             data["agent_token"] = self.masked_token
             # v0.4 Bot 凭证：导出/状态里一律 mask，绝不打印明文。
-            for key in (
-                "telegram_bot_token",
-                "telegram_device_token",
-                "qq_app_secret",
-                "qq_device_token",
-            ):
+            for key in ("telegram_bot_token", "telegram_device_token"):
                 if data.get(key):
                     data[key] = mask_secret(str(data[key]))
         return data
 
     @property
     def bot_channels_enabled(self) -> list[str]:
-        """返回已启用的 Bot 入口（telegram / qq）。"""
-        channels: list[str] = []
-        if self.telegram_enabled:
-            channels.append("telegram")
-        if self.qq_enabled:
-            channels.append("qq")
-        return channels
+        """返回已启用的 Bot 入口（v0.5 起只有 Telegram）。"""
+        return ["telegram"] if self.telegram_enabled else []
 
     def copy(self) -> AgentConfig:
         data = {f.name: getattr(self, f.name) for f in fields(self) if f.name != "_extra"}
@@ -365,6 +362,7 @@ __all__ = [
     "ConfigError",
     "NotPairedError",
     "DEFAULT_RELAY_BASE_URL",
+    "RELAY_NOT_CONFIGURED_MESSAGE",
     "current_platform",
     "default_config_path",
     "default_home",

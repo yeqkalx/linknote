@@ -141,4 +141,4 @@ new_sqlite_classes = ["AgentRoom"]
 - 手机缓存失败：`ack_note persisted=false`，Agent 保留 outbox 并重试；成功后清理。
 - 旧 0.2.2 Agent/PWA 与新 Relay、新客户端与旧 Relay 均可工作。
 - A/B 两套 token 互不可见。
-- Wrangler deploy 后 `https://relay.xykong.xyz/api/v1/health`、PWA 版本与 WS 握手通过。
+- Wrangler deploy 后 `https://relay.example.com/api/v1/health`、PWA 版本与 WS 握手通过。

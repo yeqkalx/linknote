@@ -85,7 +85,7 @@ def build_ws_url(relay_base_url: str, *, path: str = WS_PATH, ws_url: str = "") 
     """由 REST relay 地址推导 WS 地址。
 
     - ``http://127.0.0.1:8787`` → ``ws://127.0.0.1:8787/api/v1/agent/ws``
-    - ``https://relay.xykong.xyz`` → ``wss://relay.xykong.xyz/api/v1/agent/ws``
+    - ``https://relay.example.com`` → ``wss://relay.example.com/api/v1/agent/ws``
     - ``ws_url`` 非空时直接用它（本地联调/测试）。
     """
     if ws_url.strip():

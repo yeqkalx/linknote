@@ -1,4 +1,4 @@
-"""Bot Runner：把 Telegram / QQ 入口接进本机 Agent。
+"""Bot Runner：把 Telegram 入口接进本机 Agent（v0.5 起只支持 Telegram）。
 
 职责（docs/bot-channels.md §4–§5）：
 - 按配置启动适配器；
@@ -6,7 +6,7 @@
   ``POST /api/v1/agent/devices`` 签发并保存；不碰手机 token）；
 - 收到链接 → 提取/校验平台 → 用 bot device token 建任务 → 回复「已提交」；
 - 轮询任务状态，成功后从本机 ``notes/`` 读 Markdown → 适配器回发；
-- pending 持久化到 ``bot-state.json``，重启/QQ 回复窗口关闭后靠 ``/last`` 或下条消息补发；
+- pending 持久化到 ``bot-state.json``，重启后自动补投递（Telegram 无被动回复窗口限制）；
 - 本地限流（10 任务/小时/聊天）与命令 ``/start /help /status /last /retry``。
 """
 
@@ -30,14 +30,9 @@ from ..platforms import (
     extract_first_url,
 )
 from ..relay_client import RelayClient, RelayError
-from .base import BotAdapter, BotError, IncomingMessage, ReplyWindowClosed
+from .base import BotAdapter, BotError, IncomingMessage
 from .device_relay import BotRelayClient, BotRelayError
-from .state import (
-    STATUS_SUBMITTED,
-    STATUS_WINDOW_CLOSED,
-    BotState,
-    PendingTask,
-)
+from .state import STATUS_SUBMITTED, BotState, PendingTask
 
 logger = get_logger("bots.runner")
 
@@ -124,7 +119,7 @@ class BotRunner:
             else self._build_adapters()
         )
         if not adapters:
-            logger.info("没有启用的 Bot 入口（telegram_enabled / qq_enabled 均为 false）")
+            logger.info("没有启用的 Bot 入口（telegram_enabled=false）")
             return
 
         usable: dict[str, BotAdapter] = {}
@@ -182,7 +177,6 @@ class BotRunner:
 
     def _build_adapters(self) -> dict[str, BotAdapter]:
         """按配置创建真实适配器；缺少凭证时给出可读错误。"""
-        from .qq import QQBot
         from .telegram import TelegramBot
 
         adapters: dict[str, BotAdapter] = {}
@@ -197,39 +191,23 @@ class BotRunner:
                     preview_chars=cfg.bot_telegram_preview_chars,
                     state=self.state,
                 )
-        if cfg.qq_enabled:
-            if not cfg.qq_app_id or not cfg.qq_app_secret:
-                logger.error("qq_enabled=true 但缺少 qq_app_id / qq_app_secret")
-            else:
-                adapters["qq"] = QQBot(
-                    cfg.qq_app_id,
-                    cfg.qq_app_secret,
-                    state=self.state,
-                    chunk_chars=cfg.bot_qq_chunk_chars,
-                )
         return adapters
 
     # ================================================================ Device token
 
-    async def ensure_device_token(self, channel: str) -> str:
-        attr = "telegram_device_token" if channel == "telegram" else "qq_device_token"
-        token = str(getattr(self.config, attr, "") or "")
+    async def ensure_device_token(self, channel: str = "telegram") -> str:
+        token = str(self.config.telegram_device_token or "")
         if token:
             return token
         return await self._mint_device_token(channel)
 
-    async def _mint_device_token(self, channel: str) -> str:
-        name = "QQ Bot"
-        platform = "qq"
-        if channel == "telegram":
-            username = self.config.telegram_bot_username or ""
-            name = f"Telegram @{username}" if username else "Telegram Bot"
-            platform = "telegram"
-        data = await self.relay.create_agent_device(name=name[:40], platform=platform)
+    async def _mint_device_token(self, channel: str = "telegram") -> str:
+        username = self.config.telegram_bot_username or ""
+        name = f"Telegram @{username}" if username else "Telegram Bot"
+        data = await self.relay.create_agent_device(name=name[:40], platform="telegram")
         token = str(data.get("token") or "")
         device = data.get("device") if isinstance(data.get("device"), dict) else {}
-        attr = "telegram_device_token" if channel == "telegram" else "qq_device_token"
-        setattr(self.config, attr, token)
+        self.config.telegram_device_token = token
         with contextlib.suppress(Exception):
             self.config.save()
         logger.info(
@@ -277,12 +255,11 @@ class BotRunner:
             return
         try:
             await adapter.send_text(message, text)
-        except ReplyWindowClosed:
-            logger.info("回复窗口已关闭（%s），等待下条消息/命令补发", message.channel)
+        except BotError as exc:
+            logger.warning("发送 Bot 回复失败（%s）：%s", message.channel, exc.message)
 
     async def _handle_message(self, message: IncomingMessage) -> None:
         try:
-            await self._flush_window_closed(message)
             text = (message.text or "").strip()
             if not text:
                 return
@@ -312,8 +289,6 @@ class BotRunner:
             await self._submit_task(message, real_url)
         except asyncio.CancelledError:
             raise
-        except ReplyWindowClosed:
-            logger.info("消息回复窗口已关闭（%s），不视为错误", message.channel)
         except Exception:  # noqa: BLE001 - 单条消息异常不能带走 Bot Runner
             logger.exception("处理 Bot 消息异常（%s）", message.channel)
 
@@ -356,7 +331,6 @@ class BotRunner:
                 channel=message.channel,
                 chat_id=message.chat_id,
                 chat_type=message.chat_type,
-                reply_msg_id=message.reply_msg_id or message.message_id,
                 created_at=self._clock(),
             )
         )
@@ -375,8 +349,6 @@ class BotRunner:
                     await self._poll_pending(pending)
                 except asyncio.CancelledError:
                     raise
-                except ReplyWindowClosed:
-                    logger.debug("投递窗口关闭，留在 pending")
                 except Exception:  # noqa: BLE001
                     logger.exception("轮询 Bot 任务 %s 异常", pending.task_id)
             await self._wait_stop(stop, interval)
@@ -421,12 +393,6 @@ class BotRunner:
         context = self._context(pending, text="")
         try:
             await adapter.send_note(context, title, markdown, note_path)
-        except ReplyWindowClosed:
-            self.state.update_pending(pending.task_id, status=STATUS_WINDOW_CLOSED)
-            logger.info(
-                "QQ 回复窗口关闭，笔记转 pending（task=%s，可 /last 补发）", pending.task_id
-            )
-            return
         except BotError as exc:
             logger.warning("发送笔记失败（保留 pending 稍后重试）：%s", exc.message)
             return
@@ -450,9 +416,8 @@ class BotRunner:
             channel=pending.channel,
             chat_id=pending.chat_id,
             chat_type=pending.chat_type,
-            message_id=pending.reply_msg_id or pending.task_id,
+            message_id=pending.task_id,
             text=text,
-            reply_msg_id=pending.reply_msg_id or pending.task_id,
         )
 
     # ================================================================ 命令
@@ -495,9 +460,6 @@ class BotRunner:
             return
         try:
             await adapter.send_note(message, title, markdown, self.outbox.note_path(task_id))
-        except ReplyWindowClosed:
-            await self._reply(message, "QQ 回复窗口已关闭，请过一会儿再发 /last。")
-            return
         except BotError as exc:
             await self._reply(message, f"❌ 发送失败：{exc.message}")
             return
@@ -535,39 +497,10 @@ class BotRunner:
                 channel=message.channel,
                 chat_id=message.chat_id,
                 chat_type=message.chat_type,
-                reply_msg_id=message.reply_msg_id or message.message_id,
                 created_at=self._clock(),
             )
         )
         await self._reply(message, f"已重新提交 #{new_id[:8]}，处理中…")
-
-    # ================================================================ QQ 窗口补发
-
-    async def _flush_window_closed(self, message: IncomingMessage) -> None:
-        """QQ 窗口关闭后，用户下一条消息会带来新的被动回复窗口：先把 pending 笔记补发。"""
-        pending_list = self.state.pending_for_chat(message.chat_key, STATUS_WINDOW_CLOSED)
-        if not pending_list:
-            return
-        adapter = self._adapters.get(message.channel)
-        if adapter is None:
-            return
-        for pending in list(pending_list):
-            found = await self._read_note(pending.task_id)
-            if found is None:
-                continue
-            title, markdown = found
-            try:
-                await adapter.send_note(
-                    message, title, markdown, self.outbox.note_path(pending.task_id)
-                )
-            except ReplyWindowClosed:
-                return
-            except BotError as exc:
-                logger.warning("补发 pending 笔记失败：%s", exc.message)
-                return
-            self.state.set_last_note(pending.chat_key, pending.task_id)
-            self.state.remove_pending(pending.task_id)
-            logger.info("已补发窗口关闭期间积压的笔记 task=%s", pending.task_id)
 
     # ================================================================ 工具
 

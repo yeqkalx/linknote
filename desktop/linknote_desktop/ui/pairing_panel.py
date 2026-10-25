@@ -257,6 +257,8 @@ class PairingPanel(Card):
     def ensure_pairing_code(self) -> None:
         """onboarding 配对步骤用：没有配对码就自动生成一个。"""
         self.refresh()
+        if not self._relay_configured():
+            return
         if self._device_count() > 0 or bool(getattr(self.controller.agent, "is_paired", False)):
             return
         state = self._pairing or {}
@@ -272,6 +274,14 @@ class PairingPanel(Card):
         self._render()
 
     # ================================================================ 状态渲染
+    def _relay_url(self) -> str:
+        relay = (self._status or {}).get("relay") or {}
+        return str(relay.get("url") or self.controller.config.relay_base_url or "").strip()
+
+    def _relay_configured(self) -> bool:
+        # Relay 地址以 config 为准：v0.5 起没有默认地址，未配置时禁止生成配对码。
+        return bool(str(self.controller.config.relay_base_url or "").strip())
+
     def _device_count(self) -> int:
         return len(self._devices) if self._devices else 0
 
@@ -393,6 +403,17 @@ class PairingPanel(Card):
 
     def _render_idle(self) -> None:
         self._idle_msg.clear()
+        if not self._relay_configured():
+            self._idle_title.setText("还没有配置 Relay")
+            self._idle_text.setText(
+                "先按 docs/self-hosting.md 用你自己的 Cloudflare 部署 Relay，"
+                "再到「设置 → 连接」填写 Relay 地址，才能生成配对码。"
+            )
+            self._idle_msg.set_message(
+                "未配置 Relay：暂时无法生成配对码。", "warning"
+            )
+            self._generate_button.setText("生成配对码")
+            return
         self._idle_title.setText("还没有配对手机")
         self._idle_text.setText(
             "生成配对码后，用手机 LinkNote 扫码或输入配对码即可完成配对。"
@@ -402,13 +423,21 @@ class PairingPanel(Card):
         _repolish(self._generate_button)
 
     def _render_buttons(self) -> None:
-        self._generate_button.setEnabled(not self._inflight)
-        self._regenerate_button.setEnabled(not self._inflight)
-        self._add_device_button.setEnabled(not self._inflight)
+        configured = self._relay_configured()
+        self._generate_button.setEnabled(not self._inflight and configured)
+        self._regenerate_button.setEnabled(not self._inflight and configured)
+        self._add_device_button.setEnabled(not self._inflight and configured)
         self._copy_button.setEnabled(not self._inflight)
         self._cancel_button.setEnabled(not self._inflight)
         self._unpair_button.setVisible(self._paired())
         self._add_device_button.setVisible(self._paired())
+        tip = "" if configured else "请先在设置页填写你自己的 Relay 地址"
+        for widget in (
+            self._generate_button,
+            self._regenerate_button,
+            self._add_device_button,
+        ):
+            widget.setToolTip(tip)
 
     def _render_devices(self, paired: bool) -> None:
         relay = (self._status or {}).get("relay") or {}
@@ -456,6 +485,12 @@ class PairingPanel(Card):
     # ================================================================ 动作
     def _start_pairing(self) -> None:
         if self._inflight:
+            return
+        if not self._relay_configured():
+            self._msg.set_message(
+                "还没有配置 Relay：请先在设置页填写你自己的 Relay 地址（见 docs/self-hosting.md）。",
+                "warning",
+            )
             return
         self._inflight = True
         self._success_device = {}

@@ -8,7 +8,7 @@ import threading
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, Optional
-from urllib.parse import quote
+from urllib.parse import quote, urlparse
 
 from PySide6.QtCore import QObject, QRunnable, QThreadPool, QTimer, Signal
 
@@ -114,6 +114,11 @@ class DesktopController(QObject):
         self._started = True
         self._status_timer.start()
         self._notify_timer.start()
+        # v0.5 旧配置迁移：写 agent.json 前清空作者旧 Relay，避免 Agent 继续连旧域名
+        try:
+            ensure_agent_config(self.config)
+        except Exception:  # noqa: BLE001 - 迁移失败不应阻塞启动
+            pass
         # 首次启动由 onboarding 向导决定何时启动引擎（必须先有 ffmpeg）
         if self.config.onboarding_done:
             if self.config.engine_auto_start:
@@ -285,6 +290,12 @@ class DesktopController(QObject):
 
     # ------------------------------------------------------------------ 配对
     def create_pairing_async(self, agent_name: str | None = None) -> None:
+        if not str(self.config.relay_base_url or "").strip():
+            self.error.emit(
+                "还没有配置 Relay 地址。请先按 docs/self-hosting.md 部署自己的 Relay，"
+                "然后在设置页填写你的 Relay 地址，再配对手机。"
+            )
+            return
         name = agent_name or self.config.agent_name or "我的电脑"
         existing_token = self.agent.agent_token
 
@@ -468,6 +479,50 @@ class DesktopController(QObject):
             "outbox": str(outbox_dir),
         }
 
+    # ================================================================== Relay / 消息入口
+    def test_relay(self, url: str | None = None) -> dict[str, Any]:
+        """校验用户自己的 Relay：GET /api/v1/health，要求 ok && realtime。
+
+        v0.5 起没有默认 Relay，未配置时必须由用户填写自己部署的地址。
+        """
+        raw = str(url if url is not None else self.config.relay_base_url or "").strip().rstrip("/")
+        if not raw:
+            raise ValueError("还没有配置 Relay 地址")
+        parsed = urlparse(raw)
+        if parsed.scheme not in ("http", "https") or not parsed.netloc:
+            raise ValueError("Relay 地址需要以 http:// 或 https:// 开头")
+        try:
+            with httpx.Client(timeout=12.0, trust_env=False) as client:
+                response = client.get(f"{raw}/api/v1/health")
+        except httpx.HTTPError as exc:
+            raise RuntimeError(
+                f"无法连接 Relay（{type(exc).__name__}），请检查地址、网络或代理"
+            ) from None
+        try:
+            payload = response.json()
+        except ValueError:
+            raise RuntimeError(
+                f"Relay 返回了非 JSON 响应（HTTP {response.status_code}），"
+                "请确认填写的是 Relay 服务地址"
+            ) from None
+        payload = payload if isinstance(payload, dict) else {}
+        if response.status_code != 200 or not payload.get("ok"):
+            raise RuntimeError("Relay 健康检查失败：请确认地址指向自己部署的 Relay")
+        data = payload.get("data")
+        data = data if isinstance(data, dict) else {}
+        version = str(data.get("version") or "").strip()
+        if not data.get("realtime"):
+            raise RuntimeError(
+                f"Relay 健康检查通过（版本 {version or '未知'}），"
+                "但没有启用 realtime；请按 docs/self-hosting.md 部署 v0.5+ Relay"
+            )
+        return {
+            "ok": True,
+            "version": version,
+            "realtime": True,
+            "status": str(data.get("status") or "ok"),
+        }
+
     # ================================================================== 消息入口（Bot 凭证）
     def test_telegram_bot(self, token: str) -> dict[str, Any]:
         """Telegram `getMe` 连通性测试。
@@ -504,50 +559,6 @@ class DesktopController(QObject):
         description = str(payload.get("description") or "").strip()
         raise RuntimeError(
             "Telegram 验证失败：" + (description or "Token 无效，或网络无法直连 Telegram")
-        )
-
-    def test_qq_bot(self, app_id: str, app_secret: str) -> dict[str, Any]:
-        """QQ 开放平台 `getAppAccessToken` 测试；只验证可行，不保存 access_token。"""
-        app_id_text = str(app_id or "").strip()
-        secret_text = str(app_secret or "").strip()
-        if not app_id_text:
-            raise ValueError("请先填写 QQ AppID")
-        if not secret_text:
-            raise ValueError("请先填写 QQ AppSecret")
-        body = {"appId": app_id_text, "clientSecret": secret_text}
-        try:
-            with httpx.Client(timeout=15.0, trust_env=False) as client:
-                response = client.post(
-                    "https://api.bot.qq.com/app/getAppAccessToken", json=body
-                )
-        except httpx.HTTPError as exc:
-            # 请求体里有 AppSecret：错误信息只用异常类型，避免凭证泄漏
-            raise RuntimeError(
-                f"无法连接 QQ 开放平台（{type(exc).__name__}），请检查网络或代理"
-            ) from None
-        try:
-            payload = response.json()
-        except ValueError:
-            raise RuntimeError(
-                f"QQ 开放平台返回了非 JSON 响应（HTTP {response.status_code}）"
-            ) from None
-        payload = payload if isinstance(payload, dict) else {}
-        access_token = str(payload.get("access_token") or "").strip()
-        if response.status_code == 200 and access_token:
-            expires_in = 0
-            raw_expires = payload.get("expires_in")
-            if raw_expires is not None:
-                try:
-                    expires_in = int(raw_expires)
-                except (TypeError, ValueError):
-                    expires_in = 0
-            return {"ok": True, "expires_in": expires_in}
-        message = str(
-            payload.get("message") or payload.get("msg") or payload.get("error") or ""
-        ).strip()
-        raise RuntimeError(
-            "QQ 验证失败："
-            + (message or f"HTTP {response.status_code}，请检查 AppID / AppSecret")
         )
 
     # ================================================================== 笔记自动归档

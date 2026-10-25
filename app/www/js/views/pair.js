@@ -4,7 +4,12 @@
  * 高级选项里可以修改 Relay 地址（APK / 局域网调试必须）。
  */
 import { api, isNetworkError } from '../api.js';
-import { APP_NAME, APP_TAGLINE, DEFAULT_DEVICE_NAME, NATIVE_DEFAULT_RELAY } from '../config.js';
+import {
+  APP_NAME,
+  APP_TAGLINE,
+  DEFAULT_DEVICE_NAME,
+  RELAY_EXAMPLE_URL,
+} from '../config.js';
 import { navigate } from '../router.js';
 import { startRealtime } from '../realtime.js';
 import { auth, settings, takeNavIntent } from '../store.js';
@@ -24,7 +29,7 @@ const PAIR_ERRORS = {
   rate_limited: '尝试太频繁了，请等一会儿再试',
   origin_not_allowed: '当前页面来源不被 Relay 允许，请检查 Relay 的 ALLOWED_ORIGINS 配置',
   forbidden: '当前页面来源不被 Relay 允许',
-  no_relay: '请先在「服务器地址」里填写 Relay 地址',
+  no_relay: '请先填写你自己部署的 Relay 地址（见 docs/self-hosting.md）',
   network: '连不上 Relay，请检查网络与「服务器地址」',
   timeout: '连接 Relay 超时，请检查网络与「服务器地址」',
   bad_response: 'Relay 返回了无法识别的内容，请确认地址指向 LinkNote Relay',
@@ -42,6 +47,11 @@ export async function pairView(container, ctx) {
   const storedSettings = settings.get();
   const defaultBase = settings.getDefaultApiBase();
   const currentBase = settings.getApiBase();
+  // 同源 PWA（location.origin 即 Relay）才有默认地址；原生 APK / 非同源必须手填。
+  const hasDefaultRelay = Boolean(defaultBase);
+  const relayHelpHtml = hasDefaultRelay
+    ? `接口固定为 <code>/api/v1</code>。留空表示使用当前页面地址（<code>${escapeHtml(defaultBase)}</code>）；也可以填写你自己的 Relay 域名，例如 <code>${escapeHtml(RELAY_EXAMPLE_URL)}</code>。`
+    : `当前环境没有默认 Relay。请填写你自己部署的 Relay 地址，例如 <code>${escapeHtml(RELAY_EXAMPLE_URL)}</code>（部署步骤见 docs/self-hosting.md）。`;
 
   container.innerHTML = `
     <section class="screen pair-screen">
@@ -88,6 +98,9 @@ export async function pairView(container, ctx) {
           </label>
 
           <p id="pair-error" class="form-error" role="alert" hidden></p>
+          <p id="pair-server-required" class="banner banner-warn" role="status" style="margin: 10px 0 0" hidden>
+            请先填写你自己部署的 Relay 地址（见 docs/self-hosting.md）
+          </p>
 
           <button type="submit" class="btn btn-primary btn-block" id="pair-submit">
             ${icon('send', { size: 18 })}<span>开始配对</span>
@@ -97,7 +110,7 @@ export async function pairView(container, ctx) {
           </button>
         </form>
 
-        <details class="advanced" id="pair-advanced"${currentBase ? '' : ' open'}>
+        <details class="advanced" id="pair-advanced"${hasDefaultRelay && currentBase ? '' : ' open'}>
           <summary>服务器地址（Relay）</summary>
           <div class="advanced-body">
             <label class="field" for="pair-relay">
@@ -109,14 +122,11 @@ export async function pairView(container, ctx) {
                 inputmode="url"
                 autocomplete="url"
                 spellcheck="false"
-                placeholder="${escapeHtml(defaultBase || 'http://127.0.0.1:8787')}"
+                placeholder="${escapeHtml(defaultBase || RELAY_EXAMPLE_URL)}"
                 value="${escapeHtml(settings.getApiBaseOverride())}"
               />
             </label>
-            <p class="field-help">
-              接口固定为 <code>/api/v1</code>。留空表示使用当前页面地址；原生 App 默认使用
-              <code>${escapeHtml(NATIVE_DEFAULT_RELAY)}</code>。
-            </p>
+            <p class="field-help">${relayHelpHtml}</p>
             <div class="btn-row">
               <button type="button" class="btn btn-ghost" id="pair-relay-test">
                 ${icon('refresh', { size: 16 })}<span>保存并测试连接</span>
@@ -144,6 +154,7 @@ export async function pairView(container, ctx) {
   const relayInput = container.querySelector('#pair-relay');
   const relayTestButton = container.querySelector('#pair-relay-test');
   const relayStatus = container.querySelector('#pair-relay-status');
+  const requiredHint = container.querySelector('#pair-server-required');
 
   let submitting = false;
   let testingRelay = false;
@@ -166,12 +177,13 @@ export async function pairView(container, ctx) {
     // 忽略无效的预填参数
   }
 
-  if (!currentBase) {
-    advanced.open = true;
+  if (!hasDefaultRelay || !currentBase) advanced.open = true;
+  if (!currentBase && hasDefaultRelay) {
     relayStatus.hidden = false;
     relayStatus.dataset.state = 'error';
     relayStatus.textContent = '还没有可用的 Relay 地址，请先填写并测试连接。';
   }
+  syncRelayState();
 
   function showError(message) {
     errorEl.textContent = message;
@@ -191,12 +203,45 @@ export async function pairView(container, ctx) {
     relayStatus.textContent = message;
   }
 
+  /** 读取服务器地址输入框（未保存也算“已填写”，提交时会保存） */
+  function readRelayCandidate() {
+    const raw = relayInput.value.trim();
+    if (!raw) return { raw: '', normalized: '', invalid: false };
+    const normalized = normalizeApiBase(raw);
+    return { raw, normalized: normalized === null ? '' : normalized, invalid: normalized === null };
+  }
+
+  /** 原生/非同源且没填地址时禁用“开始配对”，并给出明确提示 */
+  function syncRelayState() {
+    const candidate = readRelayCandidate();
+    const effectiveBase = candidate.raw ? candidate.normalized : settings.getApiBase();
+    const hasRelay = Boolean(effectiveBase);
+    submitButton.disabled = submitting || !hasRelay || candidate.invalid;
+    if (candidate.invalid) {
+      requiredHint.hidden = false;
+      requiredHint.textContent = 'Relay 地址格式不正确，请填写 http(s)://域名:端口';
+    } else if (!hasRelay) {
+      requiredHint.hidden = false;
+      requiredHint.textContent = '请先填写你自己部署的 Relay 地址（见 docs/self-hosting.md）';
+    } else {
+      requiredHint.hidden = true;
+    }
+  }
+
   codeInput.addEventListener(
     'input',
     () => {
       const normalized = normalizePairCode(codeInput.value);
       if (codeInput.value !== normalized.formatted) codeInput.value = normalized.formatted;
       clearError();
+    },
+    { signal },
+  );
+
+  relayInput.addEventListener(
+    'input',
+    () => {
+      syncRelayState();
     },
     { signal },
   );
@@ -222,10 +267,27 @@ export async function pairView(container, ctx) {
         return;
       }
 
+      // 原生 APK / 非同源：没有默认 Relay，必须填写自己的 Relay 地址。
+      const relayRaw = relayInput.value.trim();
+      if (relayRaw) {
+        const normalizedRelay = normalizeApiBase(relayRaw);
+        if (!normalizedRelay) {
+          advanced.open = true;
+          showError('Relay 地址格式不对，请填写 http(s)://域名:端口');
+          relayInput.focus();
+          syncRelayState();
+          return;
+        }
+        if (normalizedRelay !== settings.getApiBaseOverride()) {
+          settings.setApiBase(normalizedRelay);
+          relayInput.value = settings.getApiBaseOverride();
+        }
+      }
       const base = settings.getApiBase();
       if (!base) {
         advanced.open = true;
-        showError('请先在「服务器地址」里填写 Relay 地址');
+        showError('请先填写你自己部署的 Relay 地址（见 docs/self-hosting.md）');
+        syncRelayState();
         relayInput.focus();
         return;
       }
@@ -269,7 +331,10 @@ export async function pairView(container, ctx) {
         }
       } finally {
         submitting = false;
-        if (!signal.aborted) setButtonBusy(submitButton, false);
+        if (!signal.aborted) {
+          setButtonBusy(submitButton, false);
+          syncRelayState();
+        }
       }
     },
     { signal },
@@ -282,12 +347,12 @@ export async function pairView(container, ctx) {
       const raw = relayInput.value;
       const normalized = normalizeApiBase(raw);
       if (normalized === null) {
-        setRelayStatus('地址格式不对，请填写 http(s)://域名:端口（例如 http://127.0.0.1:8787）', 'error');
+        setRelayStatus(`地址格式不对，请填写 http(s)://域名:端口，例如 ${RELAY_EXAMPLE_URL}`, 'error');
         return;
       }
       const target = normalized || settings.getDefaultApiBase();
       if (!target) {
-        setRelayStatus('请填写完整的 Relay 地址，例如 http://192.168.1.10:8787', 'error');
+        setRelayStatus(`请填写你自己部署的 Relay 地址，例如 ${RELAY_EXAMPLE_URL}`, 'error');
         return;
       }
 
@@ -307,6 +372,7 @@ export async function pairView(container, ctx) {
         if (settings.getApiBase() !== previousBase) {
           toast('服务器地址已更新', { type: 'success' });
         }
+        syncRelayState();
       } catch (error) {
         if (error && error.code === 'aborted') return;
         setRelayStatus(`连接失败：${error.message || '请检查地址与网络'}`, 'error');

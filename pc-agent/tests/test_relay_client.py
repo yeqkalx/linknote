@@ -273,8 +273,8 @@ async def test_revoke_device(relay_client, fake_relay):
 
 def test_normalize_base_url():
     assert _normalize_base_url("http://127.0.0.1:8787/") == "http://127.0.0.1:8787"
-    assert _normalize_base_url("https://relay.xykong.xyz/api/v1") == "https://relay.xykong.xyz"
-    assert _normalize_base_url("https://relay.xykong.xyz/api") == "https://relay.xykong.xyz"
+    assert _normalize_base_url("https://relay.example.com/api/v1") == "https://relay.example.com"
+    assert _normalize_base_url("https://relay.example.com/api") == "https://relay.example.com"
     with pytest.raises(RelayError):
         _normalize_base_url("relay.example.com")
     with pytest.raises(RelayError):

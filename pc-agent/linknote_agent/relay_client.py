@@ -1,7 +1,7 @@
 """LinkNote Relay API v1 客户端（httpx 异步）。
 
 严格按 ``docs/api-contract.md``：
-- Base URL 形如 ``https://relay.xykong.xyz`` / ``http://127.0.0.1:8787``，路径统一 ``/api/v1``；
+- Base URL 形如 ``https://relay.example.com`` / ``http://127.0.0.1:8787``，路径统一 ``/api/v1``；
 - ``Authorization: Bearer <agent_token>``；
 - 响应统一 ``{"ok": true, "data": ...}`` / ``{"ok": false, "error": {"code", "message"}}``。
 
@@ -233,7 +233,7 @@ class RelayClient:
     async def create_agent_device(self, name: str, platform: str) -> dict[str, Any]:
         """v0.4：为本机 Bot 入口签发一个专用 device token（Agent 认证）。
 
-        用于 Telegram/QQ bot 以自己的身份调 Relay 建任务/查任务，不碰手机 token。
+        用于 Telegram bot 以自己的身份调 Relay 建任务/查任务，不碰手机 token。
         返回 ``{"device": {...}, "token": "dev_..."}``；token 只出现这一次。
         """
         data = await self._request(
@@ -356,7 +356,7 @@ def _normalize_base_url(base_url: str) -> str:
         if url.endswith(suffix):
             url = url[: -len(suffix)].rstrip("/")
     if not url:
-        raise RelayError("Relay 地址为空，请用 --relay 指定，例如 https://relay.xykong.xyz")
+        raise RelayError("Relay 地址为空，请先配置自己的 Relay（例如 https://your-relay.example.com）")
     if not url.startswith(("http://", "https://")):
         raise RelayError(f"Relay 地址必须以 http:// 或 https:// 开头：{base_url}")
     return url

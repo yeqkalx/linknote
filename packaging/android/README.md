@@ -110,25 +110,25 @@ cd android
 - `-SkipSync`：跳过 `cap sync`（确认 web assets 未变时用）。
 - `-SkipPatch`：不重打 MainActivity/Manifest/应用名补丁（图标替换仍执行）。
 
-### 构建记录（当前交付 APK：PWA v0.3）
+### 构建记录（当前交付 APK：PWA v0.4 自托管版）
 
 | 项 | 值 |
 | --- | --- |
-| 交付路径 | `release\LinkNote-debug.apk` |
-| 构建时间 | 2026-10-24 19:14:09（Asia/Shanghai, UTC+08:00） |
-| app/www 冻结时间 | 2026-10-24 19:03:10（PWA v0.3，31 个文件；此后未再改动） |
-| 大小 | 4,700,200 字节（4.48 MiB / 约 4.70 MB） |
-| SHA256 | `5925CC0F1E9BC60C150F178F348BCEADAC32C1C2FE1BF2896FE3B64193A4EACD` |
+| 交付路径 | `release\LinkNote-debug.apk`（绝对路径：`C:\yeqkalx\code\bilinote-to-android\release\LinkNote-debug.apk`） |
+| 构建时间 | 2026-10-25 17:39:41（Asia/Shanghai, UTC+08:00） |
+| app/www 冻结时间 | 2026-10-25 17:37:34（PWA v0.4.0，31 个文件；此后未再改动） |
+| 大小 | 4,701,320 字节（4.48 MiB / 约 4.70 MB） |
+| SHA256 | `05F5B84E6902A1D51BB78CF712C96D774AA2A8F48DA9EAEA6C3FDA0985670F49` |
 | 构建命令 | `powershell -ExecutionPolicy Bypass -File packaging\android\build-android.ps1`（内部：cap sync → 品牌图标 → 打补丁 → gradlew assembleDebug → 复制 release） |
-| Android 版本 | versionCode=`3`、versionName=`1.2`（task-19 按建议 bump；上一版为 2 / 1.1。已写入 `build-android.ps1` 补丁逻辑，cap add 重建后也会自动应用） |
-| PWA 版本 | v0.3：`assets/public/js/config.js` 中 `APP_VERSION='0.3.0'`、`sw.js` 中 `SW_VERSION='0.3.0'`；`assets/public/js/realtime.js`（19,859 B）含 `ack_note`、`persisted`、`readiness`（准备度/在线 ≠ 可生成）逻辑；本地笔记缓存（noteCache/persist）随 store.js 一并打包。 |
+| Android 版本 | versionCode=`4`、versionName=`1.3`（task-29 bump；上一版为 3 / 1.2。已写入 `build-android.ps1` 补丁逻辑，cap add 重建后也会自动应用） |
+| PWA 版本 | v0.4（自托管）：`assets/public/js/config.js` 中 `APP_VERSION='0.4.0'`、`NATIVE_DEFAULT_RELAY=''`（原生侧默认 Relay 为空，需用户在配对页填写自己的 Relay）；`sw.js` 中 `SW_VERSION='0.4.0'`。**全 APK 解包扫描无作者旧域名/生产域名（未内置任何作者域名或默认 Relay 地址）**。 |
 | 图标 | `res/mipmap-{mdpi,hdpi,xhdpi,xxhdpi,xxxhdpi}-v4/` 下 `ic_launcher.png`、`ic_launcher_round.png`、`ic_launcher_foreground.png` 共 15 个 PNG 与 `assets\android-icons\` 源文件 **SHA256 逐字节一致**；adaptive icon 背景色在 `resources.arsc` 中为 `color/ic_launcher_background = #fffdfeff`（#FDFEFF）。 |
 | 图标/补丁幂等性 | 图标为纯覆盖复制、manifest/strings/version 补丁均为条件改写，重复执行内容不变（此前已实测：重跑 `build-android.ps1` 后 Gradle `assembleDebug` UP-TO-DATE、APK 同一 SHA256）。 |
-| 校验 | aapt2：package=`xyz.xykong.linknote`、versionCode=3、versionName=1.2、minSdk=24、targetSdk=36、compileSdk=36、label=`链记`、launchable-activity=`xyz.xykong.linknote.MainActivity`；INTERNET 权限。Manifest：`ACTION_SEND`+`text/plain` intent-filter ✓、`android:allowBackup="false"` ✓、launchMode=singleTask ✓。assets/public：33 个文件 = `app/www` 31/31 全部存在且**逐字节 SHA256 一致** + Capacitor 生成的 0 字节 `cordova.js`/`cordova_plugins.js`；含 index.html/css/js/vendor/icons/manifest/sw.js/share.html/js/realtime.js。apksigner：v2 签名通过（Android Debug 证书）。apkanalyzer summary：`xyz.xykong.linknote 3 1.2`。 |
-| 校验原始输出 | `packaging\android\verification\`（aapt2-badging.txt、aapt2-manifest-xmltree.txt、AndroidManifest.printed.xml、apkanalyzer-summary.txt、apksigner-verify.txt、apk-filelist.txt、apk-filelist-with-sizes.txt、icon-verify.txt、pwa-v0.3-verify.txt、SHA256SUMS.txt、manifest-patch-selftest.xml） |
+| 校验 | aapt2：package=`xyz.xykong.linknote`、versionCode=4、versionName=1.3、minSdk=24、targetSdk=36、compileSdk=36、label=`链记`、launchable-activity=`xyz.xykong.linknote.MainActivity`；INTERNET 权限。Manifest：`ACTION_SEND`+`text/plain` intent-filter ✓、`android:allowBackup="false"` ✓、launchMode=singleTask ✓。assets/public：33 个文件 = `app/www` 31/31 全部存在且**逐字节 SHA256 一致** + Capacitor 生成的 0 字节 `cordova.js`/`cordova_plugins.js`。apksigner：v2 签名通过（Android Debug 证书）。apkanalyzer summary：`xyz.xykong.linknote 4 1.3`。 |
+| 校验原始输出 | `packaging\android\verification\`（aapt2-badging.txt、aapt2-manifest-xmltree.txt、AndroidManifest.printed.xml、apkanalyzer-summary.txt、apksigner-verify.txt、apk-filelist.txt、apk-filelist-with-sizes.txt、icon-verify.txt、pwa-v0.4-verify.txt、domain-scan.txt、SHA256SUMS.txt、manifest-patch-selftest.xml） |
 | 未验证 | 真机/模拟器安装、launcher 图标实际显示、WebSocket/presence/readiness/ack 持久化/分享端到端（本机 `adb devices` 为空、无模拟器）；release 签名（仅 debug 证书） |
 
-> 注：debug APK 的 zip 时间戳/签名不同，同样的源码两次构建 SHA256 也会变化，故以上记录对应交付的那一次构建。历史构建记录见 git 历史（PWA 0.3.0 初版：`C3C3229D…F2D06`，PWA 0.2.0：`2FFAC878…FE012`，PWA 0.1.0：`E1C960…46CA`）。
+> 注：debug APK 的 zip 时间戳/签名不同，同样的源码两次构建 SHA256 也会变化，故以上记录对应交付的那一次构建。历史构建记录见 git 历史（PWA v0.3：`5925CC0F…EACD`；v0.3.0 初版：`C3C3229D…F2D06`；PWA 0.2.0：`2FFAC878…FE012`；PWA 0.1.0：`E1C960…46CA`）。
 
 ## 5. 分享接收（Android → WebView）
 
@@ -192,6 +192,7 @@ $bt = "$root\tools\android-sdk\build-tools\36.0.0"
 11. **本机只有 Windows PowerShell 5.1（无 `pwsh`）**：脚本按 5.1 兼容编写（已实测），文档统一用 `powershell -ExecutionPolicy Bypass -File ...`。5.1 下注意：`param` 默认值里 `$PSScriptRoot` 可能为空；`$ErrorActionPreference='Stop'` 时原生程序的 stderr（`java -version`、`curl`、`gradlew`）会变成终止错误——脚本已用 `cmd /c ... 2>&1` 或临时降级 EAP 处理。
 12. **multidex 属正常**：debug APK 里应用代码在 `classes6.dex`（共 classes.dex~classes6.dex）。用 `apkanalyzer dex packages release\LinkNote-debug.apk` 可看到 `xyz.xykong.linknote.MainActivity`。
 13. **`cap sync` 后的 `assets/public` 会额外含 `cordova.js` / `cordova_plugins.js`**，这是 Capacitor 生成的，属正常；其余文件应与 `app/www` 一一对应（构建脚本不校验，可手工 `Compare-Object`）。
+14. **用管道捕获 build-android.ps1 输出时可能"假挂起"**：如果首次构建会启动新的 Gradle daemon，daemon 进程会继承调用方的 stdout 句柄，导致外层 `... | Select-Object -Last N` 一直等不到 EOF（表现为命令不返回）。此时构建其实已完成——检查 `release\LinkNote-debug.apk` 的大小/时间/SHA256 与 `app-debug.apk` 是否一致即可，或改用 `cmd /c "... > build.log 2>&1"` 重定向，或先单独跑一次 `gradlew --version` 拉起 daemon 再捕获输出。task-29 构建即遇到此现象（APK 17:39:41 已生成并复制，包装进程因 daemon 持有句柄未退出）。
 
 ## 8. 未验证项（需真机）
 

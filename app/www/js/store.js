@@ -90,7 +90,8 @@ export function updateSettings(patch) {
 
 /**
  * 默认 Relay：
- * - 原生 App（Capacitor）：优先用设置里保存的地址（在 getApiBase 里已处理），否则用线上地址。
+ * - 原生 App（Capacitor）：不内置任何 Relay（NATIVE_DEFAULT_RELAY 为空），
+ *   必须由用户在配对页/设置页填写自己的地址；
  * - 普通浏览器：与 PWA 同源（Worker 同时托管 PWA）。
  */
 export function getDefaultApiBase() {

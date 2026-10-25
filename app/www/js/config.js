@@ -6,13 +6,20 @@
 export const APP_NAME = '链记';
 export const APP_NAME_EN = 'LinkNote';
 export const APP_TAGLINE = '手机发链接，电脑做笔记';
-export const APP_VERSION = '0.3.0';
+export const APP_VERSION = '0.4.0';
 
 /** 接口前缀（docs/api-contract.md 约定：所有路径以 /api/v1 开头） */
 export const API_PREFIX = '/api/v1';
 
-/** 原生 App（Capacitor 壳）没有同源 Relay 时的默认地址 */
-export const NATIVE_DEFAULT_RELAY = 'https://relay.xykong.xyz';
+/**
+ * 自托管（v0.5 起）：客户端不内置任何公共 Relay。
+ * - 原生 App / 非同源环境没有默认地址，必须由用户在配对页填写自己的 Relay；
+ * - PWA 由 Relay 同源托管时，默认地址仍是 location.origin。
+ */
+export const NATIVE_DEFAULT_RELAY = '';
+
+/** 自托管 Relay 示例地址：仅用于 UI 占位符/帮助文案，不是真实默认值。 */
+export const RELAY_EXAMPLE_URL = 'https://your-relay.example.com';
 
 /** localStorage 命名空间 */
 export const STORAGE_PREFIX = 'linknote.';

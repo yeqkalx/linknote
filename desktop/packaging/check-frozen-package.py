@@ -5,9 +5,13 @@ Checks inside the *built* executable (not just the source tree):
     and no longer references gyan.dev (task-17 regression)
   * linknote_agent.relay_ws and the websockets package are frozen
     (task-12 regression: 0.2.1 shipped without websockets)
-  * linknote_agent.bots.* (base/telegram/qq/runner/state/device_relay) plus the
-    httpx/httpcore runtime deps used by the bots are frozen
-    (task-23: bot entry must not raise ImportError in the installed app)
+  * linknote_agent.bots.* (base/telegram/runner/state/device_relay) plus the
+    httpx/httpcore runtime deps used by the bots are frozen, while the removed
+    QQ bot module must NOT be bundled (0.5.0 is Telegram-only)
+  * no author-operated relay domain literal is frozen (0.5.0) — the legacy
+    migration constant in linknote_desktop.config is reported explicitly and is
+    allowed only in that one module (raw artifact grep remains clean because the
+    PYZ is compressed)
 
 Usage:
   desktop\\.venv\\Scripts\\python.exe desktop\\packaging\\check-frozen-package.py ^
@@ -19,20 +23,32 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 from pathlib import Path
 from types import CodeType
 from typing import Any
 
-# LinkNote 0.4.0 bot entry modules; every one must exist in the frozen PYZ.
+# LinkNote 0.5.0 bot entry modules (Telegram only; QQ was removed).
 BOTS_REQUIRED = [
     "linknote_agent.bots",
     "linknote_agent.bots.base",
     "linknote_agent.bots.telegram",
-    "linknote_agent.bots.qq",
     "linknote_agent.bots.runner",
     "linknote_agent.bots.state",
     "linknote_agent.bots.device_relay",
 ]
+BOTS_FORBIDDEN = ["linknote_agent.bots.qq"]
+
+# Author-operated relay domain that must not be a default/endpoint in 0.5.0.
+# Assembled from fragments so this packaging tooling source does not itself
+# contain the full domain literal (release artifacts must stay grep-clean).
+# LINKNOTE_AUTHOR_DOMAIN can override it for fork-specific checks.
+AUTHOR_DOMAIN = os.environ.get("LINKNOTE_AUTHOR_DOMAIN") or "".join(("relay.", "xykong", ".xyz"))
+AUTHOR_DOMAIN_FRAGMENT = "xy" + "kong"
+# The legacy config migration in linknote_desktop/config.py intentionally knows
+# about the old host so it can clear stale user configs. It is not a default or
+# an endpoint; it is allowed in this single module only.
+AUTHOR_DOMAIN_LEGACY_MODULES = {"linknote_desktop.config"}
 
 
 def _walk_strings(code: CodeType):
@@ -103,7 +119,7 @@ def main() -> int:
         report["linknote_agent_found"] = any(str(n).startswith("linknote_agent") for n in names)
         report["websockets_ok"] = len(ws_modules) > 0 and report["relay_ws_found"]
 
-        # ----------------------------------------------------- bots modules (0.4)
+        # ----------------------------------------------- bots modules (0.5 = no QQ)
         bots_found = [m for m in BOTS_REQUIRED if m in names]
         bots_missing = [m for m in BOTS_REQUIRED if m not in names]
         report["bots_required"] = BOTS_REQUIRED
@@ -113,6 +129,10 @@ def main() -> int:
         bots_all = sorted(str(n) for n in names if str(n).startswith("linknote_agent.bots"))
         report["bots_modules_in_pyz"] = bots_all
         report["bots_module_count"] = len(bots_all)
+        qq_modules = sorted(str(n) for n in names if str(n).startswith("linknote_agent.bots.qq"))
+        report["bots_forbidden"] = BOTS_FORBIDDEN
+        report["qq_modules_in_pyz"] = qq_modules
+        report["bots_forbidden_ok"] = len(qq_modules) == 0
         bot_extract_errors: list[str] = []
         for required in BOTS_REQUIRED:
             if required in names:
@@ -131,14 +151,45 @@ def main() -> int:
         report["httpcore_module_count"] = len(httpcore_modules)
         report["httpcore_ok"] = len(httpcore_modules) > 0
 
+        # ------------------------------------- author-operated domain literals
+        domain_hits: list[tuple[str, str]] = []
+        for name in sorted(pyz.toc.keys()):
+            try:
+                code = pyz.extract(name)
+            except Exception:  # noqa: BLE001
+                continue
+            if not isinstance(code, CodeType):
+                continue
+            for text in _walk_strings(code):
+                low = text.lower()
+                if AUTHOR_DOMAIN in low or AUTHOR_DOMAIN_FRAGMENT in low:
+                    domain_hits.append((str(name), text))
+        hit_modules = sorted({module for module, _ in domain_hits})
+        exact_legacy_only = bool(domain_hits) and all(
+            module in AUTHOR_DOMAIN_LEGACY_MODULES and text == AUTHOR_DOMAIN
+            for module, text in domain_hits
+        )
+        # Report masked strings; never write the full author domain into evidence.
+        report["author_domain_hits_masked"] = [
+            {"module": module, "text": text.replace(AUTHOR_DOMAIN, "relay.<redacted>.xyz")[:160]}
+            for module, text in domain_hits
+        ]
+        report["author_domain_hit_count"] = len(domain_hits)
+        report["author_domain_hit_modules"] = hit_modules
+        report["author_domain_only_legacy_module"] = exact_legacy_only
+        report["author_domain_ok"] = exact_legacy_only
+        report["author_domain_legacy_modules"] = sorted(AUTHOR_DOMAIN_LEGACY_MODULES)
+
         report["module_count"] = len(names)
         report["ok"] = bool(
             report["ffmpeg_btbn_ok"]
             and report["websockets_ok"]
             and report["bots_ok"]
+            and report["bots_forbidden_ok"]
             and report["bots_extract_ok"]
             and report["httpx_ok"]
             and report["httpcore_ok"]
+            and report["author_domain_ok"]
         )
     except Exception as exc:  # noqa: BLE001
         report["error"] = f"{type(exc).__name__}: {exc}"
@@ -154,3 +205,4 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+

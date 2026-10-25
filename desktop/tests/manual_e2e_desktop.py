@@ -4,7 +4,10 @@
 用手机设备 token 提交一个短视频 → 等 Agent 调本机 BiliNote 生成 → 取回 Markdown。
 
 用法（从 desktop 目录）：
+    $env:E2E_RELAY = "https://your-relay.example.com"
     .venv\\Scripts\\python.exe -m tests.manual_e2e_desktop
+
+v0.5 起没有默认 Relay：必须通过环境变量 E2E_RELAY 提供你自己部署的 Relay 地址。
 """
 from __future__ import annotations
 
@@ -25,7 +28,7 @@ from PySide6.QtWidgets import QApplication
 from linknote_desktop.config import DesktopConfig
 from linknote_desktop.controller import DesktopController
 
-RELAY = os.environ.get("E2E_RELAY", "https://relay.xykong.xyz").rstrip("/")
+RELAY = os.environ.get("E2E_RELAY", "").strip().rstrip("/")
 URL = os.environ.get("E2E_VIDEO_URL", "https://www.youtube.com/watch?v=jNQXAC9IVRw")
 TASK_TIMEOUT = 240
 
@@ -42,6 +45,11 @@ def wait(controller: DesktopController, predicate, timeout: float, label: str):
 
 
 def main() -> int:
+    if not RELAY:
+        print("[error] 未设置 E2E_RELAY。")
+        print("        v0.5 起桌面端没有默认 Relay；请先按 docs/self-hosting.md 部署自己的 Relay，然后：")
+        print('        $env:E2E_RELAY = "https://your-relay.example.com"')
+        return 2
     app = QApplication(sys.argv)
     app.setQuitOnLastWindowClosed(False)
     cfg = DesktopConfig.load()

@@ -305,7 +305,10 @@ def pairing_qr_pixmap(code: str, size: int = 136, relay_url: str | None = None) 
         import qrcode
         from urllib.parse import quote
 
-        base = (relay_url or DEFAULT_RELAY_URL).rstrip("/")
+        base = str(relay_url or DEFAULT_RELAY_URL or "").strip().rstrip("/")
+        if not base:
+            # v0.5 起没有默认 Relay：未配置时二维码无法指向有效的手机入口
+            return QPixmap()
         payload = f"{base}/#/pair?code={quote(str(code or ''), safe='')}"
         qr = qrcode.QRCode(
             error_correction=qrcode.constants.ERROR_CORRECT_M,

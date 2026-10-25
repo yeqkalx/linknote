@@ -119,11 +119,11 @@ def test_build_ws_url():
         == "ws://127.0.0.1:8787/api/v1/agent/ws"
     )
     assert (
-        build_ws_url("https://relay.xykong.xyz/")
-        == "wss://relay.xykong.xyz/api/v1/agent/ws"
+        build_ws_url("https://relay.example.com/")
+        == "wss://relay.example.com/api/v1/agent/ws"
     )
     assert (
-        build_ws_url("https://relay.xykong.xyz", ws_url="ws://127.0.0.1:8798/api/v1/agent/ws")
+        build_ws_url("https://relay.example.com", ws_url="ws://127.0.0.1:8798/api/v1/agent/ws")
         == "ws://127.0.0.1:8798/api/v1/agent/ws"
     )
     assert (

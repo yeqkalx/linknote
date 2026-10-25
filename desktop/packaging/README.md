@@ -1,4 +1,4 @@
-# LinkNote Desktop Windows 打包（PyInstaller + Inno Setup）
+﻿# LinkNote Desktop Windows 打包（PyInstaller + Inno Setup）
 
 本目录负责把 `desktop/linknote_desktop` 打成 Windows 桌面端 EXE，并生成
 per-user（免管理员）安装包。所有中间产物和大文件都在 `desktop/build/` 与
@@ -9,9 +9,9 @@ per-user（免管理员）安装包。所有中间产物和大文件都在 `desk
 
 | 产物 | 路径 | 说明 |
 |---|---|---|
-| 桌面端主程序 | `dist-desktop/LinkNote/LinkNote.exe` | PyInstaller onedir，windowed（无控制台），当前 0.4.0 |
-| 安装包（MSI，推荐） | `dist-desktop/LinkNote-Setup-0.4.0.msi` | WiX 3.14 / Windows Installer，per-user 免管理员；含内置引擎 |
-| 安装包（EXE） | `dist-desktop/LinkNote-Setup-0.4.0.exe` | Inno Setup 6，per-user 安装；部分安全软件会拦 Temp 解压 |
+| 桌面端主程序 | `dist-desktop/LinkNote/LinkNote.exe` | PyInstaller onedir，windowed（无控制台），当前 0.5.0 |
+| 安装包（MSI，推荐） | `dist-desktop/LinkNote-Setup-0.5.0.msi` | WiX 3.14 / Windows Installer，per-user 免管理员；含内置引擎 |
+| 安装包（EXE） | `dist-desktop/LinkNote-Setup-0.5.0.exe` | Inno Setup 6，per-user 安装；部分安全软件会拦 Temp 解压 |
 | 内置引擎（默认包含） | `desktop/build/engine/` | BiliNoteBackend.exe + `_internal/`，约 300 MB / 1903 文件 |
 | 引擎 staging 清单 | `desktop/build/engine-manifest.json` | 来源、文件数、SHA256 |
 | 构建报告 | `desktop/build/build-report.json` | 各步骤结果、大小、SHA256、安装/卸载验证 |
@@ -19,7 +19,7 @@ per-user（免管理员）安装包。所有中间产物和大文件都在 `desk
 | 工具链 probe | `desktop/build/probe/` | 最小 PySide6 windowed exe 的构建+启动证据 |
 
 版本号由 `desktop/pyproject.toml` 自动读取（`build-desktop.ps1` / `build-msi.ps1`），
-当前 **0.4.0**；0.4.0 最终构建结果见第 8 节（本次按要求未在本机安装，仅做包内容/MSI 结构校验）。版本资源由构建脚本按 `pyproject.toml` 自动生成（`LINKNOTE_VERSION_FILE`），不会再出现 exe 版本滞后的情况。
+当前 **0.5.0**；0.5.0 最终构建结果见第 8 节（按要求未在本机安装，仅做包内容/MSI 结构校验；无作者域名、无 QQ bot 模块）。版本资源由构建脚本按 `pyproject.toml` 自动生成（`LINKNOTE_VERSION_FILE`），不会再出现 exe 版本滞后的情况。
 
 ### MSI 安装器（推荐）
 
@@ -54,11 +54,11 @@ powershell -ExecutionPolicy Bypass -File desktop\packaging\msi\verify-msi-ui.ps1
 - 升级：`MajorUpgrade` + 固定 UpgradeCode；0.2.0 → 0.2.1 已验证覆盖升级（旧产品自动卸载、
   数据保留、单 ARP 项）
 
-### 当前 MSI 产物（2026-10-24 20:4x +08:00，0.4.0）
+### 当前 MSI 产物（2026-10-25 17:4x +08:00，0.5.0）
 
 - 路径：`dist-desktop/LinkNote-Setup-0.4.0.msi`（副本：`%USERPROFILE%\Desktop\LinkNote-Setup-0.4.0.msi`）
-- 大小：151,518,605 字节（144.5 MB）
-- SHA256：`0C29888AA763FA364424D4E58C15EE5DFC670005A86E2A69E19A0F7276AF5B30`
+- 大小：151,510,408 字节（144.5 MB）
+- SHA256：`5C874103EB40A74CD126A34BBEB9A329BF70C9C6F67F9B83E81649054092FEAB`
 - 验收：`verify-msi.ps1` 安装/卸载全 PASS；`verify-msi-ui.ps1` 真实点击 Finish 后
   LinkNote.exe 成功启动（PASS）。
 
@@ -226,7 +226,52 @@ BiliNoteBackend.exe + _internal/ + static/
 4. 汇总写入 `desktop/build/build-report.json` 与
    `desktop/build/installer-verify.json`。
 
-## 8. 0.4.0 构建结果（最终，2026-10-24）
+## 8. 0.5.0 构建结果（最终，2026-10-25）
+
+- 版本：**0.5.0**（自托管版；Telegram bot，**无 QQ bot**；包内无作者运营域名）
+- 构建时间（+08:00）：EXE 17:43、MSI 17:44、Inno Setup 17:45
+- 按要求**未在本机安装/升级**，只做构建 + 冻结包内容 + MSI 数据库结构校验
+- 构建命令：`build-desktop.ps1 -SkipProbe -SkipInstaller -SkipVerify` → `build-msi.ps1`
+  → `build-desktop.ps1 -SkipApp -SkipProbe -SkipVerify`
+
+| 产物 | 路径 | 字节 | 大小 | SHA256 |
+|---|---|---|---|---|
+| 桌面端 EXE | `dist-desktop/LinkNote/LinkNote.exe`（0.5.0.0） | 6,740,962 | 6.43 MB | `A01A4839405A0E0EE612B9DDEBA67C22B37CD013DC8701AF73BCA93E7789FCBF` |
+| 桌面包目录 | `dist-desktop/LinkNote/`（195 文件） | — | 132.9 MB | — |
+| 安装包（MSI，主） | `dist-desktop/LinkNote-Setup-0.5.0.msi` | 151,510,408 | 144.5 MB | `5C874103EB40A74CD126A34BBEB9A329BF70C9C6F67F9B83E81649054092FEAB` |
+| 安装包（Inno EXE，备用） | `dist-desktop/LinkNote-Setup-0.5.0.exe` | 133,587,294 | 127.4 MB | `753F1554619BB90420B7B6886D90B721CBA411184F396F1FDFBAACF7CE768106` |
+| 内置引擎（默认包含） | `desktop/build/engine/`（1903 文件） | — | 300.4 MB | `BiliNoteBackend.exe` = `59689B1C…6E8C608` |
+
+MSI/EXE 已复制到 `C:\Users\yeqkalx\Desktop\`（0.5.0）。
+
+验收清单（证据：`desktop/build/final-050/*`、`desktop/build/msi/msi-contents-verify-0.5.0.json`）：
+
+- [x] **Bot 模块冻结（0.5.0 = 仅 Telegram）**：`linknote_agent.bots` + base/telegram/runner/state/device_relay
+      6/6 全在（含 `bots.__init__`），`bots_extract_ok=true`；**`linknote_agent.bots.qq` 不存在**
+      （`qq_modules_in_pyz=[]`，`bots_forbidden_ok=true`）；httpx 23 / httpcore 31 / websockets 47 模块在包内
+- [x] **冻结包运行时导入**：`LinkNote.exe --agent-worker --version` → `linknote_agent 0.1.0`（exit 0），
+      `--agent-worker --help` exit 0（该路径 import `linknote_agent.cli → bots.runner`）
+- [x] **无作者域名**：
+      - 原 `LinkNote.iss` `MyAppURL`、MSI `ARPHELPLINK`、README 示例域名全部替换为中性占位
+        （`https://github.com/` / `<your-relay-host>`）；MSI Property 表 `author_domain_absent=true`、
+        `ARPHELPLINK=https://github.com/`
+      - 对 `LinkNote.exe` / `Setup.msi` / `Setup.exe` 做 raw grep：**无作者运营域名字面量**
+      （构建期检查：安装包内不得含作者域名，含 PYZ 模块扫描 + MSI Property 扫描；
+      证据：`desktop/build/final-050/author-domain-evidence.json`。检查脚本自身也不再包含完整
+      域名字面量：从片段拼接，证据里只输出 `relay.<redacted>.xyz`）
+      - 默认 Relay 为空：desktop `DEFAULT_RELAY_URL=''`、pc-agent `DEFAULT_RELAY_BASE_URL=''`
+      - 冻结 PYZ 级扫描：该域名仅作为**旧配置迁移常量**出现在 `linknote_desktop.config`
+        （v0.5 需要识别并清空旧版用户配置，非默认/非端点），其它模块 0 命中
+- [x] **其它冻结内容**：ffmpeg 模块含 BtbN LGPL shared URL（gyan.dev=0）
+- [x] **MSI 数据库结构校验**（`verify-msi-contents.ps1`，不安装）：ProductVersion 0.5.0、
+      ALLUSERS=2/MSIINSTALLPERUSER=1、Finish「Launch LinkNote」复选框+DoAction、自启 Run 行保留；
+      File 表 2103 项；`LinkNote.exe` 版本 0.5.0.0 / 大小 6,740,962 与 dist 一致；
+      `LICENSE`、`NOTICE`、`licenses\GPL-3.0.txt`、`licenses\LGPL-3.0.txt`、
+      `engine\BiliNoteBackend.exe`、`engine\THIRD-PARTY-NOTICES.txt` 全在
+- [x] `build-msi.ps1` 编译后 9 项静态检查 PASS
+- [ ] 安装/升级/卸载/Finish 点击验证：按要求留给用户本机执行（本次未安装）
+- [ ] Inno EXE 安装：测试机历史被安全软件拦，发布仍以 MSI 为主
+### 8.2 0.4.0 历史构建结果（2026-10-24）
 
 - 版本：**0.4.0**（pc-agent bot 入口 + Desktop 消息入口；Bot 模块必须随冻结包分发）
 - 构建时间（+08:00）：EXE 20:44、MSI 20:46、Inno Setup 20:47
@@ -261,7 +306,7 @@ MSI/EXE 已复制到 `%USERPROFILE%\Desktop\`（0.4.0）。
 - [x] `build-msi.ps1` 编译后 9 项静态检查 PASS
 - [ ] 安装/升级/卸载/Finish 点击验证：按要求由用户在本机执行（本次未安装）
 - [ ] Inno EXE 安装：历史在测试机上被安全软件拦（exit 5），本机发布仍以 MSI 为主
-### 8.2 0.3.0 历史构建结果（2026-10-24）
+### 8.3 0.3.0 历史构建结果（2026-10-24）
 
 - 版本：**0.3.0**（`desktop/pyproject.toml`；task-16 Desktop v0.3 + task-17 FFmpeg LGPL/许可完成后构建）
 - 构建时间（+08:00）：EXE 19:04、MSI 19:05、Inno Setup 19:06
@@ -286,7 +331,7 @@ MSI/EXE 已复制到 `%USERPROFILE%\Desktop\`（0.4.0）。
 - [x] **安装内容**：`LICENSE`、`NOTICE`、`licenses\GPL-3.0.txt`、`licenses\LGPL-3.0.txt`、
       `engine\BiliNoteBackend.exe`（SHA 与 staging 一致）全部存在
 - [x] **安装后 Agent WS**：真实启动安装版 app（隔离 profile、已配对）→ `agent.log`:
-      `开始连接 Relay WebSocket：wss://relay.xykong.xyz/api/v1/agent/ws` →
+      `开始连接 Relay WebSocket：wss://<your-relay-host>/api/v1/agent/ws` →
       `收到 WebSocket hello（agent_id=…）` → `实时连接已建立`，随后持续 ping/pong；
       `agent-worker.log` 无 `No module named` 报错
 - [x] **MSI 静默安装/卸载验收**（`verify-msi.ps1`）：数据目录创建、桌面/开始菜单快捷方式、
@@ -299,7 +344,7 @@ MSI/EXE 已复制到 `%USERPROFILE%\Desktop\`（0.4.0）。
       与 0.2.0/0.2.1/0.2.2 同样的安全软件拦截；MSI 不受影响，发布以 MSI 为主）
 - 说明：FFmpeg 默认下载已改为 BtbN LGPL shared（task-17），首次运行下载约 82 MB zip；
   `licenses\` 随安装目录提供 GPL/LGPL 全文
-### 8.3 0.2.2 历史构建结果（2026-10-24）
+### 8.4 0.2.2 历史构建结果（2026-10-24）
 
 - 版本：**0.2.2**（修复 0.2.1 冻结包缺 `websockets` 导致 Agent WS 连不上的回归）
 - 关键修复：`pyproject.toml` 增加 `websockets>=13,<16`（.venv 15.0.1），
@@ -334,7 +379,7 @@ MSI/EXE 已复制到 `%USERPROFILE%\Desktop\`（0.4.0）。
 - [ ] Inno EXE 安装：本机仍受第三方安全软件拦截（`/VERYSILENT` exit 5，0.2.0/0.2.1 同样）；
       EXE 产物已构建并校验版本/哈希，发布以 MSI 为准
 - 说明：本测试机联想电脑管家会删除 HKCU Run 自启项（见第 1 节），与安装包无关
-### 8.4 0.2.1 历史构建结果（2026-10-24）
+### 8.5 0.2.1 历史构建结果（2026-10-24）
 
 - 版本：**0.2.1**（`desktop/pyproject.toml`；UI 冻结 / task-7 完成后重打；用户已装 0.2.0，因此必须升版本才能触发 MajorUpgrade/Inno 升级）
 - 构建时间（+08:00）：EXE 16:29、MSI 16:31、Inno Setup EXE 16:37
@@ -367,7 +412,7 @@ MSI/EXE 已复制到 `%USERPROFILE%\Desktop\`（0.4.0）。
 - [ ] **Inno EXE 安装**：本机 `LinkNote-Setup-0.2.1.exe /VERYSILENT` 返回 exit 5（0.2.0 同样问题；
       此前已记录联想/火绒拦截 Inno 自解压），故 MSI 为推荐发布路径；EXE 产物本身已构建并通过
       版本/哈希检查
-### 8.5 0.2.0 历史构建结果（2026-10-24 14:33）
+### 8.6 0.2.0 历史构建结果（2026-10-24 14:33）
 
 - 构建时间：2026-10-24 14:33–14:35（+08:00，UI 冻结后重建）
 - 最终验收复跑：2026-10-24 14:4x，`verify-installer.ps1` → **INSTALLER VERIFY PASS**
@@ -473,6 +518,10 @@ MSI/EXE 已复制到 `%USERPROFILE%\Desktop\`（0.4.0）。
 - 根 `.gitignore` 已覆盖 `build/`、`tools/`；`dist-desktop/` 由构建脚本写入
   `.gitignore`（`*` + `!.gitignore`），如仓库策略不同请让 lead 在根 `.gitignore`
   增加 `/dist-desktop/`。
+
+
+
+
 
 
 

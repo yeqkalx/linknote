@@ -38,14 +38,15 @@ import type {
   TaskSummary,
 } from './types';
 
-export const RELAY_VERSION = '0.4.0';
+export const RELAY_VERSION = '0.5.0';
 
 const AGENT_PLATFORMS = ['windows', 'macos', 'linux'] as const;
 /**
- * 设备平台：手机/PWA 用 android/ios/web；v0.4 起 Bot Runner（本机 Telegram/QQ bot）可申请
- * telegram/qq 平台并作为独立设备操作任务（docs/bot-channels.md §2）。
+ * 设备平台：手机/PWA 用 android/ios/web；Bot Runner（本机 Telegram bot）可申请
+ * telegram 平台并作为独立设备操作任务（docs/bot-channels.md §2）。
+ * v0.5 起移除 qq（QQ Bot 已删除，只保留 Telegram）。
  */
-const DEVICE_PLATFORMS = ['android', 'ios', 'web', 'telegram', 'qq'] as const;
+const DEVICE_PLATFORMS = ['android', 'ios', 'web', 'telegram'] as const;
 const PROGRESS_STAGES = [
   'parsing',
   'downloading',
@@ -403,7 +404,7 @@ export async function agentHeartbeat(req: Request, env: Env): Promise<Response> 
 }
 
 /**
- * v0.4：Agent 为本机 Bot（Telegram/QQ）签发专用 device token（docs/bot-channels.md §2）。
+ * v0.4 起：Agent 为本机 Bot（Telegram）签发专用 device token（docs/bot-channels.md §2）。
  * - 只有 Agent token 能调用；device 归属该 agent，与手机设备同级隔离（任务按 device_id 隔离）；
  * - token 只在本响应出现一次，D1 只存 SHA-256，不写日志、不泄漏 token_hash；
  * - Bot 拿到后用普通 device 接口（POST /tasks、GET /tasks/{id} 等）操作自己的任务。
@@ -414,7 +415,7 @@ export async function createAgentDevice(req: Request, env: Env): Promise<Respons
   const name = reqString(body.name, 40, '设备名');
   const platform = body.platform;
   if (typeof platform !== 'string' || !(DEVICE_PLATFORMS as readonly string[]).includes(platform)) {
-    throw new ApiError(400, 'invalid_platform', 'platform 仅支持 android/ios/web/telegram/qq');
+    throw new ApiError(400, 'invalid_platform', 'platform 仅支持 android/ios/web/telegram');
   }
 
   const deviceId = crypto.randomUUID();

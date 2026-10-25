@@ -799,6 +799,15 @@ async function main() {
       400,
       'invalid_platform',
     );
+    // v0.5：qq 平台已删除（只保留 telegram），必须被拒绝。
+    expectError(
+      await call('POST', '/agent/devices', {
+        token: agentToken,
+        body: { name: 'x', platform: 'qq' },
+      }),
+      400,
+      'invalid_platform',
+    );
     expectError(
       await call('POST', '/agent/devices', { token: agentToken, body: { name: 'x' } }),
       400,
@@ -812,7 +821,7 @@ async function main() {
     expectError(
       await call('POST', '/agent/devices', {
         token: agentToken,
-        body: { name: 'x'.repeat(41), platform: 'qq' },
+        body: { name: 'x'.repeat(41), platform: 'telegram' },
       }),
       400,
       'bad_request',

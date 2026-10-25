@@ -1,117 +1,84 @@
 # 部署 Relay（Cloudflare Workers + D1）
 
-> 目标：把 `relay/` 部署到 `https://relay.xykong.xyz`，同时把 PWA 一起托管（一个域名）。
-> 免费额度：Workers/DO 10 万请求/天 + DO 10 万行写/天 + D1 500 万行读/天；**超限是硬失败，不是账单**。
-> 个人 1–3 台设备够用；约 30 台常在线会接近上限，生产/内测建议开 Workers Paid **$5/月**。算法见 [成本模型](cost-model.md)。
+> v0.5.0 起项目**不提供公共 Relay**。每个用户用自己的 Cloudflare 账号和域名部署。
+> 最短路径见 **[自托管 Relay](self-hosting.md)**；本文是更完整的部署/运维参考。
 
-## 0. 前置
+## 1. 前置
 
-- Node.js 20+、Cloudflare 账号、已托管在 Cloudflare 的域名（例如 `xykong.xyz`）。
-- 不需要服务器、不需要备案、不需要公网 IP。
+- Node.js 20+、Cloudflare 账号、已托管在 Cloudflare 的域名（例如 `relay.example.com`）。
+- 不需要服务器、不需要公网 IP。
+- 免费额度：Workers/DO 10 万请求/天 + DO 10 万行写/天 + D1 500 万行读/天；**超限是硬失败，不是账单**。个人 1–3 台设备够用；长期公开服务或 30 台以上常在线建议 Workers Paid（$5/月 起）。算法见 [成本模型](cost-model.md)。
 
-## 1. 构建并同步 PWA
-
-在仓库根目录：
+## 2. 构建 PWA + 部署
 
 ```powershell
+cd <仓库根目录>
 npm --prefix app install
-npm --prefix app run vendor     # marked / DOMPurify → app/www/vendor
-npm --prefix app run sync       # app/www → relay/public
-```
+npm --prefix app run vendor       # marked / DOMPurify → app/www/vendor
+npm --prefix app run sync         # app/www → relay/public
 
-## 2. 登录 Cloudflare
-
-```powershell
 cd relay
+npm install
 npx wrangler login
-```
-
-浏览器授权后，`wrangler whoami` 应能看到账号。
-
-## 3. 创建 D1 数据库
-
-```powershell
 npx wrangler d1 create linknote-db
 ```
 
-输出类似：
-
-```toml
-[[d1_databases]]
-binding = "DB"
-database_name = "linknote-db"
-database_id = "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
-```
-
-把 `database_id` 填到 `relay/wrangler.toml` 里替换占位值。
-
-## 4. 应用迁移
-
-```powershell
-npm run db:remote
-```
-
-首次会提示确认，输入 `y`。以后改表结构时新增 `migrations/0002_xxx.sql`，再跑一次。
-
-## 5. 修改生产变量
-
-编辑 `relay/wrangler.toml`：
+把 `npx wrangler d1 create` 返回的 `database_id` 填进 `relay/wrangler.toml`，并修改：
 
 ```toml
 [vars]
-PUBLIC_BASE_URL = "https://relay.xykong.xyz"
-ALLOWED_ORIGINS = "https://relay.xykong.xyz,https://linknote-relay.<你的子域>.workers.dev"
+PUBLIC_BASE_URL = "https://relay.example.com"
+ALLOWED_ORIGINS = "http://localhost:5173,http://127.0.0.1:8787,http://localhost:8787,https://relay.example.com"
 ```
-
-- `ALLOWED_ORIGINS` 是浏览器端允许的 Origin；原生 App 不发 Origin。
-- 如果想让任意网页调用，可用 `*`（不建议）。
-- 配对码/TTL、租约时长也可用变量覆盖。
-
-## 6. 部署
 
 ```powershell
-npm run deploy
+npx wrangler d1 migrations apply linknote-db --remote
+
+# 生成两个随机 64 位 hex 密钥（不要提交到仓库）
+node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
+npx wrangler secret put INTERNAL_SECRET
+npx wrangler secret put TICKET_SECRET
+
+npx wrangler deploy
 ```
 
-首次部署后 Wrangler 会输出一个 `https://linknote-relay.<子域>.workers.dev` 地址。先验证：
+首次部署后可先测 workers.dev 地址：
 
 ```powershell
-curl https://linknote-relay.<子域>.workers.dev/api/v1/health
+curl https://linknote-relay.<你的子域>.workers.dev/api/v1/health
 ```
 
-看到 `{"ok":true,"data":{"status":"ok"...}}` 即成功。
+## 3. 绑定自定义域名
 
-## 7. 绑定自定义域名（国内必做）
-
-`*.workers.dev` 在中国大陆访问经常被阻断/不稳定，必须用自定义域名：
+`*.workers.dev` 在中国大陆访问经常不稳定，建议绑定自己的域名：
 
 1. Cloudflare Dashboard → Workers & Pages → `linknote-relay` → Settings → Domains & Routes。
-2. Add → Custom domain → `relay.xykong.xyz`。
-3. Cloudflare 自动创建 DNS 记录并签发证书（域名必须已托管在同一账号）。
-4. 访问 `https://relay.xykong.xyz/api/v1/health` 验证。
+2. Add → Custom domain → `relay.example.com`。
+3. Cloudflare 自动创建 DNS 记录并签发证书（域名必须托管在同一账号）。
+4. 访问 `https://relay.example.com/api/v1/health` 验证。
 
-> 不建议用 `relay.xykong.xyz` 以外的主机名；PWA 的 share target 和 Android App 默认地址都按这个域名写。
+也可以在 `wrangler.toml` 里配置：
 
-## 8. 部署 PWA
-
-PWA 已经作为 Worker 的静态资源一起部署（`relay/public`）。访问根路径：
-
-```text
-https://relay.xykong.xyz/
+```toml
+routes = [{ pattern = "relay.example.com", custom_domain = true }]
 ```
 
-应当看到「链记」配对页。手机 Chrome 打开 → 菜单 → 安装应用/添加到主屏幕，之后分享面板会出现「链记」。
+## 4. 部署 PWA
 
-## 9. 验证清单
+PWA 已作为 Worker 静态资源一起部署（`relay/public`，由 `npm --prefix app run sync` 生成，不提交 git）。
+访问根路径 `https://relay.example.com/`，手机 Chrome 打开后从菜单安装。
 
-- [ ] `/api/v1/health` 返回 ok
-- [ ] 根路径能打开 PWA，manifest 可访问（`/manifest.webmanifest`）
-- [ ] 手机 4G 能打开（不是只有 Wi-Fi）
-- [ ] PC Agent 能 `pair`，手机能 `claim`
-- [ ] 发一个 B 站短链接，任务状态从 queued → running → succeeded
-- [ ] 手机能读到 Markdown、下载 `.md`
+## 5. 验证清单
 
-## 10. 成本
+- [ ] `/api/v1/health` 返回 `ok` 且 `realtime:true`
+- [ ] 根路径能打开 PWA，`/manifest.webmanifest` 可访问
+- [ ] 手机 4G 能打开
+- [ ] PC Agent 能 `pair --relay https://relay.example.com`，手机能 `claim`
+- [ ] 发一个视频链接，任务 `queued → running → succeeded`
+- [ ] 手机能读到 Markdown/下载 `.md`
+- [ ] PWA 域名已写进 `ALLOWED_ORIGINS`
+
+## 6. 成本
 
 | 项 | 免费额度 | 超出后 |
 |---|---|---|
@@ -125,37 +92,34 @@ https://relay.xykong.xyz/
 | D1 存储 | 5GB（单库 500MB） | Paid 5GB 起 |
 | 自定义域名/TLS | 免费 | — |
 
-**免费额度是硬失败**：任意一项超限，当天该类型操作直接报错。v0.2.x 的“每台常在线 30s alarm + 25s 应用层 ping”约 **32 台常在线**就触顶，30 台时请求/行写已到 92%/86%。v0.3.0 改为只在手机在线时才 alarm/心跳，Agent 使用 WebSocket 协议 ping。详细算法与监控项见 [成本模型](cost-model.md)。
+**免费额度是硬失败**：任意一项超限，当天该类型操作直接报错。v0.3.0 起只在手机在线时才 alarm/心跳，Agent 用 WebSocket 协议 ping；算法和监控项见 [成本模型](cost-model.md)。
 
-实时架构（v0.2.0+）：Agent/手机通过 Durable Object WebSocket Hibernation 长连接推送，空闲连接不计时长；D1 只存任务元数据；正文不落 D1/DO。生产需要设置 `INTERNAL_SECRET`、`TICKET_SECRET` 并 apply D1 migration 0002。
-
-v0.3.0 心跳参数可通过 `wrangler.toml` 的 vars 覆盖（默认值已满足协议）：`WS_ALARM_SECONDS=30`、`WS_AGENT_STALE_SECONDS=60`、`WS_PROBE_STALE_SECONDS=15`、`WS_PROBE_TIMEOUT_SECONDS=3`。只有存在手机连接时才会设置 alarm；无手机时 Relay 不主动 ping、不写心跳 SQL。
-
-## 11. 中国大陆访问备选
+## 7. 中国大陆访问备选
 
 如果实测 4G 下 Cloudflare 自定义域名仍然慢/断：
 
-- 备选 A：香港/新加坡 VPS（约 ¥40–60/月）跑同一套 API（Worker 逻辑可移植到 Node/Hono + SQLite），DNS 切到 VPS。
+- 备选 A：香港/新加坡 VPS 跑同一套 API（Worker 逻辑可移植到 Node/Hono + SQLite），DNS 切过去。
 - 备选 B：Cloudflare Tunnel 只给个人用（不适合产品）。
 - 大陆服务器需要 ICP 备案，不建议起步就做。
 
-迁移时只需要改手机端「服务器地址」和 PC Agent 的 `relay_url`，其余接口不变。
+迁移时改手机端“服务器地址”和 PC Agent 的 `relay_base_url`，接口不变。
 
-## 12. 回滚
+## 8. 回滚与备份
 
 ```powershell
 npx wrangler deployments list
 npx wrangler rollback <deployment-id>
+npx wrangler d1 export linknote-db --remote --output linknote-backup.sql
 ```
 
 D1 数据不会随 Worker 回滚；表结构变更请用向后兼容的迁移（先加列，后删列）。
 
-## 13. 常见问题
+## 9. 常见问题
 
-**`database_id` 还是占位值**：`npm run deploy` 会失败，按第 3 步替换。
+**`database_id` 还是占位值**：`wrangler deploy` 会失败，按第 2 步替换。
 
 **部署后 404**：确认 `relay/public/index.html` 存在；先执行 `npm --prefix app run sync`。
 
-**自定义域名 522/1016**：DNS 记录必须是 Cloudflare 代理（橙色云），且 Worker 路由绑定成功。
+**自定义域名 522/1016**：DNS 必须是 Cloudflare 代理（橙色云），Worker 路由/自定义域名绑定成功。
 
 **手机安装后没有「链记」分享项**：需要 HTTPS、manifest 有 `share_target`、且从浏览器菜单安装（不是普通书签）；Android Chrome 才支持。

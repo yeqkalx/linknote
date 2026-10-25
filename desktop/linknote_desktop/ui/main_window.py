@@ -287,6 +287,16 @@ class MainWindow(QMainWindow):
         paired = bool(agent.get("paired"))
 
         issues: list[tuple[str, str, str]] = []
+        relay_configured = bool(str(getattr(config, "relay_base_url", "") or "").strip())
+        if not relay_configured:
+            issues.append(
+                (
+                    "未配置 Relay",
+                    "settings",
+                    "先按 docs/self-hosting.md 用你自己的 Cloudflare 部署 Relay，"
+                    "再在设置页填写 https://你的域名。",
+                )
+            )
         if not paired:
             issues.append(
                 ("未配对手机", "devices", "生成配对码并用手机扫码；配对完成后就能接收视频。")

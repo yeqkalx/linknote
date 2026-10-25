@@ -151,7 +151,7 @@ controller.run_async(api.download_whisper, "small", "fast-whisper", on_result=..
   3. 引擎：安装包已内置 BiliNote；调用 `controller.start_engine_async()`，等待 `statusChanged` 中 engine.state == running；失败显示日志提示，可重试。
   4. AI 模型：从 `/get_all_providers` 加载，默认 DeepSeek；填 API Key，保存并测试连接。允许“稍后配置”，但提示不配置无法生成笔记。
   5. 语音转写：默认 fast-whisper + small；显示模型大小并「下载模型」，轮询 `/transcriber_models_status`；也可选 Groq（提示去 AI 页配 Groq key）；允许跳过。
-  6. 配对手机：`controller.create_pairing_async()`，显示大号配对码 + 二维码（内容建议是 `https://relay.xykong.xyz/#/pair?code=XXXX`）+ Relay 地址；等待 claimed；允许跳过。
+  6. 配对手机：`controller.create_pairing_async()`，显示大号配对码 + 二维码（内容建议是 `https://<your-relay>/#/pair?code=XXXX`）+ Relay 地址；等待 claimed；允许跳过。
   7. 完成：`controller.complete_onboarding()`，关闭向导，进入主界面。
 - 每一步有「上一步/下一步/跳过」，错误内联展示而不是抛异常；所有耗时操作走 `controller.run_async`。
 - 向导完成后可在设置页重新打开（“配置向导”按钮）或重新配对。

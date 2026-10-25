@@ -172,16 +172,16 @@ $1
         }
     }
 
-    # 版本号：对应 PWA v0.3 这一轮发版（versionCode 3 / versionName 1.2）；
+    # 版本号：对应 PWA v0.4（自托管）这一轮发版（versionCode 4 / versionName 1.3）；
     # 仅当仍是 cap add 默认值 1/1.0 时改写（幂等，cap add 重建后也能自动应用）。
     $gradlePath = Join-Path $AndroidDir 'app\build.gradle'
     if (Test-Path $gradlePath) {
         $gradle = Get-Content $gradlePath -Raw
         if ($gradle -match 'versionCode\s+1\b' -and $gradle -match 'versionName\s+"1\.0"') {
-            $gradle = [regex]::Replace($gradle, 'versionCode\s+1\b', 'versionCode 3')
-            $gradle = $gradle.Replace('versionName "1.0"', 'versionName "1.2"')
+            $gradle = [regex]::Replace($gradle, 'versionCode\s+1\b', 'versionCode 4')
+            $gradle = $gradle.Replace('versionName "1.0"', 'versionName "1.3"')
             [System.IO.File]::WriteAllText($gradlePath, $gradle, (New-Object System.Text.UTF8Encoding($false)))
-            Write-Host '  app\build.gradle (versionCode 3 / versionName 1.2)'
+            Write-Host '  app\build.gradle (versionCode 4 / versionName 1.3)'
         } else {
             Write-Host '  app\build.gradle 版本号已是自定义值，跳过'
         }

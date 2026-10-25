@@ -1,8 +1,12 @@
-﻿# 使用指南（Windows + Android）
+# 使用指南（Windows + Android）
 
-> 你需要：一台常开的 Windows 电脑 + 一部 Android 手机。
+> 你需要：一台常开的 Windows 电脑 + 一部 Android 手机 + **一个自己部署的 Cloudflare Relay**（见 [自托管 Relay](self-hosting.md)）。
 > 手机和电脑**不需要在同一个 Wi-Fi**；电脑不需要公网 IP。
 > 电脑上不需要手动安装 BiliNote——桌面客户端安装包已内置引擎。
+
+## 方案 0：先部署自己的 Relay（必做）
+
+项目不提供公共 Relay，也不内置作者的域名。按 [自托管 Relay](self-hosting.md) 用你自己的 Cloudflare 账号 + 域名部署，假设你的地址是 `https://relay.example.com`。后面桌面/手机都填这个地址。
 
 ## 方案 A：桌面客户端（普通用户推荐）
 
@@ -11,35 +15,36 @@
 优先双击：
 
 ```text
-dist-desktop\LinkNote-Setup-0.3.0.msi
+dist-desktop\LinkNote-Setup-0.5.0.msi
 ```
 
 - Windows Installer per-user，安装界面为英文，应用内全中文
 - 不需要管理员；安装到 `%LOCALAPPDATA%\Programs\LinkNote`
 - 默认创建桌面/开始菜单快捷方式；数据目录由安装服务创建
-- 如果 `LinkNote-Setup-0.3.0.exe` 被杀软报“无法创建临时目录”，直接换 MSI 即可
+- 如果 `LinkNote-Setup-0.5.0.exe` 被杀软报“无法创建临时目录”，直接换 MSI 即可
 
-备用 EXE（Inno）安装包：`dist-desktop\LinkNote-Setup-0.3.0.exe`
+备用 EXE（Inno）安装包：`dist-desktop\LinkNote-Setup-0.5.0.exe`
 
-### A2. 首次打开：7 步配置向导
+### A2. 首次打开：配置向导
 
 程序会自动弹出向导：
 
 1. **欢迎 + 隐私说明**：视频/转写在本机处理；中继只中转链接/状态/Markdown、不持久保存正文（转发瞬间可见明文）；在线 AI 时必要文本发送给模型服务商。
-2. **ffmpeg**：检测不到就点“下载 ffmpeg”（LGPL shared，约 78 MB，自动解压）。
-3. **引擎**：启动内置 BiliNote 引擎；状态变绿后继续。
-4. **AI 模型**：选 DeepSeek/OpenAI 等，粘贴自己的 API Key，点“保存并测试连接”。
-5. **语音转写**：默认 Faster Whisper + small，点“下载模型”；网络慢可选 tiny（约 75 MB）。
-6. **配对手机**：显示配对码 + 二维码；手机输入/扫码。
-7. **完成**：程序进入托盘常驻。
+2. **连接 Relay**：填写你自己部署的 Relay 地址（如 `https://relay.example.com`），点“测试连接”；通过后继续。
+3. **ffmpeg**：检测不到就点“下载 ffmpeg”（LGPL shared，约 78 MB，自动解压）。
+4. **引擎**：启动内置 BiliNote 引擎；状态变绿后继续。
+5. **AI 模型**：选 DeepSeek/OpenAI 等，粘贴自己的 API Key，点“保存并测试连接”。
+6. **语音转写**：默认 Faster Whisper + small，点“下载模型”；网络慢可选 tiny（约 75 MB）。
+7. **配对手机**：显示配对码 + 二维码；手机输入/扫码。
+8. **完成**：程序进入托盘常驻。
 
 > 没有 LLM API Key 时无法生成笔记；API Key 由你自己在对应服务商购买/创建。
 > 以后想改配置：托盘图标 → 打开主界面 → 设置页（AI 模型/语音转写/引擎与诊断/日志）；设置页可“重新运行配置向导”、开启 Obsidian/本地目录自动归档。主界面顶部横幅会显示“已准备好接收视频”或“需要处理：…”。
 
 ### A3. 手机端
 
-1. Android Chrome 打开 `https://relay.xykong.xyz`，或安装 `release\LinkNote-debug.apk`。
-2. 输入桌面端显示的配对码（或相机扫码打开）。
+1. Android Chrome 打开**你自己的 Relay 域名**（如 `https://relay.example.com`），或安装 `release\LinkNote-debug.apk`。
+2. 输入桌面端显示的配对码（或相机扫码打开）；APK 首次配对页要填同一个 Relay 地址。
 3. 安装 PWA（Chrome 菜单 → 安装应用），之后 B 站/YouTube 分享面板会出现「链记」。
 4. 分享链接 → 等电脑生成 → 手机阅读/下载 Markdown。
 
@@ -58,7 +63,7 @@ dist-desktop\LinkNote-Setup-0.3.0.msi
 cd C:\linknote\pc-agent
 uv venv .venv --python 3.11
 uv pip install --python .venv\Scripts\python.exe -e .
-.venv\Scripts\python.exe -m linknote_agent pair --relay https://relay.xykong.xyz
+.venv\Scripts\python.exe -m linknote_agent pair --relay https://relay.example.com
 .venv\Scripts\python.exe -m linknote_agent run
 ```
 
@@ -77,11 +82,11 @@ uv pip install --python .venv\Scripts\python.exe -e .
 
 - 配对码 10 分钟内有效、只能使用一次。
 - 桌面端：状态页/托盘 → 生成配对码；生成新的即可。
-- 手机和电脑必须使用同一个 Relay 地址（默认 `https://relay.xykong.xyz`）。
+- 手机和电脑必须使用同一个 Relay 地址（你自己部署的域名）。
 
 ### 首次向导卡在下载
 
-- ffmpeg：默认从 gyan.dev 下载；网络不通可在“引擎与 ffmpeg”页手动选择已有 `bin` 目录。
+- ffmpeg：默认从 GitHub/BtbN 下载 LGPL shared 构建；网络不通可在“引擎与 ffmpeg”页手动选择已有 `bin` 目录。
 - Whisper：默认走 `hf-mirror.com`；公司网络可在“引擎与 ffmpeg → 网络”改 HF_ENDPOINT 或配代理。
 - 下载失败可重试；模型下载不会重复下载已完成部分。
 
@@ -100,7 +105,7 @@ uv pip install --python .venv\Scripts\python.exe -e .
 
 ### 桌面端安装包被 SmartScreen 拦截
 
-当前安装包未做代码签名，Windows 会提示“未知发布者”。选择“更多信息 → 仍要运行”；正式分发前需要购买代码签名证书。
+当前安装包未做代码签名，Windows 会提示“未知发布者”。选择“更多信息 → 仍要运行”；如果你要对外分发，建议自行购买代码签名证书（维护者不提供签名）。
 
 ## 隐私
 

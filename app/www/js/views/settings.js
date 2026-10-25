@@ -3,7 +3,7 @@
  * Relay 地址、设备名、解除配对、电脑在线信息、PWA 安装、离线缓存、版本。
  */
 import { api, isNetworkError } from '../api.js';
-import { APP_NAME, APP_NAME_EN, APP_VERSION, NATIVE_DEFAULT_RELAY } from '../config.js';
+import { APP_NAME, APP_NAME_EN, APP_VERSION, RELAY_EXAMPLE_URL } from '../config.js';
 import {
   canPromptInstall,
   getRegistration,
@@ -90,7 +90,7 @@ export async function settingsView(container, ctx) {
 
         <section class="card settings-card" aria-labelledby="relay-title">
           <h2 class="card-title" id="relay-title">服务器（Relay）</h2>
-          <p class="card-sub">接口固定为 <code>/api/v1</code>。同源部署时留空即可。</p>
+          <p class="card-sub">接口固定为 <code>/api/v1</code>。PWA 由 Relay 同源托管时留空即可；原生 App 请填写你自己的 Relay 地址。</p>
           <label class="field" for="relay-input">
             <span class="field-label">Relay 地址</span>
             <input
@@ -100,11 +100,11 @@ export async function settingsView(container, ctx) {
               inputmode="url"
               autocomplete="url"
               spellcheck="false"
-              placeholder="${escapeHtml(settings.getDefaultApiBase() || 'http://127.0.0.1:8787')}"
+              placeholder="${escapeHtml(settings.getDefaultApiBase() || RELAY_EXAMPLE_URL)}"
               value="${escapeHtml(settings.getApiBaseOverride())}"
             />
           </label>
-          <p class="field-help">原生 App 默认使用 <code>${escapeHtml(NATIVE_DEFAULT_RELAY)}</code>；局域网调试可填 <code>http://电脑IP:8787</code>。</p>
+          <p class="field-help">填写你自己部署的 Relay 域名，例如 <code>${escapeHtml(RELAY_EXAMPLE_URL)}</code>（部署步骤见 docs/self-hosting.md）。</p>
           <div class="btn-row">
             <button type="button" class="btn btn-ghost" id="relay-test">
               ${icon('refresh', { size: 16 })}<span>测试连接</span>
@@ -396,12 +396,12 @@ export async function settingsView(container, ctx) {
       if (testingRelay) return;
       const normalized = normalizeApiBase(relayInput.value);
       if (normalized === null) {
-        setRelayStatus('地址格式不对，请填写 http(s)://域名:端口', 'error');
+        setRelayStatus(`地址格式不对，请填写 http(s)://域名:端口，例如 ${RELAY_EXAMPLE_URL}`, 'error');
         return;
       }
       const target = normalized || settings.getDefaultApiBase();
       if (!target) {
-        setRelayStatus('请填写完整的 Relay 地址', 'error');
+        setRelayStatus(`请填写你自己部署的 Relay 地址，例如 ${RELAY_EXAMPLE_URL}`, 'error');
         return;
       }
       testingRelay = true;
@@ -446,6 +446,12 @@ export async function settingsView(container, ctx) {
         toast('服务器地址没有变化');
         return;
       }
+      if (!nextBase) {
+        stopRealtime();
+        toast('尚未填写 Relay 地址，请填写后再配对');
+        navigate('/pair', { replace: true });
+        return;
+      }
       if (nextBase && auth.has(nextBase)) {
         toast('已切换服务器', { type: 'success' });
         restartRealtime();
@@ -469,6 +475,12 @@ export async function settingsView(container, ctx) {
       relayStatus.hidden = true;
       if (nextBase === previousBase) {
         toast('已恢复默认地址');
+        return;
+      }
+      if (!nextBase) {
+        stopRealtime();
+        toast('已清空 Relay 地址，请重新填写并配对');
+        navigate('/pair', { replace: true });
         return;
       }
       if (nextBase && auth.has(nextBase)) {

@@ -1,7 +1,7 @@
 """Bot 本地状态：``~/.linknote/bot-state.json``（原子写）。
 
-保存：Telegram getUpdates offset、QQ session/seq、待投递/进行中任务（pending）、最近笔记、
-本地限流窗口。进程重启后恢复轮询/补投递（docs/bot-channels.md §5）。
+保存：Telegram getUpdates offset、待投递/进行中任务（pending）、最近笔记、本地限流窗口。
+进程重启后恢复轮询/补投递（docs/bot-channels.md §5）。
 """
 
 from __future__ import annotations
@@ -17,15 +17,14 @@ from ..logging_setup import get_logger
 
 logger = get_logger("bots.state")
 
-STATE_VERSION = 1
+STATE_VERSION = 2
 RATE_LIMIT_TASKS = 10
 RATE_LIMIT_WINDOW_SECONDS = 3600.0
 
 STATUS_SUBMITTED = "submitted"
-STATUS_WINDOW_CLOSED = "window_closed"
 STATUS_DELIVERED = "delivered"
 
-VALID_STATUSES = frozenset({STATUS_SUBMITTED, STATUS_WINDOW_CLOSED, STATUS_DELIVERED})
+VALID_STATUSES = frozenset({STATUS_SUBMITTED, STATUS_DELIVERED})
 
 
 def default_state_path() -> Path:
@@ -38,8 +37,6 @@ class PendingTask:
     channel: str
     chat_id: str
     chat_type: str = "private"
-    reply_msg_id: str = ""
-    msg_seq: int = 0
     created_at: float = field(default_factory=time.time)
     status: str = STATUS_SUBMITTED
     title: str = ""
@@ -54,8 +51,6 @@ class PendingTask:
             "channel": self.channel,
             "chat_id": self.chat_id,
             "chat_type": self.chat_type,
-            "reply_msg_id": self.reply_msg_id,
-            "msg_seq": self.msg_seq,
             "created_at": self.created_at,
             "status": self.status,
             "title": self.title,
@@ -68,8 +63,6 @@ class PendingTask:
             channel=str(data.get("channel") or ""),
             chat_id=str(data.get("chat_id") or ""),
             chat_type=str(data.get("chat_type") or "private"),
-            reply_msg_id=str(data.get("reply_msg_id") or ""),
-            msg_seq=int(data.get("msg_seq") or 0),
             created_at=float(data.get("created_at") or time.time()),
             status=str(data.get("status") or STATUS_SUBMITTED),
             title=str(data.get("title") or ""),
@@ -83,9 +76,6 @@ class BotState:
         self.path = Path(path) if path else default_state_path()
         self.telegram_offset = 0
         self.telegram_username = ""
-        self.qq_session_id = ""
-        self.qq_event_seq = 0
-        self.qq_seq: dict[str, int] = {}
         self.pending: list[PendingTask] = []
         self.last_note: dict[str, str] = {}
         self.task_times: dict[str, list[float]] = {}
@@ -100,11 +90,6 @@ class BotState:
             return state
         state.telegram_offset = int(data.get("telegram_offset") or 0)
         state.telegram_username = str(data.get("telegram_username") or "")
-        state.qq_session_id = str(data.get("qq_session_id") or "")
-        state.qq_event_seq = int(data.get("qq_event_seq") or 0)
-        seq = data.get("qq_seq")
-        if isinstance(seq, dict):
-            state.qq_seq = {str(k): int(v) for k, v in seq.items() if str(k)}
         pending = data.get("pending")
         if isinstance(pending, list):
             for item in pending:
@@ -128,9 +113,6 @@ class BotState:
             "version": STATE_VERSION,
             "telegram_offset": self.telegram_offset,
             "telegram_username": self.telegram_username,
-            "qq_session_id": self.qq_session_id,
-            "qq_event_seq": self.qq_event_seq,
-            "qq_seq": self.qq_seq,
             "pending": [p.to_dict() for p in self.pending],
             "last_note": self.last_note,
             "task_times": self.task_times,
@@ -144,18 +126,6 @@ class BotState:
         if update_id + 1 > self.telegram_offset:
             self.telegram_offset = update_id + 1
             self.save()
-
-    # ---------------------------------------------------------------- QQ seq
-
-    def next_qq_seq(self, chat_key: str) -> int:
-        seq = self.qq_seq.get(chat_key, 0) + 1
-        self.qq_seq[chat_key] = seq
-        self.save()
-        return seq
-
-    def set_qq_session(self, session_id: str) -> None:
-        self.qq_session_id = session_id or ""
-        self.save()
 
     # ---------------------------------------------------------------- pending
 
@@ -240,6 +210,5 @@ __all__ = [
     "RATE_LIMIT_WINDOW_SECONDS",
     "STATUS_DELIVERED",
     "STATUS_SUBMITTED",
-    "STATUS_WINDOW_CLOSED",
     "default_state_path",
 ]
