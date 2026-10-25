@@ -2,6 +2,8 @@
 
 手机或 Telegram 发一个视频链接，家里的 Windows 电脑自动下载、转写，并用你自己的 AI Key 生成 Markdown 笔记，回到手机或聊天里阅读。视频、转写和笔记都在你自己的电脑上。
 
+**注意**：底层处理为[bilinote](https://github.com/JefferyHcool/BiliNote) 已经MIT开源
+
 **需要手机/PWA 时**：用你自己的 Cloudflare 账号 + 域名部署 Relay。
 **只用 Telegram 时**：可以不部署 Relay，走本机「Telegram 本地模式」（没有手机/PWA）。
 
